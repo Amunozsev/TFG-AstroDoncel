@@ -7,6 +7,7 @@
 
 import os
 import glob
+import numpy as np
 from astropy.io import fits
 
 # 1. Ruta a la carpeta de datos
@@ -65,6 +66,10 @@ else:
             print(f"Estación de observación: {cabecera.get('INSTRUME', 'Desconocida')}")
             print(f"Fecha de observación: {cabecera.get('DATE-OBS', 'Desconocida')}")
 
+            # --- Sustracción de fondo (mediana por fila/frecuencia) ---
+            fondo = np.median(datos_espectrograma, axis=1, keepdims=True)
+            datos_limpios = datos_espectrograma.astype(np.float32) - fondo
+
             # --- Exportar datos a JSON para el frontend ---
             import json
 
@@ -75,9 +80,9 @@ else:
             ruta_json = os.path.normpath(ruta_json)
 
             payload = {
-                'tiempos': tiempos.tolist(),
-                'frecuencias': frecuencias.tolist(),
-                'datos': datos_espectrograma.tolist(),
+                'tiempos': [round(float(v), 3) for v in tiempos],
+                'frecuencias': [round(float(v), 3) for v in frecuencias],
+                'datos': [[round(float(v), 2) for v in fila] for fila in datos_limpios],
             }
             with open(ruta_json, 'w', encoding='utf-8') as f:
                 json.dump(payload, f)

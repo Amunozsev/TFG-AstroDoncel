@@ -1,5 +1,8 @@
 import { useState, useEffect } from 'react';
-import Plot from 'react-plotly.js';
+import Plotly from 'plotly.js-dist';
+import _factory from 'react-plotly.js/factory';
+
+const Plot = (_factory.default ?? _factory)(Plotly);
 
 export default function Spectrogram() {
   const [datos, setDatos] = useState(null);
@@ -16,17 +19,19 @@ export default function Spectrogram() {
     <Plot
       data={[
         {
-          type: 'heatmapgl',
+          type: 'heatmap',
           x: datos.tiempos,
           y: datos.frecuencias,
           z: datos.datos,
           colorscale: 'Jet',
+          zmin: 0,
+          zmax: 20,
         },
       ]}
       layout={{
         title: { text: 'Espectrograma Solar e-Callisto' },
         xaxis: { title: 'Tiempo (s)' },
-        yaxis: { title: 'Frecuencia (MHz)' },
+        yaxis: { autorange: 'reversed', title: 'Frecuencia (MHz)' },
         autosize: true,
       }}
       useResizeHandler
