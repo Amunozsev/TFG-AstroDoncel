@@ -1,0 +1,16 @@
+{
+  "python.defaultInterpreterPath": "c:/Users/alfon/Escritorio/TFG AstroDoncel/.venv/Scripts/python.exe",
+  "python.terminal.activateEnvironment": true,
+  "python.terminal.activateEnvInCurrentTerminal": true,
+  "terminal.integrated.profiles.windows": {
+    "PowerShell": {
+      "source": "PowerShell",
+      "args": [
+        "-NoExit",
+        "-Command",
+        "Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned; & 'c:/Users/alfon/Escritorio/TFG AstroDoncel/.venv/Scripts/Activate.ps1'"
+      ]
+    }
+  },
+  "terminal.integrated.defaultProfile.windows": "PowerShell"
+}
