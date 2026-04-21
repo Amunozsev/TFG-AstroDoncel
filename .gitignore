@@ -1,4 +1,20 @@
+# Datos astronómicos (ficheros grandes, no van al repo)
 /data
+
+# Entornos virtuales Python
 /venv
+/.venv
+
+# Variables de entorno
 .env
-__pycache__
+.env.*
+
+# Caché de Python
+**/__pycache__/
+**/*.pyc
+
+# JSON generado por el script (artefacto derivado de /data)
+frontend/public/datos_prueba.json
+
+# Configuración local de Claude Code
+.claude/

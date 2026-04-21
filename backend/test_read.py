@@ -65,6 +65,24 @@ else:
             print(f"Estación de observación: {cabecera.get('INSTRUME', 'Desconocida')}")
             print(f"Fecha de observación: {cabecera.get('DATE-OBS', 'Desconocida')}")
 
+            # --- Exportar datos a JSON para el frontend ---
+            import json
+
+            ruta_json = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                '..', 'frontend', 'public', 'datos_prueba.json'
+            )
+            ruta_json = os.path.normpath(ruta_json)
+
+            payload = {
+                'tiempos': tiempos.tolist(),
+                'frecuencias': frecuencias.tolist(),
+                'datos': datos_espectrograma.tolist(),
+            }
+            with open(ruta_json, 'w', encoding='utf-8') as f:
+                json.dump(payload, f)
+            print(f"\n[JSON] Datos exportados a: {ruta_json}")
+
             # Cerrar el archivo por seguridad
             archivo_fits.close()
 
