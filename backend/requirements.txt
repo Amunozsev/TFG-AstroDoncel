@@ -9,6 +9,8 @@ uvicorn[standard]==0.34.2      # servidor ASGI con recarga automática
 astropy==7.0.1
 numpy==2.2.5
 scipy==1.15.3
+sunpy[net,timeseries]==6.0.4    # GOES/XRS overlay vía Fido (NOAA NGDC)
+pandas==2.2.3                   # requerido por sunpy.timeseries.to_dataframe()
 
 # --- Validación de datos (incluida en FastAPI, se especifica por claridad) ---
 pydantic==2.11.4
