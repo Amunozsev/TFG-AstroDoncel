@@ -28,7 +28,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Estructura: <ECALLISTO_DATA_DIR>/<yyyy>/<mm>/<dd>/<archivos>.fit.gz
+# Carpeta local de datos: ../data/ relativa a este archivo (funciona en Windows y Mac)
+DATA_DIR_LOCAL = os.path.normpath(
+    os.path.join(os.path.dirname(__file__), "..", "data")
+)
+
+# Carpeta NAS (producción): configurable por variable de entorno
 ECALLISTO_DATA_DIR = os.environ.get(
     "ECALLISTO_DATA_DIR", "/var/services/web/ecallistodata"
 )
@@ -37,6 +42,7 @@ ECALLISTO_DATA_DIR = os.environ.get(
 class SpectrogramResponse(BaseModel):
     station: str
     date: str
+    filename: str
     time_axis: list[str]
     freq_axis: list[float]
     z: list[list[float]]
@@ -62,8 +68,24 @@ def _open_fits(path: str):
         )
 
 
-def _find_fits_file(station: str, date: str) -> str:
-    """Localiza el primer archivo FITS de la estación en el directorio de fecha."""
+def _find_local_fits_file(station: str) -> str | None:
+    """Busca el primer .fit/.fit.gz de la estación en la carpeta local ../data/.
+
+    Usa glob con rutas relativas al propio archivo main.py para evitar
+    rutas hardcodeadas que fallen entre Windows y Mac.
+    """
+    if not os.path.isdir(DATA_DIR_LOCAL):
+        logger.debug("Carpeta local de datos no encontrada: %s", DATA_DIR_LOCAL)
+        return None
+    for ext in (".fit.gz", ".fits.gz", ".fit", ".fits"):
+        matches = glob.glob(os.path.join(DATA_DIR_LOCAL, f"*{station}*{ext}"))
+        if matches:
+            return sorted(matches)[0]
+    return None
+
+
+def _find_nas_fits_file(station: str, date: str) -> str:
+    """Localiza el primer archivo FITS de la estación en el directorio NAS de fecha."""
     try:
         dt = datetime.strptime(date, "%Y-%m-%d")
     except ValueError:
@@ -117,7 +139,6 @@ def _col_to_1d(col) -> np.ndarray | None:
         return None
     if arr.ndim == 1:
         return arr
-    # 1 fila que contiene el array completo: shape (1, N)
     return arr[0].ravel()
 
 
@@ -125,10 +146,9 @@ def _extract_axes(hdul) -> tuple[np.ndarray, np.ndarray]:
     """Extrae los ejes temporales (s desde medianoche UTC) y de frecuencia (MHz).
 
     Estrategia:
-    1. HDU[1] para TIME, HDU[2] para FREQUENCY (según spec).
-    2. Fallback: buscar ambos en todos los HDUs (cubre el caso real e-Callisto
-       donde ambas columnas están en HDU[1]).
-    3. Fallback final: np.linspace si no hay tablas BIN.
+    1. HDU[1] para TIME, HDU[2] para FREQUENCY.
+    2. Fallback: buscar en todos los HDUs (caso real: ambos en HDU[1]).
+    3. Fallback final: np.linspace.
     """
     header = hdul[0].header
     data = hdul[0].data
@@ -137,7 +157,6 @@ def _extract_axes(hdul) -> tuple[np.ndarray, np.ndarray]:
     time_arr: np.ndarray | None = None
     freq_arr: np.ndarray | None = None
 
-    # Intento 1: HDU[1] → TIME, HDU[2] → FREQUENCY
     if len(hdul) > 1:
         try:
             table = hdul[1].data
@@ -154,7 +173,6 @@ def _extract_axes(hdul) -> tuple[np.ndarray, np.ndarray]:
         except Exception as exc:
             logger.debug("FREQUENCY no encontrado en HDU[2]: %s", exc)
 
-    # Intento 2: buscar en todos los HDUs (caso habitual: ambos en HDU[1])
     for hdu in hdul[1:]:
         if time_arr is not None and freq_arr is not None:
             break
@@ -170,7 +188,6 @@ def _extract_axes(hdul) -> tuple[np.ndarray, np.ndarray]:
         except Exception:
             continue
 
-    # Fallback: np.linspace si no hay tablas BIN
     if time_arr is None:
         logger.warning("Eje temporal no encontrado en tablas BIN; usando linspace")
         time_start = _header_ut_seconds(header)
@@ -196,10 +213,15 @@ def _header_ut_seconds(header) -> float:
 
 
 def _times_to_utc(time_arr: np.ndarray, header) -> list[str]:
-    """Convierte el vector de tiempos (s desde medianoche UTC) a etiquetas HH:MM:SS."""
+    """Convierte el vector de tiempos a etiquetas HH:MM:SS UTC.
+
+    El TIME del FITS BIN contiene segundos relativos al inicio del archivo,
+    no segundos absolutos desde medianoche. Hay que sumarle TIME-OBS.
+    """
+    t0 = _header_ut_seconds(header)  # segundos desde medianoche = TIME-OBS
     labels = []
     for t in time_arr:
-        total = float(t)
+        total = float(t) + t0
         h = int(total // 3600) % 24
         m = int(total % 3600) // 60
         s = int(total % 60)
@@ -253,10 +275,16 @@ def health():
 def get_spectrogram(
     station: str = Query(..., description="Estación e-Callisto, ej. SPAIN-SIGUENZA"),
     date: str = Query(..., description="Fecha de observación, formato YYYY-MM-DD"),
-    file_path: str = Query(default=None, description="Ruta absoluta a .fit/.fit.gz (modo desarrollo)"),
+    file_path: str = Query(default=None, description="Ruta absoluta a .fit/.fit.gz (override manual)"),
+    sahan_filter: bool = Query(default=False, description="Aplica sustracción de fondo por mediana de canal"),
 ):
-    """Devuelve el espectrograma de una estación e-Callisto para una fecha dada."""
-    # Validar formato de fecha
+    """Devuelve el espectrograma de una estación e-Callisto para una fecha dada.
+
+    Orden de resolución del archivo:
+    1. file_path explícito (override manual)
+    2. Carpeta local ../data/ (desarrollo sin NAS)
+    3. NAS estructurado por fecha (producción)
+    """
     try:
         datetime.strptime(date, "%Y-%m-%d")
     except ValueError:
@@ -269,14 +297,16 @@ def get_spectrogram(
     if file_path:
         fits_path = file_path
         if not os.path.isfile(fits_path):
-            raise HTTPException(
-                status_code=404,
-                detail=f"Archivo no encontrado: {fits_path}",
-            )
+            raise HTTPException(status_code=404, detail=f"Archivo no encontrado: {fits_path}")
+        logger.info("Usando file_path explícito: %s", fits_path)
     else:
-        fits_path = _find_fits_file(station, date)
-
-    logger.info("Procesando %s", fits_path)
+        local = _find_local_fits_file(station)
+        if local:
+            fits_path = local
+            logger.info("Archivo local encontrado: %s", fits_path)
+        else:
+            fits_path = _find_nas_fits_file(station, date)
+            logger.info("Archivo NAS encontrado: %s", fits_path)
 
     try:
         with _open_fits(fits_path) as hdul:
@@ -290,16 +320,22 @@ def get_spectrogram(
             time_arr, freq_arr = _extract_axes(hdul)
             time_labels = _times_to_utc(time_arr, header)
 
-            datos_limpios = _subtract_background(data)
-            vmin, vmax = _percentile_clip(datos_limpios)
-            datos_json = np.nan_to_num(datos_limpios).tolist()
+            # Filtro Sahan: sustracción de fondo solo si se solicita
+            if sahan_filter:
+                data = _subtract_background(data)
+                logger.info("Filtro Sahan aplicado")
+
+            vmin, vmax = _percentile_clip(data)
+            # Limpiar NaN e infinitos antes de serializar
+            data_clean = np.nan_to_num(data, nan=0.0, posinf=vmax, neginf=vmin)
 
             return SpectrogramResponse(
                 station=station,
                 date=date,
+                filename=os.path.basename(fits_path),
                 time_axis=time_labels,
                 freq_axis=[round(float(f), 3) for f in freq_arr],
-                z=[[round(float(v), 4) for v in row] for row in datos_json],
+                z=[[round(float(v), 4) for v in row] for row in data_clean.tolist()],
                 vmin=round(vmin, 4),
                 vmax=round(vmax, 4),
                 fits_header=_header_to_dict(header),
