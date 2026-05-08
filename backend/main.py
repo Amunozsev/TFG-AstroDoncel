@@ -5,15 +5,22 @@ AstroDoncel API — backend FastAPI para espectrogramas e-Callisto.
 from __future__ import annotations
 
 import glob
+import html
+import json
 import logging
 import os
-from datetime import datetime
+import re
+import time
+from datetime import datetime, timedelta, timezone
+from urllib.request import Request, urlopen
+from urllib.error import URLError
 
 import numpy as np
 from astropy.io import fits
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from scipy.ndimage import median_filter
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -28,16 +35,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Carpeta local de datos: ../data/ relativa a este archivo (funciona en Windows y Mac)
+# Carpeta local: ../data/ relativa a este archivo
 DATA_DIR_LOCAL = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "data")
 )
-
-# Carpeta NAS (producción): configurable por variable de entorno
+# Carpeta NAS (producción)
 ECALLISTO_DATA_DIR = os.environ.get(
     "ECALLISTO_DATA_DIR", "/var/services/web/ecallistodata"
 )
+# Servidor de archivo e-Callisto (ETHZ)
+ETHZ_BASE_URL = "http://soleil.i4ds.ch/solarradio/data/2.0Hz"
 
+
+# ── Modelos ──────────────────────────────────────────────────────────────────
 
 class SpectrogramResponse(BaseModel):
     station: str
@@ -51,10 +61,15 @@ class SpectrogramResponse(BaseModel):
     fits_header: dict
 
 
-# ---------------------------------------------------------------------------
-# Helpers de I/O
-# ---------------------------------------------------------------------------
+class GoesResponse(BaseModel):
+    date: str
+    available: bool
+    reason: str
+    times: list[str]       # HH:MM:SS, mismo formato que time_axis
+    flux: list[float]      # W/m² canal 0.1–0.8 nm
 
+
+# ── Helpers de I/O ───────────────────────────────────────────────────────────
 
 def _open_fits(path: str):
     """Abre un archivo FITS (soporta .fit, .fits, .fit.gz, .fits.gz)."""
@@ -62,20 +77,12 @@ def _open_fits(path: str):
         return fits.open(path, memmap=False)
     except Exception as exc:
         logger.error("Error al abrir %s: %s", path, exc)
-        raise HTTPException(
-            status_code=500,
-            detail=f"No se pudo abrir el archivo FITS: {exc}",
-        )
+        raise HTTPException(status_code=500, detail=f"No se pudo abrir el archivo FITS: {exc}")
 
 
 def _find_local_fits_file(station: str) -> str | None:
-    """Busca el primer .fit/.fit.gz de la estación en la carpeta local ../data/.
-
-    Usa glob con rutas relativas al propio archivo main.py para evitar
-    rutas hardcodeadas que fallen entre Windows y Mac.
-    """
+    """Busca el primer .fit.gz de la estación en ../data/ (desarrollo local)."""
     if not os.path.isdir(DATA_DIR_LOCAL):
-        logger.debug("Carpeta local de datos no encontrada: %s", DATA_DIR_LOCAL)
         return None
     for ext in (".fit.gz", ".fits.gz", ".fit", ".fits"):
         matches = glob.glob(os.path.join(DATA_DIR_LOCAL, f"*{station}*{ext}"))
@@ -84,51 +91,88 @@ def _find_local_fits_file(station: str) -> str | None:
     return None
 
 
-def _find_nas_fits_file(station: str, date: str) -> str:
-    """Localiza el primer archivo FITS de la estación en el directorio NAS de fecha."""
+def _find_nas_fits_file(station: str, date: str) -> str | None:
+    """Busca en la estructura NAS ECALLISTO_DATA_DIR/YYYY/MM/DD/."""
     try:
         dt = datetime.strptime(date, "%Y-%m-%d")
     except ValueError:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Formato de fecha inválido: '{date}'. Use YYYY-MM-DD.",
-        )
-
+        return None
     date_dir = os.path.join(
-        ECALLISTO_DATA_DIR,
-        dt.strftime("%Y"),
-        dt.strftime("%m"),
-        dt.strftime("%d"),
+        ECALLISTO_DATA_DIR, dt.strftime("%Y"), dt.strftime("%m"), dt.strftime("%d")
     )
-
     if not os.path.isdir(date_dir):
-        raise HTTPException(
-            status_code=404,
-            detail=f"No existe el directorio de datos para {date}: {date_dir}",
-        )
-
+        return None
     for ext in (".fit.gz", ".fits.gz", ".fit", ".fits"):
         matches = glob.glob(os.path.join(date_dir, f"*{station}*{ext}"))
         if matches:
             return sorted(matches)[0]
+    return None
 
-    raise HTTPException(
-        status_code=404,
-        detail=f"No se encontraron archivos FITS para '{station}' en {date_dir}",
+
+def _download_from_ethz(station: str, date: str) -> str | None:
+    """Descarga el primer .fit.gz de la estación desde el archivo ETHZ (soleil.i4ds.ch).
+
+    Estrategia de Sahan: inspeccionar el índice de directorio HTTP y descargar
+    el primer archivo que coincida. El archivo se guarda en DATA_DIR_LOCAL para
+    ser reutilizado en llamadas futuras.
+    """
+    try:
+        dt = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        return None
+
+    dir_url = f"{ETHZ_BASE_URL}/{dt.strftime('%Y/%m/%d')}/"
+    logger.info("Consultando archivo ETHZ: %s", dir_url)
+
+    try:
+        req = Request(dir_url, headers={"User-Agent": "AstroDoncel/1.0"})
+        with urlopen(req, timeout=15) as resp:
+            page = resp.read().decode("utf-8", errors="replace")
+    except URLError as exc:
+        logger.warning("No se pudo acceder al archivo ETHZ: %s", exc)
+        return None
+
+    # Extraer href de archivos FITS que coincidan con la estación
+    candidates = re.findall(r'href="([^"]+\.fit(?:\.gz)?)"', page, re.IGNORECASE)
+    station_upper = station.upper()
+    matches = sorted(
+        [c for c in candidates if station_upper in html.unescape(c).upper()]
     )
+    if not matches:
+        logger.warning("No hay archivos de %s en ETHZ para %s", station, date)
+        return None
+
+    filename = matches[0]
+    file_url = dir_url + filename
+    os.makedirs(DATA_DIR_LOCAL, exist_ok=True)
+    local_path = os.path.join(DATA_DIR_LOCAL, filename)
+
+    if os.path.isfile(local_path):
+        logger.info("Archivo ya en caché: %s", local_path)
+        return local_path
+
+    logger.info("Descargando %s → %s", file_url, local_path)
+    try:
+        req = Request(file_url, headers={"User-Agent": "AstroDoncel/1.0"})
+        with urlopen(req, timeout=120) as resp:
+            with open(local_path, "wb") as fh:
+                while chunk := resp.read(512 * 1024):
+                    fh.write(chunk)
+        logger.info("Descarga completada (%d bytes)", os.path.getsize(local_path))
+        return local_path
+    except Exception as exc:
+        logger.error("Fallo al descargar %s: %s", file_url, exc)
+        try:
+            os.remove(local_path)
+        except OSError:
+            pass
+        return None
 
 
-# ---------------------------------------------------------------------------
-# Helpers de extracción de ejes
-# ---------------------------------------------------------------------------
-
+# ── Helpers de extracción de ejes ────────────────────────────────────────────
 
 def _col_to_1d(col) -> np.ndarray | None:
-    """Extrae un array 1D a partir de una columna de tabla FITS BIN.
-
-    Las tablas e-Callisto tienen 1 fila que contiene el array completo,
-    por lo que col puede ser de shape (1, N) o (N,).
-    """
+    """Extrae un array 1D a partir de una columna de tabla FITS BIN."""
     if col is None:
         return None
     try:
@@ -143,13 +187,7 @@ def _col_to_1d(col) -> np.ndarray | None:
 
 
 def _extract_axes(hdul) -> tuple[np.ndarray, np.ndarray]:
-    """Extrae los ejes temporales (s desde medianoche UTC) y de frecuencia (MHz).
-
-    Estrategia:
-    1. HDU[1] para TIME, HDU[2] para FREQUENCY.
-    2. Fallback: buscar en todos los HDUs (caso real: ambos en HDU[1]).
-    3. Fallback final: np.linspace.
-    """
+    """Extrae ejes temporal (s desde inicio de observación) y de frecuencia (MHz)."""
     header = hdul[0].header
     data = hdul[0].data
     n_freq, n_time = data.shape
@@ -157,22 +195,24 @@ def _extract_axes(hdul) -> tuple[np.ndarray, np.ndarray]:
     time_arr: np.ndarray | None = None
     freq_arr: np.ndarray | None = None
 
+    # Intento 1: HDU[1] → TIME, HDU[2] → FREQUENCY
     if len(hdul) > 1:
         try:
-            table = hdul[1].data
-            if table is not None:
-                time_arr = _col_to_1d(table["TIME"])
+            t = hdul[1].data
+            if t is not None:
+                time_arr = _col_to_1d(t["TIME"])
         except Exception as exc:
-            logger.debug("TIME no encontrado en HDU[1]: %s", exc)
+            logger.debug("TIME no en HDU[1]: %s", exc)
 
     if len(hdul) > 2:
         try:
-            table = hdul[2].data
-            if table is not None:
-                freq_arr = _col_to_1d(table["FREQUENCY"])
+            f = hdul[2].data
+            if f is not None:
+                freq_arr = _col_to_1d(f["FREQUENCY"])
         except Exception as exc:
-            logger.debug("FREQUENCY no encontrado en HDU[2]: %s", exc)
+            logger.debug("FREQUENCY no en HDU[2]: %s", exc)
 
+    # Intento 2: buscar en todos los HDUs (caso común: ambos en HDU[1])
     for hdu in hdul[1:]:
         if time_arr is not None and freq_arr is not None:
             break
@@ -180,21 +220,22 @@ def _extract_axes(hdul) -> tuple[np.ndarray, np.ndarray]:
             table = hdu.data
             if table is None:
                 continue
-            names_upper = {str(n).upper() for n in (getattr(table, "names", None) or [])}
-            if time_arr is None and "TIME" in names_upper:
+            names = {str(n).upper() for n in (getattr(table, "names", None) or [])}
+            if time_arr is None and "TIME" in names:
                 time_arr = _col_to_1d(table["TIME"])
-            if freq_arr is None and "FREQUENCY" in names_upper:
+            if freq_arr is None and "FREQUENCY" in names:
                 freq_arr = _col_to_1d(table["FREQUENCY"])
         except Exception:
             continue
 
+    # Fallback linspace
     if time_arr is None:
-        logger.warning("Eje temporal no encontrado en tablas BIN; usando linspace")
-        time_start = _header_ut_seconds(header)
-        time_arr = np.linspace(time_start, time_start + 14.0 * 60.0, n_time)
+        logger.warning("Eje temporal no encontrado; usando linspace")
+        t0 = _header_ut_seconds(header)
+        time_arr = np.linspace(0.0, 14.0 * 60.0, n_time)
 
     if freq_arr is None:
-        logger.warning("Eje de frecuencias no encontrado en tablas BIN; usando linspace")
+        logger.warning("Eje de frecuencias no encontrado; usando linspace")
         f_min = float(header.get("FREQMIN", 45.0))
         f_max = float(header.get("FREQMAX", 400.0))
         freq_arr = np.linspace(f_max, f_min, n_freq)
@@ -203,7 +244,7 @@ def _extract_axes(hdul) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _header_ut_seconds(header) -> float:
-    """Extrae TIME-OBS de la cabecera como segundos desde medianoche."""
+    """Extrae TIME-OBS como segundos desde medianoche."""
     try:
         t = str(header.get("TIME-OBS", "00:00:00")).strip()
         hh, mm, ss = t.split(":")
@@ -213,12 +254,12 @@ def _header_ut_seconds(header) -> float:
 
 
 def _times_to_utc(time_arr: np.ndarray, header) -> list[str]:
-    """Convierte el vector de tiempos a etiquetas HH:MM:SS UTC.
+    """Convierte el vector de offsets (s) a etiquetas HH:MM:SS UTC.
 
-    El TIME del FITS BIN contiene segundos relativos al inicio del archivo,
-    no segundos absolutos desde medianoche. Hay que sumarle TIME-OBS.
+    El TIME del FITS BIN es relativo al inicio del archivo; se suma TIME-OBS
+    para obtener la hora UTC absoluta.
     """
-    t0 = _header_ut_seconds(header)  # segundos desde medianoche = TIME-OBS
+    t0 = _header_ut_seconds(header)
     labels = []
     for t in time_arr:
         total = float(t) + t0
@@ -229,26 +270,44 @@ def _times_to_utc(time_arr: np.ndarray, header) -> list[str]:
     return labels
 
 
-# ---------------------------------------------------------------------------
-# Helpers de procesamiento
-# ---------------------------------------------------------------------------
-
+# ── Helpers de procesamiento ─────────────────────────────────────────────────
 
 def _subtract_background(data: np.ndarray) -> np.ndarray:
-    """Resta la mediana de cada canal de frecuencia a lo largo del eje temporal."""
+    """Sustracción básica: resta la mediana de cada canal de frecuencia."""
     fondo = np.nanmedian(data, axis=1, keepdims=True)
     return data.astype(np.float32) - fondo.astype(np.float32)
 
 
+def _clean_rfi(data: np.ndarray) -> np.ndarray:
+    """Limpieza RFI inspirada en el algoritmo de Sahan (rfi_filters + noise_reduction).
+
+    Pipeline:
+    1. Filtro mediana 2D 3×3 — elimina picos RFI puntuales tiempo/frecuencia.
+    2. Sustracción de fondo robusto — percentil 25 de cada canal de frecuencia
+       (más robusto que la mediana ante emisión solar intensa).
+    3. No se aplica ecualización de ruido (eso es Sprint 3 con RFI Toolkit completo).
+    """
+    arr = np.array(data, dtype=np.float32)
+
+    # 1. Filtro mediana 2D
+    filtered = median_filter(arr, size=(3, 3), mode="nearest").astype(np.float32)
+
+    # 2. Fondo robusto: percentil 25 por canal de frecuencia (eje temporal)
+    bg = np.nanpercentile(filtered, 25.0, axis=1, keepdims=True).astype(np.float32)
+    cleaned = filtered - bg
+
+    return cleaned.astype(np.float32)
+
+
 def _percentile_clip(data: np.ndarray) -> tuple[float, float]:
-    """Calcula vmin y vmax como percentiles 2 % y 99.5 % para la escala de color."""
+    """Calcula vmin (p2) y vmax (p99.5) para la escala de color."""
     vmin = float(np.nanpercentile(data, 2))
     vmax = float(np.nanpercentile(data, 99.5))
     return vmin, vmax
 
 
 def _header_to_dict(header) -> dict:
-    """Convierte un header FITS a un diccionario JSON-serializable."""
+    """Convierte un header FITS a diccionario JSON-serializable."""
     result: dict = {}
     for key, value in header.items():
         if key in ("COMMENT", "HISTORY", ""):
@@ -260,10 +319,7 @@ def _header_to_dict(header) -> dict:
     return result
 
 
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
-
+# ── Endpoints ────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
@@ -275,58 +331,63 @@ def health():
 def get_spectrogram(
     station: str = Query(..., description="Estación e-Callisto, ej. SPAIN-SIGUENZA"),
     date: str = Query(..., description="Fecha de observación, formato YYYY-MM-DD"),
-    file_path: str = Query(default=None, description="Ruta absoluta a .fit/.fit.gz (override manual)"),
-    sahan_filter: bool = Query(default=False, description="Aplica sustracción de fondo por mediana de canal"),
+    file_path: str = Query(default=None, description="Ruta absoluta (override manual)"),
+    sahan_filter: bool = Query(default=False, description="Aplica limpieza RFI avanzada (Sahan)"),
 ):
-    """Devuelve el espectrograma de una estación e-Callisto para una fecha dada.
+    """Devuelve el espectrograma de una estación e-Callisto.
 
-    Orden de resolución del archivo:
-    1. file_path explícito (override manual)
-    2. Carpeta local ../data/ (desarrollo sin NAS)
+    Orden de resolución:
+    1. file_path explícito (override)
+    2. ../data/ local (desarrollo)
     3. NAS estructurado por fecha (producción)
+    4. Descarga automática desde archivo ETHZ (soleil.i4ds.ch)
     """
     try:
         datetime.strptime(date, "%Y-%m-%d")
     except ValueError:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Formato de fecha inválido: '{date}'. Use YYYY-MM-DD.",
-        )
+        raise HTTPException(status_code=422, detail=f"Formato de fecha inválido: '{date}'")
 
-    # Resolver ruta del archivo FITS
+    # Resolver ruta
     if file_path:
+        if not os.path.isfile(file_path):
+            raise HTTPException(status_code=404, detail=f"Archivo no encontrado: {file_path}")
         fits_path = file_path
-        if not os.path.isfile(fits_path):
-            raise HTTPException(status_code=404, detail=f"Archivo no encontrado: {fits_path}")
         logger.info("Usando file_path explícito: %s", fits_path)
     else:
-        local = _find_local_fits_file(station)
-        if local:
-            fits_path = local
-            logger.info("Archivo local encontrado: %s", fits_path)
-        else:
-            fits_path = _find_nas_fits_file(station, date)
-            logger.info("Archivo NAS encontrado: %s", fits_path)
+        fits_path = (
+            _find_local_fits_file(station)
+            or _find_nas_fits_file(station, date)
+            or _download_from_ethz(station, date)
+        )
+        if not fits_path:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"No se encontró ningún archivo para '{station}' en {date}. "
+                    "Comprueba que el NAS esté montado o que el servidor ETHZ sea accesible."
+                ),
+            )
+
+    logger.info("Procesando %s", fits_path)
 
     try:
         with _open_fits(fits_path) as hdul:
             raw_data = hdul[0].data
             if raw_data is None:
-                raise HTTPException(status_code=500, detail="HDU[0] no contiene datos de imagen.")
+                raise HTTPException(status_code=500, detail="HDU[0] no contiene imagen.")
 
             data = np.array(raw_data, dtype=np.float32)
             header = hdul[0].header
-
             time_arr, freq_arr = _extract_axes(hdul)
             time_labels = _times_to_utc(time_arr, header)
 
-            # Filtro Sahan: sustracción de fondo solo si se solicita
+            # Procesamiento según modo
             if sahan_filter:
-                data = _subtract_background(data)
-                logger.info("Filtro Sahan aplicado")
+                data = _clean_rfi(data)
+                logger.info("Filtro Sahan (RFI cleaning) aplicado")
+            # Sin filtro: datos crudos con vmin/vmax adaptativos
 
             vmin, vmax = _percentile_clip(data)
-            # Limpiar NaN e infinitos antes de serializar
             data_clean = np.nan_to_num(data, nan=0.0, posinf=vmax, neginf=vmin)
 
             return SpectrogramResponse(
@@ -344,10 +405,80 @@ def get_spectrogram(
         raise
     except Exception as exc:
         logger.exception("Error inesperado procesando %s", fits_path)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error al procesar el archivo FITS: {exc}",
+        raise HTTPException(status_code=500, detail=f"Error al procesar FITS: {exc}")
+
+
+@app.get("/api/goes", response_model=GoesResponse)
+def get_goes(date: str = Query(..., description="Fecha YYYY-MM-DD")):
+    """Devuelve el flujo GOES XRS (canal 0.1–0.8 nm) para una fecha.
+
+    Fuente: NOAA SWPC JSON API (gratuita, sin autenticación).
+    Cobertura: últimos 7 días. Para datos más antiguos devuelve available=False.
+    """
+    try:
+        target_dt = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Formato de fecha inválido: '{date}'")
+
+    # Comprobar si la fecha está dentro de la ventana de 7 días de NOAA SWPC
+    now_utc = datetime.now(tz=timezone.utc).replace(tzinfo=None)
+    days_ago = (now_utc - target_dt).days
+    if days_ago > 7:
+        return GoesResponse(
+            date=date,
+            available=False,
+            reason=f"Datos GOES solo disponibles para los últimos 7 días vía NOAA SWPC. "
+                   f"Para {date} (hace {days_ago} días) se necesitaría el archivo NGDC (Sprint 3).",
+            times=[],
+            flux=[],
         )
+
+    noaa_url = "https://services.swpc.noaa.gov/json/goes/primary/xrays-7-day.json"
+    logger.info("Obteniendo datos GOES de %s", noaa_url)
+
+    try:
+        req = Request(noaa_url, headers={"User-Agent": "AstroDoncel/1.0"})
+        with urlopen(req, timeout=15) as resp:
+            raw = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"No se pudo acceder a NOAA SWPC: {exc}")
+
+    # Filtrar por fecha y canal largo (0.1–0.8 nm = clasificación B/C/M/X)
+    target_prefix = date  # "YYYY-MM-DD"
+    records = [
+        row for row in raw
+        if str(row.get("time_tag", "")).startswith(target_prefix)
+        and str(row.get("energy", "")).startswith("0.1")
+    ]
+
+    if not records:
+        return GoesResponse(
+            date=date,
+            available=False,
+            reason="No hay registros GOES para esa fecha en la ventana actual de NOAA SWPC.",
+            times=[],
+            flux=[],
+        )
+
+    # Convertir time_tag "YYYY-MM-DD HH:MM:SS" → "HH:MM:SS"
+    times_out = []
+    flux_out = []
+    for row in records:
+        tag = str(row.get("time_tag", ""))
+        flux = row.get("flux") or row.get("observed_flux", 0.0)
+        if not tag or flux is None:
+            continue
+        hms = tag[11:19] if len(tag) >= 19 else tag
+        times_out.append(hms)
+        flux_out.append(float(flux))
+
+    return GoesResponse(
+        date=date,
+        available=True,
+        reason="",
+        times=times_out,
+        flux=flux_out,
+    )
 
 
 # uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
