@@ -6,8 +6,17 @@ const Plot = (_factory.default ?? _factory)(Plotly);
 
 const API_BASE_URL = 'http://localhost:8000';
 
+// Colorscale que replica el mapa "hot" de matplotlib: negro → rojo → amarillo → blanco.
+// Es el estándar en el analizador de Sahan y en publicaciones e-CALLISTO.
+const HOT_COLORSCALE = [
+  [0.00, '#000000'],
+  [0.33, '#cc0000'],
+  [0.67, '#ffcc00'],
+  [1.00, '#ffffff'],
+];
+
 export default function Spectrogram({
-  station, date, useSahanFilter, showGoes,
+  station, date, filename, useSahanFilter, showGoes,
   zmin, zmax, triggerLoad, onDataLoaded,
 }) {
   const [loading, setLoading]       = useState(false);
@@ -22,11 +31,12 @@ export default function Spectrogram({
       setLoading(true);
       setError(null);
       try {
-        const url =
+        let url =
           `${API_BASE_URL}/api/spectrogram` +
           `?station=${encodeURIComponent(station)}` +
           `&date=${encodeURIComponent(date)}` +
           `&sahan_filter=${useSahanFilter}`;
+        if (filename) url += `&filename=${encodeURIComponent(filename)}`;
 
         const res = await fetch(url);
         if (!res.ok) {
@@ -44,7 +54,7 @@ export default function Spectrogram({
       }
     }
     fetchSpectrogram();
-  }, [station, date, useSahanFilter, triggerLoad]);
+  }, [station, date, filename, useSahanFilter, triggerLoad]);
 
   // ── Fetch GOES XRS ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -88,29 +98,32 @@ export default function Spectrogram({
       z: plotData.z,
       zmin: finalZmin,
       zmax: finalZmax,
-      colorscale: 'Viridis',
+      colorscale: HOT_COLORSCALE,
       colorbar: {
-        title: { text: 'Intensidad', side: 'right' },
-        tickfont: { color: '#7fb3d3', size: 10 },
-        titlefont: { color: '#7fb3d3', size: 11 },
+        title: { text: 'dB', side: 'right' },
+        tickfont: { color: '#aaaaaa', size: 10 },
+        titlefont: { color: '#aaaaaa', size: 11 },
         x: 0.88,
+        bgcolor: 'rgba(0,0,0,0)',
+        outlinewidth: 0,
       },
       yaxis: 'y',
       xaxis: 'x',
     });
   }
 
-  if (goesData?.available && goesData.flux.length > 0) {
+  if (goesData?.available && goesData.xrsb?.length > 0) {
+    const satLabel = goesData.satellite ? `GOES-${goesData.satellite}` : 'GOES';
     traces.push({
-      type: 'scatter',
+      type: 'scattergl',
       x: goesData.times,
-      y: goesData.flux,
+      y: goesData.xrsb,
       mode: 'lines',
-      name: 'GOES XRS (0.1–0.8 nm)',
+      name: `${satLabel} XRS-B (0.1–0.8 nm)`,
       line: { color: '#f87171', width: 1.5 },
       yaxis: 'y2',
       xaxis: 'x',
-      hovertemplate: '%{x}<br>%{y:.2e} W/m²<extra>GOES</extra>',
+      hovertemplate: '%{x}<br>%{y:.2e} W/m²<extra>' + satLabel + '</extra>',
     });
   }
 

@@ -5,12 +5,13 @@ Motor científico portado de e-CALLISTO FITS Analyzer (Sahan S Liyanage, v2.4.1)
 
 from __future__ import annotations
 
+import asyncio
 import glob
 import html
-import json
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -145,12 +146,26 @@ class GoesResponse(BaseModel):
     available: bool
     reason: str
     times: list[str]
-    flux: list[float]
+    xrsb: list[float]
+    satellite: int | None = None
 
 
 class StationsResponse(BaseModel):
     stations: list[str]
     source: str
+
+
+class FileEntry(BaseModel):
+    filename: str
+    time: str    # "HH:MM:SS"
+    label: str   # para mostrar en UI
+
+
+class FilesResponse(BaseModel):
+    station: str
+    date: str
+    files: list[FileEntry]
+    source: str  # "local", "ethz", "mixed"
 
 
 # ── Helpers de I/O ───────────────────────────────────────────────────────────
@@ -206,14 +221,63 @@ def _find_nas_fits_file(station: str, date: str) -> str | None:
     return None
 
 
-def _download_from_ethz(station: str, date: str) -> str | None:
-    """Descarga el primer archivo FITS de la estación desde el archivo ETHZ.
+def _time_from_filename(filename: str) -> str:
+    """Extrae la hora de inicio en formato HH:MM:SS del nombre de archivo CALLISTO."""
+    m = re.search(r'_\d{8}_(\d{2})(\d{2})(\d{2})_\d+', filename)
+    if m:
+        return f"{m.group(1)}:{m.group(2)}:{m.group(3)}"
+    return "??:??:??"
 
-    Estrategia (portada de sunpy_archive.py / fits_io.py de Sahan):
-    1. Inspecciona el índice HTTP del directorio de la fecha.
-    2. Busca primero por coincidencia exacta de prefijo STATION_YYYYMMDD_,
-       luego por substring como fallback.
-    3. Guarda en DATA_DIR_LOCAL para reusar en llamadas futuras.
+
+def _list_local_fits_files(station: str, date: str) -> list[str]:
+    """Devuelve nombres de archivo locales cacheados para estación/fecha."""
+    if not os.path.isdir(DATA_DIR_LOCAL):
+        return []
+    try:
+        dt = datetime.strptime(date, "%Y-%m-%d")
+        date_str = dt.strftime("%Y%m%d")
+    except ValueError:
+        return []
+    found: list[str] = []
+    for ext in (".fit.gz", ".fits.gz", ".fit", ".fits"):
+        for path in glob.glob(
+            os.path.join(DATA_DIR_LOCAL, f"*{station.upper()}*{date_str}*{ext}")
+        ):
+            found.append(os.path.basename(path))
+    return sorted(set(found))
+
+
+def _list_ethz_files(station: str, date: str) -> list[str]:
+    """Escanea el índice HTTP de ETHZ y devuelve nombres de archivo disponibles."""
+    try:
+        dt = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        return []
+    dir_url = f"{ETHZ_BASE_URL}/{dt.strftime('%Y/%m/%d')}/"
+    try:
+        req = Request(dir_url, headers={"User-Agent": "AstroDoncel/1.0"})
+        with urlopen(req, timeout=15) as resp:
+            page = resp.read().decode("utf-8", errors="replace")
+    except Exception:
+        return []
+    date_str = dt.strftime("%Y%m%d")
+    prefix_re = re.compile(
+        r'href="(' + re.escape(station.upper()) + r'_' + date_str + r'_\d{6}_\d{2}\.fit(?:\.gz)?)"',
+        re.IGNORECASE,
+    )
+    matches = sorted(set(prefix_re.findall(page)))
+    if not matches:
+        all_files = re.findall(r'href="([^"]+\.fit(?:\.gz)?)"', page, re.IGNORECASE)
+        matches = sorted(c for c in all_files if station.upper() in html.unescape(c).upper())
+    return matches
+
+
+def _download_from_ethz(station: str, date: str, filename: str | None = None) -> str | None:
+    """Descarga un archivo FITS desde el archivo ETHZ.
+
+    Si `filename` se especifica, descarga ese archivo concreto.
+    Si no, descarga el primer archivo que coincida con la estación/fecha.
+    Guarda en DATA_DIR_LOCAL para reusar en llamadas futuras.
     """
     try:
         dt = datetime.strptime(date, "%Y-%m-%d")
@@ -221,8 +285,33 @@ def _download_from_ethz(station: str, date: str) -> str | None:
         return None
 
     dir_url = f"{ETHZ_BASE_URL}/{dt.strftime('%Y/%m/%d')}/"
-    logger.info("Consultando archivo ETHZ: %s", dir_url)
+    os.makedirs(DATA_DIR_LOCAL, exist_ok=True)
 
+    if filename:
+        local_path = os.path.join(DATA_DIR_LOCAL, filename)
+        if os.path.isfile(local_path):
+            logger.info("Archivo ya en caché: %s", local_path)
+            return local_path
+        file_url = dir_url + filename
+        logger.info("Descargando %s → %s", file_url, local_path)
+        try:
+            req = Request(file_url, headers={"User-Agent": "AstroDoncel/1.0"})
+            with urlopen(req, timeout=120) as resp:
+                with open(local_path, "wb") as fh:
+                    while chunk := resp.read(512 * 1024):
+                        fh.write(chunk)
+            logger.info("Descarga completada (%d bytes)", os.path.getsize(local_path))
+            return local_path
+        except Exception as exc:
+            logger.error("Fallo al descargar %s: %s", file_url, exc)
+            try:
+                os.remove(local_path)
+            except OSError:
+                pass
+            return None
+
+    # Sin filename: inspecciona el directorio para encontrar el primero que coincida
+    logger.info("Consultando archivo ETHZ: %s", dir_url)
     try:
         req = Request(dir_url, headers={"User-Agent": "AstroDoncel/1.0"})
         with urlopen(req, timeout=15) as resp:
@@ -231,50 +320,20 @@ def _download_from_ethz(station: str, date: str) -> str | None:
         logger.warning("No se pudo acceder al archivo ETHZ: %s", exc)
         return None
 
-    # Coincidencia exacta de prefijo: STATION_YYYYMMDD_HHMMSS_NN.fit[.gz]
     date_str = dt.strftime("%Y%m%d")
     prefix_re = re.compile(
         r'href="(' + re.escape(station.upper()) + r'_' + date_str + r'_\d{6}_\d{2}\.fit(?:\.gz)?)"',
         re.IGNORECASE,
     )
     matches = sorted(set(prefix_re.findall(page)))
-
     if not matches:
-        # Fallback: substring (cubre variaciones menores de nombre)
         all_files = re.findall(r'href="([^"]+\.fit(?:\.gz)?)"', page, re.IGNORECASE)
-        matches = sorted(
-            c for c in all_files if station.upper() in html.unescape(c).upper()
-        )
-
+        matches = sorted(c for c in all_files if station.upper() in html.unescape(c).upper())
     if not matches:
         logger.warning("No hay archivos de '%s' en ETHZ para %s", station, date)
         return None
 
-    filename = matches[0]
-    file_url = dir_url + filename
-    os.makedirs(DATA_DIR_LOCAL, exist_ok=True)
-    local_path = os.path.join(DATA_DIR_LOCAL, filename)
-
-    if os.path.isfile(local_path):
-        logger.info("Archivo ya en caché: %s", local_path)
-        return local_path
-
-    logger.info("Descargando %s → %s", file_url, local_path)
-    try:
-        req = Request(file_url, headers={"User-Agent": "AstroDoncel/1.0"})
-        with urlopen(req, timeout=120) as resp:
-            with open(local_path, "wb") as fh:
-                while chunk := resp.read(512 * 1024):
-                    fh.write(chunk)
-        logger.info("Descarga completada (%d bytes)", os.path.getsize(local_path))
-        return local_path
-    except Exception as exc:
-        logger.error("Fallo al descargar %s: %s", file_url, exc)
-        try:
-            os.remove(local_path)
-        except OSError:
-            pass
-        return None
+    return _download_from_ethz(station, date, filename=matches[0])
 
 
 # ── Carga FITS (portado de fits_io.load_callisto_fits de Sahan) ──────────────
@@ -408,26 +467,54 @@ def _load_callisto_data(hdul) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 # ── Ejes temporales ──────────────────────────────────────────────────────────
 
-def _header_ut_seconds(header) -> float:
-    """Extrae TIME-OBS como segundos desde medianoche UTC."""
+def _observation_start(header) -> datetime:
+    """Resuelve el instante de inicio de la observación a UTC desde DATE-OBS/TIME-OBS."""
+    date_obs = str(header.get("DATE-OBS", "1970-01-01")).strip().replace("/", "-")
+    time_obs = str(header.get("TIME-OBS", "")).strip()
+
+    # Caso 1: DATE-OBS ya contiene fecha+hora ISO (DATE-OBS = "YYYY-MM-DDThh:mm:ss")
+    if "T" in date_obs:
+        try:
+            base = datetime.fromisoformat(date_obs.replace("Z", "+00:00"))
+            return base if base.tzinfo else base.replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
+
+    # Caso 2: combinar DATE-OBS (solo fecha) con TIME-OBS
+    date_part = date_obs.split("T")[0]
+    time_part = time_obs if time_obs else "00:00:00"
     try:
-        t = str(header.get("TIME-OBS", "00:00:00")).strip()
-        hh, mm, ss = t.split(":")
-        return int(hh) * 3600 + int(mm) * 60 + float(ss)
+        return datetime.fromisoformat(f"{date_part}T{time_part}").replace(tzinfo=timezone.utc)
     except Exception:
-        return 0.0
+        return datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 def _times_to_utc(time_arr: np.ndarray, header) -> list[str]:
-    """Convierte offsets en segundos a etiquetas HH:MM:SS UTC."""
-    t0 = _header_ut_seconds(header)
-    labels = []
-    for t in time_arr:
-        total = float(t) + t0
-        h = int(total // 3600) % 24
-        m = int(total % 3600) // 60
-        s = int(total % 60)
-        labels.append(f"{h:02d}:{m:02d}:{s:02d}")
+    """Convierte offsets relativos en segundos a timestamps ISO 8601 UTC absolutos.
+
+    Cada valor de `time_arr` se interpreta como segundos transcurridos desde el
+    instante de inicio (DATE-OBS + TIME-OBS). Si CDELT1 está disponible se usa
+    para reconstruir el eje cuando el array temporal viene como índices.
+    """
+    base = _observation_start(header)
+
+    arr = np.asarray(time_arr, dtype=float).ravel()
+    # Si el array parece ser índices enteros consecutivos (0,1,2,...), reescala con CDELT1
+    cdelt1 = header.get("CDELT1")
+    if cdelt1 is not None and arr.size > 1:
+        diffs = np.diff(arr)
+        # Heurística: si todos los pasos son ~1.0, multiplicar por CDELT1 (segundos por píxel)
+        if np.allclose(diffs, 1.0, atol=1e-3):
+            try:
+                arr = arr * float(cdelt1)
+            except Exception:
+                pass
+
+    labels: list[str] = []
+    for t in arr:
+        ts = base + timedelta(seconds=float(t))
+        ms = ts.microsecond // 1000
+        labels.append(f"{ts.strftime('%Y-%m-%dT%H:%M:%S')}.{ms:03d}Z")
     return labels
 
 
@@ -559,8 +646,13 @@ def _clean_rfi(
     return clipped.astype(np.float32), masked
 
 
-def _percentile_clip_global(data: np.ndarray, lo: float = 2.0, hi: float = 99.5) -> tuple[float, float]:
-    """Calcula vmin (percentil lo) y vmax (percentil hi) sobre todos los datos."""
+def _percentile_clip_global(data: np.ndarray, lo: float = 2.0, hi: float = 98.0) -> tuple[float, float]:
+    """Calcula vmin (percentil lo) y vmax (percentil hi) sobre todos los datos.
+
+    El percentil alto por defecto es 98 (en lugar de 99.5) para aumentar el contraste
+    visual: aplasta los outliers más extremos y permite que ráfagas/bursts moderados
+    destaquen claramente sobre el fondo.
+    """
     vmin = float(np.nanpercentile(data, lo))
     vmax = float(np.nanpercentile(data, hi))
     return vmin, vmax
@@ -622,21 +714,56 @@ def get_stations():
     return StationsResponse(stations=_STATIONS_FALLBACK, source="static")
 
 
+@app.get("/api/files", response_model=FilesResponse)
+def get_files(
+    station: str = Query(..., description="Estación e-Callisto"),
+    date: str = Query(..., description="Fecha de observación, formato YYYY-MM-DD"),
+):
+    """Lista todos los archivos de bursts disponibles para una estación y fecha.
+
+    Combina archivos en caché local (ya descargados) con los disponibles en ETHZ.
+    Cada entrada incluye el nombre de archivo y la hora de inicio extraída del nombre.
+    """
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Formato de fecha inválido: '{date}'")
+
+    local = set(_list_local_fits_files(station, date))
+    ethz = set(_list_ethz_files(station, date))
+    all_files = sorted(local | ethz)
+
+    source = "ethz" if ethz else ("local" if local else "none")
+    if local and ethz and local != ethz:
+        source = "mixed"
+
+    entries: list[FileEntry] = []
+    for fn in all_files:
+        t = _time_from_filename(fn)
+        cached = "★ " if fn in local else ""
+        entries.append(FileEntry(filename=fn, time=t, label=f"{cached}{t}"))
+
+    return FilesResponse(station=station, date=date, files=entries, source=source)
+
+
 @app.get("/api/spectrogram", response_model=SpectrogramResponse)
 def get_spectrogram(
     station: str = Query(..., description="Estación e-Callisto, ej. SPAIN-SIGUENZA"),
     date: str = Query(..., description="Fecha de observación, formato YYYY-MM-DD"),
+    filename: str = Query(default=None, description="Nombre de archivo FITS concreto"),
     file_path: str = Query(default=None, description="Ruta absoluta (override manual)"),
     sahan_filter: bool = Query(default=False, description="Aplica limpieza RFI completa"),
 ):
     """Devuelve el espectrograma de una estación e-Callisto.
 
-    Orden de resolución: 1) file_path explícito, 2) ../data/ local, 3) NAS, 4) ETHZ.
+    Orden de resolución:
+    1) file_path explícito
+    2) filename → caché local → descarga ETHZ
+    3) primera coincidencia local → NAS → descarga ETHZ
 
     Pipeline de procesamiento:
     - Siempre: sustracción de fondo robusta (percentil 25 por canal de frecuencia).
-    - Si sahan_filter=true: además aplica limpieza RFI completa (detección de canales
-      calientes + reparación + recorte de outliers).
+    - Si sahan_filter=true: además aplica limpieza RFI completa.
     - vmin/vmax se recalculan SIEMPRE sobre los datos ya procesados.
     """
     try:
@@ -649,6 +776,18 @@ def get_spectrogram(
             raise HTTPException(status_code=404, detail=f"Archivo no encontrado: {file_path}")
         fits_path = file_path
         logger.info("Usando file_path explícito: %s", fits_path)
+    elif filename:
+        local_path = os.path.join(DATA_DIR_LOCAL, filename)
+        if os.path.isfile(local_path):
+            fits_path = local_path
+            logger.info("Usando archivo local cacheado: %s", fits_path)
+        else:
+            fits_path = _download_from_ethz(station, date, filename=filename)
+        if not fits_path:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No se pudo obtener el archivo '{filename}' para '{station}' en {date}.",
+            )
     else:
         fits_path = (
             _find_local_fits_file(station, date)
@@ -716,67 +855,178 @@ def get_spectrogram(
         raise HTTPException(status_code=500, detail=f"Error al procesar FITS: {exc}")
 
 
-@app.get("/api/goes", response_model=GoesResponse)
-def get_goes(date: str = Query(..., description="Fecha YYYY-MM-DD")):
-    """Devuelve el flujo GOES XRS (canal 0.1–0.8 nm) para una fecha.
+# ── GOES/XRS overlay (portado de goes_overlay.py de Sahan, simplificado) ─────
 
-    Fuente: NOAA SWPC JSON API. Solo cubre los últimos 7 días.
+_GOES_CACHE_DIR = os.path.join(DATA_DIR_LOCAL, "goes_cache")
+_GOES_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="goes-fido")
+
+# Orden preferido de satélites GOES por época (de goes_overlay.py de Sahan).
+def _preferred_goes_satellites(year: int) -> tuple[int, ...]:
+    if year >= 2025:
+        return (19, 18, 17, 16)
+    if year >= 2022:
+        return (18, 17, 16, 15, 14, 13)
+    if year >= 2017:
+        return (17, 16, 15, 14, 13)
+    if year >= 2010:
+        return (15, 14, 13, 12, 11, 10)
+    if year >= 2003:
+        return (12, 11, 10, 9, 8)
+    if year >= 1997:
+        return (10, 9, 8)
+    return (9, 8)
+
+
+def _pick_xrsb_column(columns: list[str]) -> str | None:
+    """Selecciona la columna XRS-B (canal largo, 0.1–0.8 nm) por puntuación heurística.
+
+    Portado de goes_overlay._goes_channel_score() de Sahan.
+    """
+    best, best_score = None, -10_000
+    for col in columns:
+        lowered = str(col).strip().lower()
+        if not lowered:
+            continue
+        score = 0
+        if lowered == "xrsb_flux":
+            score += 160
+        if lowered == "b_flux":
+            score += 150
+        if any(tok in lowered for tok in ("xrsb", "long", "1.0", "8.0")):
+            score += 60
+        if lowered.startswith("b_"):
+            score += 15
+        if "flux" in lowered:
+            score += 80
+        if lowered.endswith("_flux"):
+            score += 20
+        if any(tok in lowered for tok in ("flag", "quality", "count", "num", "primary", "excluded")):
+            score -= 220
+        if any(tok in lowered for tok in ("electron", "current")):
+            score -= 160
+        if score > best_score:
+            best, best_score = str(col), score
+    return best if best_score > 0 else None
+
+
+def _fetch_goes_xrsb_sync(date_str: str) -> dict:
+    """Descarga XRS-B de GOES vía sunpy.net.Fido para una fecha completa UTC.
+
+    Devuelve {"times": [...iso8601], "xrsb": [...W/m²], "satellite": int}.
     """
     try:
-        target_dt = datetime.strptime(date, "%Y-%m-%d")
+        from sunpy.net import Fido, attrs as a
+        from sunpy import timeseries as ts
+    except ImportError as exc:
+        raise RuntimeError(
+            f"sunpy no está instalado en el backend ({exc}). "
+            "Instala con: pip install 'sunpy[net,timeseries]'"
+        )
+
+    target = datetime.strptime(date_str, "%Y-%m-%d")
+    start = target.strftime("%Y-%m-%d 00:00:00")
+    end = target.strftime("%Y-%m-%d 23:59:59")
+    os.makedirs(_GOES_CACHE_DIR, exist_ok=True)
+
+    sats = _preferred_goes_satellites(target.year)
+    last_err: Exception | None = None
+
+    for sat in sats:
+        try:
+            logger.info("Buscando GOES-%d XRS para %s en archivo SunPy…", sat, date_str)
+            try:
+                query = Fido.search(
+                    a.Time(start, end),
+                    a.Instrument.xrs,
+                    a.goes.SatelliteNumber(sat),
+                )
+            except AttributeError:
+                # API alternativa más antigua
+                query = Fido.search(
+                    a.Time(start, end),
+                    a.Instrument("XRS"),
+                    a.goes.SatelliteNumber(sat),
+                )
+            if len(query) == 0 or sum(len(t) for t in query) == 0:
+                continue
+
+            paths = Fido.fetch(query, path=os.path.join(_GOES_CACHE_DIR, "{file}"))
+            if len(paths) == 0:
+                continue
+
+            tseries = ts.TimeSeries(list(paths), concatenate=True)
+            df = tseries.to_dataframe()
+            numeric_cols = [c for c in df.columns if np.issubdtype(df[c].dtype, np.number)]
+            if not numeric_cols:
+                continue
+
+            col_b = _pick_xrsb_column(numeric_cols) or numeric_cols[-1]
+            flux = np.asarray(df[col_b].values, dtype=float)
+
+            idx = df.index
+            times_py = idx.to_pydatetime() if hasattr(idx, "to_pydatetime") else list(idx)
+
+            out_times: list[str] = []
+            out_flux: list[float] = []
+            for t, f in zip(times_py, flux):
+                if not np.isfinite(f) or f <= 0.0:
+                    continue
+                if hasattr(t, "tzinfo") and t.tzinfo is None:
+                    t = t.replace(tzinfo=timezone.utc)
+                if not (target.date() == t.date() if hasattr(t, "date") else True):
+                    continue
+                ms = t.microsecond // 1000 if hasattr(t, "microsecond") else 0
+                out_times.append(f"{t.strftime('%Y-%m-%dT%H:%M:%S')}.{ms:03d}Z")
+                out_flux.append(float(f))
+
+            if out_times:
+                logger.info("GOES-%d XRS: %d muestras válidas", sat, len(out_times))
+                return {"times": out_times, "xrsb": out_flux, "satellite": sat}
+        except Exception as exc:
+            logger.debug("GOES-%d falló: %s", sat, exc)
+            last_err = exc
+            continue
+
+    raise RuntimeError(
+        f"No se encontraron datos GOES/XRS para {date_str}"
+        + (f" ({last_err})" if last_err else "")
+    )
+
+
+@app.get("/api/goes", response_model=GoesResponse)
+async def get_goes(date: str = Query(..., description="Fecha YYYY-MM-DD")):
+    """Devuelve el flujo GOES XRS-B (canal 0.1–0.8 nm) para el día UTC completo.
+
+    Fuente: archivo SunPy/Fido (NOAA NGDC / NCEI). Funciona desde 1986
+    aproximadamente y cubre todas las generaciones de satélites GOES.
+    """
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
     except ValueError:
         raise HTTPException(status_code=422, detail=f"Formato de fecha inválido: '{date}'")
 
-    now_utc = datetime.now(tz=timezone.utc).replace(tzinfo=None)
-    days_ago = (now_utc - target_dt).days
-    if days_ago > 7:
-        return GoesResponse(
-            date=date,
-            available=False,
-            reason=(
-                f"Datos GOES solo disponibles para los últimos 7 días vía NOAA SWPC. "
-                f"Para {date} (hace {days_ago} días) se necesitaría el archivo NGDC."
-            ),
-            times=[],
-            flux=[],
-        )
-
-    noaa_url = "https://services.swpc.noaa.gov/json/goes/primary/xrays-7-day.json"
-    logger.info("Obteniendo datos GOES de %s", noaa_url)
-
+    loop = asyncio.get_event_loop()
     try:
-        req = Request(noaa_url, headers={"User-Agent": "AstroDoncel/1.0"})
-        with urlopen(req, timeout=15) as resp:
-            raw = json.loads(resp.read().decode("utf-8"))
+        result = await loop.run_in_executor(_GOES_EXECUTOR, _fetch_goes_xrsb_sync, date)
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"No se pudo acceder a NOAA SWPC: {exc}")
-
-    records = [
-        row for row in raw
-        if str(row.get("time_tag", "")).startswith(date)
-        and str(row.get("energy", "")).startswith("0.1")
-    ]
-
-    if not records:
+        logger.warning("GOES no disponible para %s: %s", date, exc)
         return GoesResponse(
             date=date,
             available=False,
-            reason="No hay registros GOES para esa fecha en la ventana actual de NOAA SWPC.",
+            reason=str(exc),
             times=[],
-            flux=[],
+            xrsb=[],
+            satellite=None,
         )
 
-    times_out, flux_out = [], []
-    for row in records:
-        tag = str(row.get("time_tag", ""))
-        flux = row.get("flux") or row.get("observed_flux", 0.0)
-        if not tag or flux is None:
-            continue
-        hms = tag[11:19] if len(tag) >= 19 else tag
-        times_out.append(hms)
-        flux_out.append(float(flux))
-
-    return GoesResponse(date=date, available=True, reason="", times=times_out, flux=flux_out)
+    return GoesResponse(
+        date=date,
+        available=True,
+        reason="",
+        times=result["times"],
+        xrsb=result["xrsb"],
+        satellite=result.get("satellite"),
+    )
 
 
 # uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
