@@ -98,6 +98,60 @@
   cursor: pointer;
 }
 
+/* Select estilo dashboard */
+.control-input option {
+  background: #0a1828;
+  color: #c8d6e5;
+}
+
+/* Sliders */
+.control-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  background: #1e3a52;
+  border-radius: 2px;
+  outline: none;
+  margin-top: 0.4rem;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.control-slider:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.control-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #38bdf8;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.control-slider:not(:disabled)::-webkit-slider-thumb:hover {
+  background: #7dd3fc;
+}
+
+.slider-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.slider-value {
+  font-variant-numeric: tabular-nums;
+  color: #38bdf8;
+  font-size: 0.78rem;
+  min-width: 2.5rem;
+  text-align: right;
+}
+
 /* Checkbox filtro */
 .control-checkbox {
   display: flex;
