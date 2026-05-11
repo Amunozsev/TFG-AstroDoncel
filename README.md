@@ -1,37 +1,37 @@
-# AstroDoncel — Portal de Espectrogramas Solares e-CALLISTO
+# AstroDoncel — Solar Radio Spectrogram Portal (e-CALLISTO)
 
-> **Trabajo de Fin de Grado · Universidad de Alcalá · 2026**
-> Autor: Alfonso Muñoz Sevillano
+> **Bachelor's Thesis · Universidad de Alcalá · 2026**
+> Author: Alfonso Muñoz Sevillano
 
-Portal web interactivo para la visualización y análisis de espectrogramas de radio solar procedentes de la red [e-CALLISTO](http://www.e-callisto.org/). Permite seleccionar cualquier estación de la red, navegar por los *bursts* de un día concreto hora a hora y aplicar el pipeline de limpieza RFI del Dr. Sahan S. Liyanage (Universidad de Colombo).
+Interactive web portal for visualisation and analysis of solar radio spectrograms from the [e-CALLISTO](http://www.e-callisto.org/) network. Select any network station, browse bursts for a given day hour by hour, and apply the RFI cleaning pipeline developed by Dr. Sahan S. Liyanage (University of Colombo).
 
 ---
 
-## Características
+## Features
 
-| Función | Detalle |
+| Feature | Details |
 |---|---|
-| **Listado de estaciones en tiempo real** | Extrae las estaciones activas del archivo ETHZ (soleil.i4ds.ch) y, si no hay conexión, usa una lista estática de 76 estaciones reales |
-| **Navegación por bursts** | Para cada estación + día, lista todos los archivos disponibles (segmentos de ~15 min) con su hora de inicio; el primero se carga automáticamente |
-| **Descarga automática** | Si el archivo no está en caché local, lo descarga del archivo ETHZ sin intervención del usuario |
-| **Pipeline RFI (Sahan)** | Filtro mediana 2D → detección de canales calientes (z-score MAD) → reparación por interpolación → recorte de outliers por percentil |
-| **Sustracción de fondo** | Baseline robusto por percentil 25 de cada canal de frecuencia (activo siempre) |
-| **Eje temporal absoluto** | Timestamps ISO 8601 UTC reales, reconstruidos desde `DATE-OBS + TIME-OBS + CDELT1` del header FITS |
-| **Contraste ajustable** | Sliders de `Z min / Z max` con cálculo automático por percentil 2–98 sobre datos procesados |
-| **Overlay GOES/XRS** | Superpone el flujo de rayos X de GOES (canal XRS-B, 0.1–0.8 nm) en eje Y secundario logarítmico, vía `sunpy.net.Fido` |
-| **Colormap científico** | Escala `hot` de matplotlib (negro → rojo → amarillo → blanco), estándar en publicaciones e-CALLISTO |
+| **Live station list** | Fetches active stations from the ETHZ archive (soleil.i4ds.ch); falls back to a static list of 76 real stations when offline |
+| **Burst navigation** | For each station + date, lists all available files (~15 min segments) with their start time, grouped by hour; the first one loads automatically |
+| **Auto-download** | If a file is not in the local cache, it is downloaded from the ETHZ archive transparently |
+| **RFI pipeline (Sahan)** | 2D median filter → hot-channel detection (MAD z-score) → interpolation repair → per-channel percentile clipping |
+| **Background subtraction** | Robust baseline using the 25th percentile of each frequency channel (always active) |
+| **Absolute time axis** | Real ISO 8601 UTC timestamps reconstructed from `DATE-OBS + TIME-OBS + CDELT1` in the FITS header |
+| **Adjustable contrast** | `Z min / Z max` sliders with automatic computation from the 2–98 percentile range of processed data |
+| **GOES/XRS overlay** | Overlays GOES X-ray flux (XRS-B channel, 0.1–0.8 nm) on a secondary logarithmic Y axis via `sunpy.net.Fido` |
+| **Scientific colormap** | matplotlib `hot` scale (black → red → yellow → white), standard in e-CALLISTO publications |
 
 ---
 
-## Arquitectura
+## Architecture
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│                    Navegador                         │
+│                    Browser                           │
 │   React + Vite · Plotly.js (WebGL)                   │
 │   App.jsx  ←→  Spectrogram.jsx                       │
 └────────────────────┬─────────────────────────────────┘
-                     │ HTTP / JSON  (puerto 5173 → 8000)
+                     │ HTTP / JSON  (port 5173 → 8000)
 ┌────────────────────▼─────────────────────────────────┐
 │                FastAPI (Python)                       │
 │   /api/stations  /api/files  /api/spectrogram         │
@@ -41,7 +41,7 @@ Portal web interactivo para la visualización y análisis de espectrogramas de r
 └────────────────────┬─────────────────────────────────┘
                      │ HTTP / FITS
         ┌────────────▼───────────────┐
-        │  Archivo ETHZ (HTTPS)      │
+        │  ETHZ Archive (HTTPS)      │
         │  soleil.i4ds.ch/...        │
         │  + NOAA NGDC (GOES/XRS)    │
         └────────────────────────────┘
@@ -49,14 +49,14 @@ Portal web interactivo para la visualización y análisis de espectrogramas de r
 
 ---
 
-## Puesta en marcha
+## Getting started
 
-### Requisitos previos
+### Prerequisites
 
-- Python 3.11+ con `pip`
+- Python 3.11+ with `pip`
 - Node.js 18+
 
-### 1. Clonar el repositorio
+### 1. Clone the repository
 
 ```bash
 git clone https://github.com/Amunozsev/TFG-AstroDoncel.git
@@ -66,7 +66,7 @@ cd TFG-AstroDoncel
 ### 2. Backend (FastAPI)
 
 ```bash
-# Crear y activar entorno virtual
+# Create and activate a virtual environment
 python -m venv .venv
 
 # Windows
@@ -74,17 +74,17 @@ python -m venv .venv
 # macOS / Linux
 source .venv/bin/activate
 
-# Instalar dependencias
+# Install dependencies
 pip install -r requirements.txt
 
-# Arrancar el servidor
+# Start the server
 uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-El backend queda disponible en `http://localhost:8000`.
-La documentación interactiva de la API está en `http://localhost:8000/docs`.
+The backend is available at `http://localhost:8000`.  
+Interactive API documentation is at `http://localhost:8000/docs`.
 
-> **Nota sobre GOES/XRS:** La primera vez que se activa el overlay GOES, `sunpy` descarga el archivo NetCDF desde NOAA NGDC (~10-30 s). Las descargas posteriores usan caché local en `data/goes_cache/`.
+> **Note on GOES/XRS:** The first time the GOES overlay is activated, `sunpy` downloads the NetCDF file from NOAA NGDC (~10–30 s). Subsequent requests use the local cache in `data/goes_cache/`.
 
 ### 3. Frontend (React + Vite)
 
@@ -94,19 +94,19 @@ npm install
 npm run dev
 ```
 
-Abre el navegador en `http://localhost:5173`.
+Open your browser at `http://localhost:5173`.
 
 ---
 
-## API
+## API reference
 
-| Método | Ruta | Descripción |
-|--------|------|-------------|
-| `GET` | `/health` | Estado del servidor |
-| `GET` | `/api/stations` | Lista de estaciones e-CALLISTO activas |
-| `GET` | `/api/files` | Bursts disponibles para `station` + `date` |
-| `GET` | `/api/spectrogram` | Espectrograma procesado en JSON |
-| `GET` | `/api/goes` | Flujo GOES XRS-B para una fecha |
+| Method | Route | Description |
+|--------|-------|-------------|
+| `GET` | `/health` | Server health check |
+| `GET` | `/api/stations` | List of active e-CALLISTO stations |
+| `GET` | `/api/files` | Available bursts for a given `station` + `date` |
+| `GET` | `/api/spectrogram` | Processed spectrogram as JSON |
+| `GET` | `/api/goes` | GOES XRS-B flux for a given date |
 
 ### `/api/files`
 
@@ -126,7 +126,7 @@ GET /api/files?station=SPAIN-SIGUENZA&date=2024-05-08
 }
 ```
 
-El prefijo `★` indica archivos ya descargados en caché local.
+The `★` prefix marks files already downloaded to the local cache.
 
 ### `/api/spectrogram`
 
@@ -136,7 +136,7 @@ GET /api/spectrogram?station=SPAIN-SIGUENZA&date=2024-05-08
     &sahan_filter=false
 ```
 
-Devuelve `time_axis` (ISO 8601 UTC), `freq_axis` (MHz), `z` (intensidad dB), `vmin/vmax` y el header FITS completo.
+Returns `time_axis` (ISO 8601 UTC), `freq_axis` (MHz), `z` (intensity in dB), `vmin/vmax`, and the full FITS header.
 
 ### `/api/goes`
 
@@ -156,50 +156,50 @@ GET /api/goes?date=2024-05-08
 
 ---
 
-## Estructura del proyecto
+## Project structure
 
 ```
 TFG-AstroDoncel/
 ├── backend/
-│   ├── main.py               # API FastAPI + pipeline científico
-│   └── requirements.txt      # Dependencias Python
+│   ├── main.py               # FastAPI endpoints + scientific pipeline
+│   └── requirements.txt      # Python dependencies
 ├── frontend/
 │   ├── src/
-│   │   ├── App.jsx           # Lógica principal y sidebar
-│   │   ├── Spectrogram.jsx   # Componente Plotly (heatmap + GOES)
-│   │   └── App.css           # Estilos del dashboard
+│   │   ├── App.jsx           # Main logic and sidebar
+│   │   ├── Spectrogram.jsx   # Plotly component (heatmap + GOES overlay)
+│   │   └── App.css           # Dashboard styles
 │   └── package.json
-├── data/                     # Archivos FITS descargados (no versionado)
-│   └── goes_cache/           # Cache de archivos NetCDF GOES
+├── data/                     # Downloaded FITS files (not versioned)
+│   └── goes_cache/           # GOES NetCDF file cache
 └── README.md
 ```
 
 ---
 
-## Pipeline de procesamiento
+## Processing pipeline
 
 ```
-Archivo FITS (e-CALLISTO)
+FITS file (e-CALLISTO)
         │
         ▼
-_load_callisto_data()       ← Lectura HDU, extracción de ejes freq/time por
-                              tabla BIN, WCS header o FREQMIN/FREQMAX
+_load_callisto_data()       ← Read HDU, extract freq/time axes from
+                              BIN table, WCS header, or FREQMIN/FREQMAX
         │
         ▼
-_subtract_background()      ← Sustracción de baseline: percentil 25 por fila
-                              (robusto ante emisión solar intensa)
+_subtract_background()      ← Baseline subtraction: 25th percentile per row
+                              (robust against intense solar emission)
         │
-        ▼  [si sahan_filter=true]
-_clean_rfi()                ← Filtro mediana 2D (3×3)
-                              Detección canales calientes (z-score MAD, umbral 6σ)
-                              Reparación por interpolación con vecinos
-                              Recorte de outliers (percentil 99.5 por canal)
-        │
-        ▼
-_percentile_clip_global()   ← Cálculo de vmin (p2) y vmax (p98) para contraste
+        ▼  [if sahan_filter=true]
+_clean_rfi()                ← 2D median filter (3×3)
+                              Hot-channel detection (MAD z-score, threshold 6σ)
+                              Repair by interpolation from neighbours
+                              Outlier clipping (99.5th percentile per channel)
         │
         ▼
-_times_to_utc()             ← ISO 8601 UTC desde DATE-OBS + TIME-OBS + CDELT1
+_percentile_clip_global()   ← Compute vmin (p2) and vmax (p98) for contrast
+        │
+        ▼
+_times_to_utc()             ← ISO 8601 UTC from DATE-OBS + TIME-OBS + CDELT1
         │
         ▼
 JSON → Plotly heatmap (colorscale: hot)
@@ -207,15 +207,15 @@ JSON → Plotly heatmap (colorscale: hot)
 
 ---
 
-## Créditos y referencias
+## Credits and references
 
-- **Motor científico RFI:** portado y adaptado de [e-CALLISTO FITS Analyzer v2.4.1](https://github.com/saandev/e-callisto_fits_analyzer) de Sahan S. Liyanage, Astronomical and Space Science Unit, Universidad de Colombo, Sri Lanka.
-- **Red e-CALLISTO:** Christian Monstein, ETH Zürich / Institute for Astronomy, Eidgenössische Technische Hochschule.
-- **Datos GOES/XRS:** NOAA National Centers for Environmental Information (NCEI), descargados vía [SunPy](https://sunpy.org/).
+- **RFI scientific engine:** ported and adapted from [e-CALLISTO FITS Analyzer v2.4.1](https://github.com/saandev/e-callisto_fits_analyzer) by Sahan S. Liyanage, Astronomical and Space Science Unit, University of Colombo, Sri Lanka.
+- **e-CALLISTO network:** Christian Monstein, ETH Zürich / Institute for Astronomy, Eidgenössische Technische Hochschule.
+- **GOES/XRS data:** NOAA National Centers for Environmental Information (NCEI), downloaded via [SunPy](https://sunpy.org/).
 - **Stack:** [FastAPI](https://fastapi.tiangolo.com/) · [astropy](https://www.astropy.org/) · [SunPy](https://sunpy.org/) · [React](https://react.dev/) · [Vite](https://vitejs.dev/) · [Plotly.js](https://plotly.com/javascript/)
 
 ---
 
-## Licencia
+## Licence
 
-Proyecto académico. El código es de libre uso con atribución. Los datos FITS pertenecen a la red e-CALLISTO (CC BY 4.0).
+Academic project. Code is freely reusable with attribution. FITS data belong to the e-CALLISTO network (CC BY 4.0).
