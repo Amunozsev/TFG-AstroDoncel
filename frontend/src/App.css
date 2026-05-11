@@ -337,6 +337,21 @@
   border-radius: 2px;
 }
 
+.burst-hour-group {
+  margin-bottom: 4px;
+}
+
+.burst-hour-header {
+  font-size: 0.66rem;
+  color: #2e5575;
+  font-family: ui-monospace, Consolas, monospace;
+  padding: 0.15rem 0.6rem 0.15rem;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid #0d1e2e;
+  margin-bottom: 2px;
+  user-select: none;
+}
+
 .burst-chip {
   text-align: left;
   padding: 0.3rem 0.6rem;

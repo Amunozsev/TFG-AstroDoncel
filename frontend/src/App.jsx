@@ -16,7 +16,7 @@ export default function App() {
   const [station, setStation]               = useState('SPAIN-SIGUENZA');
   const [date, setDate]                     = useState('2024-05-08');
 
-  // Lista de bursts del día
+  // Daily burst list
   const [files, setFiles]                   = useState([]);
   const [filesLoading, setFilesLoading]     = useState(false);
   const [selectedFile, setSelectedFile]     = useState(null);
@@ -28,7 +28,7 @@ export default function App() {
   const [useCustomZ, setUseCustomZ]         = useState(false);
   const [triggerLoad, setTriggerLoad]       = useState(1);
 
-  // ── Carga lista real de estaciones ──────────────────────────────────────────
+  // ── Load station list ─────────────────────────────────────────────────────
   useEffect(() => {
     async function loadStations() {
       try {
@@ -41,14 +41,14 @@ export default function App() {
           if (!data.stations.includes(station)) setStation(data.stations[0]);
         }
       } catch (err) {
-        console.warn('Estaciones desde API fallaron, usando respaldo:', err.message);
+        console.warn('Station list from API failed, using fallback:', err.message);
         setStationsSource('static');
       }
     }
     loadStations();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Carga lista de bursts cuando cambian estación o fecha ──────────────────
+  // ── Reload burst list when station or date changes ────────────────────────
   const loadFiles = useCallback(async (st, dt) => {
     setFilesLoading(true);
     setFiles([]);
@@ -64,7 +64,7 @@ export default function App() {
         setSelectedFile(data.files[0].filename);
       }
     } catch (err) {
-      console.warn('No se pudo cargar lista de bursts:', err.message);
+      console.warn('Could not load burst list:', err.message);
     } finally {
       setFilesLoading(false);
     }
@@ -92,17 +92,17 @@ export default function App() {
       <aside className="sidebar">
         <div className="sidebar-header">
           <h1>e-CALLISTO<br /><span>Spain</span></h1>
-          <p className="sidebar-subtitle">Portal de Espectrogramas Solares</p>
+          <p className="sidebar-subtitle">Solar Spectrogram Portal</p>
         </div>
 
         <div className="sidebar-section">
-          <h2 className="section-title">Observación</h2>
+          <h2 className="section-title">Observation</h2>
 
           <label className="control-label">
-            Estación
+            Station
             {stationsSource && (
               <span
-                title={stationsSource === 'ethz' ? 'Lista obtenida de ETHZ en tiempo real' : 'Lista estática de respaldo'}
+                title={stationsSource === 'ethz' ? 'Live list from ETHZ' : 'Static fallback list'}
                 style={{ marginLeft: '0.4rem', fontSize: '0.65rem', color: stationsSource === 'ethz' ? '#38bdf8' : '#f59e0b', verticalAlign: 'middle' }}
               >
                 {stationsSource === 'ethz' ? '● ETHZ' : '● local'}
@@ -120,7 +120,7 @@ export default function App() {
           </label>
 
           <label className="control-label">
-            Fecha
+            Date
             <input
               type="date"
               className="control-input"
@@ -130,10 +130,10 @@ export default function App() {
           </label>
         </div>
 
-        {/* ── Lista de bursts ─────────────────────────────────────────────── */}
+        {/* ── Burst list ───────────────────────────────────────────────────── */}
         <div className="sidebar-section burst-section">
           <h2 className="section-title">
-            Burst / Archivo
+            Burst / File
             {filesLoading && <span className="files-loading-dot" />}
             {!filesLoading && files.length > 0 && (
               <span style={{ color: '#4a7a9b', fontWeight: 400, marginLeft: '0.3rem' }}>
@@ -143,31 +143,49 @@ export default function App() {
           </h2>
 
           {filesLoading && (
-            <p className="files-hint">Consultando ETHZ…</p>
+            <p className="files-hint">Querying ETHZ…</p>
           )}
 
           {!filesLoading && files.length === 0 && (
-            <p className="files-hint">No hay archivos disponibles.</p>
+            <p className="files-hint">No files available.</p>
           )}
 
           {!filesLoading && files.length > 0 && (
             <div className="burst-list">
-              {files.map((f) => (
-                <button
-                  key={f.filename}
-                  className={`burst-chip ${selectedFile === f.filename ? 'active' : ''}`}
-                  onClick={() => setSelectedFile(f.filename)}
-                  title={f.filename}
-                >
-                  {f.label}
-                </button>
-              ))}
+              {Object.entries(
+                files.reduce((acc, f) => {
+                  const h = f.time.slice(0, 2);
+                  if (!acc[h]) acc[h] = [];
+                  acc[h].push(f);
+                  return acc;
+                }, {})
+              )
+                .sort(([a], [b]) => Number(a) - Number(b))
+                .map(([hour, bursts]) => (
+                  <div key={hour} className="burst-hour-group">
+                    <div className="burst-hour-header">{hour}:xx UTC</div>
+                    {bursts.map((f) => {
+                      const isCached = f.label.startsWith('★');
+                      const displayLabel = isCached ? `★ ${f.time.slice(3)}` : f.time.slice(3);
+                      return (
+                        <button
+                          key={f.filename}
+                          className={`burst-chip ${selectedFile === f.filename ? 'active' : ''}`}
+                          onClick={() => setSelectedFile(f.filename)}
+                          title={f.filename}
+                        >
+                          {displayLabel}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))}
             </div>
           )}
         </div>
 
         <div className="sidebar-section">
-          <h2 className="section-title">Procesamiento</h2>
+          <h2 className="section-title">Processing</h2>
 
           <label className="control-checkbox">
             <input
@@ -175,7 +193,7 @@ export default function App() {
               checked={useSahanFilter}
               onChange={(e) => setSahan(e.target.checked)}
             />
-            Filtro RFI completo (Sahan)
+            Full RFI filter (Sahan)
           </label>
 
           <label className="control-checkbox">
@@ -184,12 +202,12 @@ export default function App() {
               checked={showGoes}
               onChange={(e) => setShowGoes(e.target.checked)}
             />
-            Superponer datos GOES/XRS
+            Overlay GOES/XRS data
           </label>
         </div>
 
         <div className="sidebar-section">
-          <h2 className="section-title">Contraste</h2>
+          <h2 className="section-title">Contrast</h2>
 
           <label className="control-checkbox" style={{ marginBottom: '0.5rem' }}>
             <input
@@ -197,7 +215,7 @@ export default function App() {
               checked={useCustomZ}
               onChange={(e) => setUseCustomZ(e.target.checked)}
             />
-            Ajuste manual
+            Manual adjustment
           </label>
 
           <label className="control-label">
@@ -237,22 +255,22 @@ export default function App() {
             onClick={handleLoad}
             disabled={!selectedFile && files.length > 0}
           >
-            ▶ Recargar
+            ▶ Reload
           </button>
         </div>
 
         <div className="sidebar-status">
           <span className="status-dot" />
-          Backend · puerto 8000
+          Backend · port 8000
         </div>
 
         <div className="sidebar-footer">
-          <div>TFG — UAH · 2026</div>
+          <div>Bachelor's Thesis — UAH · 2026</div>
           <div>Alfonso Muñoz Sevillano</div>
         </div>
       </aside>
 
-      {/* ── Área central ── */}
+      {/* ── Main area ── */}
       <main className="main-content">
         <Spectrogram
           station={station}
