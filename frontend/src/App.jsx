@@ -23,6 +23,7 @@ export default function App() {
 
   const [useSahanFilter, setSahan]          = useState(false);
   const [showGoes, setShowGoes]             = useState(false);
+  const [colormap, setColormap]             = useState('observatory');
   const [zmin, setZmin]                     = useState(-5);
   const [zmax, setZmax]                     = useState(30);
   const [useCustomZ, setUseCustomZ]         = useState(false);
@@ -204,6 +205,28 @@ export default function App() {
             />
             Overlay GOES/XRS data
           </label>
+
+          <label className="control-label" style={{ marginTop: '0.5rem' }}>
+            Colormap
+            <select
+              className="control-input"
+              value={colormap}
+              onChange={(e) => setColormap(e.target.value)}
+            >
+              <option value="observatory">Default</option>
+              <option value="hot">Hot</option>
+              <option value="inferno">Inferno</option>
+              <option value="magma">Magma</option>
+              <option value="plasma">Plasma</option>
+              <option value="viridis">Viridis</option>
+              <option value="cividis">Cividis</option>
+              <option value="turbo">Turbo</option>
+              <option value="jet">Jet</option>
+              <option value="rdylbu">RdYlBu</option>
+              <option value="cubehelix">Cubehelix</option>
+              <option value="bone_r">Bone (inverted)</option>
+            </select>
+          </label>
         </div>
 
         <div className="sidebar-section">
@@ -278,6 +301,7 @@ export default function App() {
           filename={selectedFile}
           useSahanFilter={useSahanFilter}
           showGoes={showGoes}
+          colormap={colormap}
           zmin={useCustomZ ? zmin : null}
           zmax={useCustomZ ? zmax : null}
           triggerLoad={triggerLoad}
