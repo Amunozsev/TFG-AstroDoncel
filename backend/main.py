@@ -141,6 +141,12 @@ class SpectrogramResponse(BaseModel):
     rfi_masked_channels: list[int] = []
 
 
+class CombinedSpectrogramResponse(BaseModel):
+    date: str
+    layers: list[SpectrogramResponse]
+    failed: list[dict]   # [{station, reason}, ...] for stations with no data
+
+
 class GoesResponse(BaseModel):
     date: str
     available: bool
@@ -222,8 +228,12 @@ def _find_nas_fits_file(station: str, date: str) -> str | None:
 
 
 def _time_from_filename(filename: str) -> str:
-    """Extract start time as HH:MM:SS from a CALLISTO filename."""
-    m = re.search(r'_\d{8}_(\d{2})(\d{2})(\d{2})_\d+', filename)
+    """Extract start time as HH:MM:SS from a CALLISTO filename.
+
+    Handles all naming variants: with or without the trailing _NN segment,
+    and both .fit / .fits / .fit.gz / .fits.gz extensions.
+    """
+    m = re.search(r'_\d{8}_(\d{2})(\d{2})(\d{2})', filename)
     if m:
         return f"{m.group(1)}:{m.group(2)}:{m.group(3)}"
     return "??:??:??"
@@ -261,13 +271,14 @@ def _list_ethz_files(station: str, date: str) -> list[str]:
     except Exception:
         return []
     date_str = dt.strftime("%Y%m%d")
+    # Permissive: matches with or without trailing _NN, and .fit/.fits/.fit.gz/.fits.gz
     prefix_re = re.compile(
-        r'href="(' + re.escape(station.upper()) + r'_' + date_str + r'_\d{6}_\d{2}\.fit(?:\.gz)?)"',
+        r'href="(' + re.escape(station.upper()) + r'_' + date_str + r'_\d{6}.*?\.fits?(?:\.gz)?)"',
         re.IGNORECASE,
     )
     matches = sorted(set(prefix_re.findall(page)))
     if not matches:
-        all_files = re.findall(r'href="([^"]+\.fit(?:\.gz)?)"', page, re.IGNORECASE)
+        all_files = re.findall(r'href="([^"]+\.fits?(?:\.gz)?)"', page, re.IGNORECASE)
         matches = sorted(c for c in all_files if station.upper() in html.unescape(c).upper())
     return matches
 
@@ -321,13 +332,14 @@ def _download_from_ethz(station: str, date: str, filename: str | None = None) ->
         return None
 
     date_str = dt.strftime("%Y%m%d")
+    # Permissive: matches with or without trailing _NN, and .fit/.fits/.fit.gz/.fits.gz
     prefix_re = re.compile(
-        r'href="(' + re.escape(station.upper()) + r'_' + date_str + r'_\d{6}_\d{2}\.fit(?:\.gz)?)"',
+        r'href="(' + re.escape(station.upper()) + r'_' + date_str + r'_\d{6}.*?\.fits?(?:\.gz)?)"',
         re.IGNORECASE,
     )
     matches = sorted(set(prefix_re.findall(page)))
     if not matches:
-        all_files = re.findall(r'href="([^"]+\.fit(?:\.gz)?)"', page, re.IGNORECASE)
+        all_files = re.findall(r'href="([^"]+\.fits?(?:\.gz)?)"', page, re.IGNORECASE)
         matches = sorted(c for c in all_files if station.upper() in html.unescape(c).upper())
     if not matches:
         logger.warning("No files for '%s' in ETHZ on %s", station, date)
@@ -671,6 +683,95 @@ def _header_to_dict(header) -> dict:
     return result
 
 
+# ── Single-station pipeline helper ───────────────────────────────────────────
+
+def _build_spectrogram(
+    station: str,
+    date: str,
+    filename: str | None = None,
+    file_path: str | None = None,
+    sahan_filter: bool = False,
+) -> SpectrogramResponse:
+    """Resolve a FITS file and run the full processing pipeline for one station.
+
+    Raises FileNotFoundError when no file can be located, RuntimeError on
+    processing failures. Never raises HTTPException — callers handle that.
+    """
+    if file_path:
+        if not os.path.isfile(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
+        fits_path = file_path
+        logger.info("Using explicit file_path: %s", fits_path)
+    elif filename:
+        local_path = os.path.join(DATA_DIR_LOCAL, filename)
+        if os.path.isfile(local_path):
+            fits_path = local_path
+            logger.info("Using locally cached file: %s", fits_path)
+        else:
+            fits_path = _download_from_ethz(station, date, filename=filename)
+        if not fits_path:
+            raise FileNotFoundError(
+                f"Could not retrieve '{filename}' for '{station}' on {date}."
+            )
+    else:
+        fits_path = (
+            _find_local_fits_file(station, date)
+            or _find_nas_fits_file(station, date)
+            or _download_from_ethz(station, date)
+        )
+        if not fits_path:
+            raise FileNotFoundError(
+                f"No file found for station '{station}' on {date}. "
+                "Check the station name or whether the ETHZ server (soleil.i4ds.ch) is reachable."
+            )
+
+    logger.info("Processing %s", fits_path)
+    try:
+        with fits.open(fits_path, memmap=False) as hdul:
+            data, freqs, time_arr = _load_callisto_data(hdul)
+            header = hdul[0].header
+            time_labels = _times_to_utc(time_arr, header)
+
+            data = _subtract_background(data)
+
+            rfi_masked: list[int] = []
+            if sahan_filter:
+                data, rfi_masked = _clean_rfi(data)
+                logger.info("RFI filter applied: %d channels masked", len(rfi_masked))
+
+            finite_vals = data[np.isfinite(data)]
+            if finite_vals.size == 0:
+                vmin, vmax = 0.0, 1.0
+            else:
+                vmin, vmax = _percentile_clip_global(data.astype(float))
+
+            data_out = np.nan_to_num(
+                np.array(data, dtype=float),
+                nan=0.0,
+                posinf=vmax,
+                neginf=vmin,
+            )
+
+            return SpectrogramResponse(
+                station=station,
+                date=date,
+                filename=os.path.basename(fits_path),
+                time_axis=time_labels,
+                freq_axis=[round(float(f), 3) for f in freqs],
+                z=[[round(float(v), 4) for v in row] for row in data_out.tolist()],
+                vmin=round(vmin, 4),
+                vmax=round(vmax, 4),
+                fits_header=_header_to_dict(header),
+                rfi_masked_channels=rfi_masked,
+            )
+    except Exception as exc:
+        raise RuntimeError(f"Error processing FITS '{fits_path}': {exc}") from exc
+
+
+_COMBINE_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="combine")
+_MAX_COMBINE_STATIONS = 6
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -771,88 +872,68 @@ def get_spectrogram(
     except ValueError:
         raise HTTPException(status_code=422, detail=f"Invalid date format: '{date}'")
 
-    if file_path:
-        if not os.path.isfile(file_path):
-            raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
-        fits_path = file_path
-        logger.info("Using explicit file_path: %s", fits_path)
-    elif filename:
-        local_path = os.path.join(DATA_DIR_LOCAL, filename)
-        if os.path.isfile(local_path):
-            fits_path = local_path
-            logger.info("Using locally cached file: %s", fits_path)
-        else:
-            fits_path = _download_from_ethz(station, date, filename=filename)
-        if not fits_path:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Could not retrieve '{filename}' for '{station}' on {date}.",
-            )
-    else:
-        fits_path = (
-            _find_local_fits_file(station, date)
-            or _find_nas_fits_file(station, date)
-            or _download_from_ethz(station, date)
-        )
-        if not fits_path:
-            raise HTTPException(
-                status_code=404,
-                detail=(
-                    f"No file found for station '{station}' "
-                    f"on {date}. Check the station name or whether "
-                    "the ETHZ server (soleil.i4ds.ch) is reachable."
-                ),
-            )
-
-    logger.info("Processing %s", fits_path)
     try:
-        with _open_fits(fits_path) as hdul:
-            data, freqs, time_arr = _load_callisto_data(hdul)
-            header = hdul[0].header
-            time_labels = _times_to_utc(time_arr, header)
-
-            # 1. Robust background subtraction (always active)
-            data = _subtract_background(data)
-
-            # 2. Full RFI cleaning (optional, enabled by sahan_filter)
-            rfi_masked: list[int] = []
-            if sahan_filter:
-                data, rfi_masked = _clean_rfi(data)
-                logger.info(
-                    "RFI filter applied: %d channels masked", len(rfi_masked)
-                )
-
-            # 3. Recompute vmin/vmax on PROCESSED data (not raw)
-            finite_vals = data[np.isfinite(data)]
-            if finite_vals.size == 0:
-                vmin, vmax = 0.0, 1.0
-            else:
-                vmin, vmax = _percentile_clip_global(data.astype(float))
-
-            data_out = np.nan_to_num(
-                np.array(data, dtype=float),
-                nan=0.0,
-                posinf=vmax,
-                neginf=vmin,
-            )
-
-            return SpectrogramResponse(
-                station=station,
-                date=date,
-                filename=os.path.basename(fits_path),
-                time_axis=time_labels,
-                freq_axis=[round(float(f), 3) for f in freqs],
-                z=[[round(float(v), 4) for v in row] for row in data_out.tolist()],
-                vmin=round(vmin, 4),
-                vmax=round(vmax, 4),
-                fits_header=_header_to_dict(header),
-                rfi_masked_channels=rfi_masked,
-            )
-    except HTTPException:
-        raise
+        return _build_spectrogram(
+            station, date, filename=filename, file_path=file_path, sahan_filter=sahan_filter
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
-        logger.exception("Unexpected error processing %s", fits_path)
+        logger.exception("Unexpected error processing spectrogram for %s %s", station, date)
         raise HTTPException(status_code=500, detail=f"Error processing FITS: {exc}")
+
+
+@app.get("/api/spectrogram/combine", response_model=CombinedSpectrogramResponse)
+async def get_spectrogram_combine(
+    date: str = Query(..., description="Observation date, format YYYY-MM-DD"),
+    stations: list[str] = Query(..., description="Station names to combine"),
+    sahan_filter: bool = Query(default=False, description="Apply full RFI cleaning"),
+):
+    """Return per-station spectrograms for multiple stations, processed concurrently.
+
+    Each station is an independent layer with its own freq_axis and time_axis.
+    The frontend stacks them on shared Plotly axes — no resampling is performed.
+    Stations that fail are reported in `failed`; only a total failure returns 404.
+    """
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid date format: '{date}'")
+
+    if not stations:
+        raise HTTPException(status_code=422, detail="At least one station is required.")
+    if len(stations) > _MAX_COMBINE_STATIONS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Too many stations requested: {len(stations)} > {_MAX_COMBINE_STATIONS}.",
+        )
+
+    def _process_one(st: str) -> tuple[str, SpectrogramResponse | None, str | None]:
+        try:
+            return st, _build_spectrogram(st, date, sahan_filter=sahan_filter), None
+        except Exception as exc:
+            logger.warning("combine: %s failed: %s", st, exc)
+            return st, None, str(exc)
+
+    loop = asyncio.get_event_loop()
+    futures = [loop.run_in_executor(_COMBINE_EXECUTOR, _process_one, st) for st in stations]
+    results = await asyncio.gather(*futures)
+
+    layers: list[SpectrogramResponse] = []
+    failed: list[dict] = []
+    for st, layer, reason in results:
+        if layer is not None:
+            layers.append(layer)
+        else:
+            failed.append({"station": st, "reason": reason})
+
+    if not layers:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No data found for any of the requested stations on {date}.",
+        )
+
+    return CombinedSpectrogramResponse(date=date, layers=layers, failed=failed)
 
 
 # ── GOES/XRS overlay (ported from goes_overlay.py by Sahan, simplified) ──────

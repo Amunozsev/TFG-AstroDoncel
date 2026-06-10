@@ -89,16 +89,17 @@ const COLORSCALES = {
 
 export default function Spectrogram({
   station, date, filename, useSahanFilter, showGoes,
-  colormap, zmin, zmax, triggerLoad, onDataLoaded,
+  colormap, zmin, zmax, triggerLoad, hasLoaded, onDataLoaded,
 }) {
-  const [loading, setLoading]       = useState(false);
-  const [error, setError]           = useState(null);
-  const [plotData, setPlotData]     = useState(null);
-  const [goesData, setGoesData]     = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [plotData, setPlotData] = useState(null);
+  const [goesData, setGoesData] = useState(null);
   const [goesStatus, setGoesStatus] = useState('');
 
   // ── Fetch spectrogram ────────────────────────────────────────────────────
   useEffect(() => {
+    if (!hasLoaded || triggerLoad === 0) return;
     async function fetchSpectrogram() {
       setLoading(true);
       setError(null);
@@ -126,10 +127,11 @@ export default function Spectrogram({
       }
     }
     fetchSpectrogram();
-  }, [station, date, filename, useSahanFilter, triggerLoad]);
+  }, [triggerLoad]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Fetch GOES XRS ───────────────────────────────────────────────────────
   useEffect(() => {
+    if (!hasLoaded || triggerLoad === 0) return;
     if (!showGoes) {
       setGoesData(null);
       setGoesStatus('');
@@ -153,7 +155,7 @@ export default function Spectrogram({
       }
     }
     fetchGoes();
-  }, [showGoes, date, triggerLoad]);
+  }, [showGoes, triggerLoad]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Scale values ─────────────────────────────────────────────────────────
   const finalZmin = zmin !== null ? zmin : plotData?.vmin;
@@ -189,9 +191,9 @@ export default function Spectrogram({
 
     // Clip GOES data to the spectrogram time window (ISO 8601 string comparison is safe)
     const tStart = plotData.time_axis[0];
-    const tEnd   = plotData.time_axis[plotData.time_axis.length - 1];
+    const tEnd = plotData.time_axis[plotData.time_axis.length - 1];
     const gTimes = [];
-    const gFlux  = [];
+    const gFlux = [];
     for (let i = 0; i < goesData.times.length; i++) {
       if (goesData.times[i] >= tStart && goesData.times[i] <= tEnd) {
         gTimes.push(goesData.times[i]);
@@ -254,8 +256,8 @@ export default function Spectrogram({
     <>
       <div className="main-header">
         <h2>
-          {plotData ? `${plotData.station} · ${plotData.date}` : 'Solar Spectrogram e-CALLISTO'}
-          {useSahanFilter && (
+          {plotData ? `${plotData.station} · ${plotData.date}` : 'e-CALLISTO Spain · Solar Spectrogram Portal'}
+          {useSahanFilter && plotData && (
             <span style={{ marginLeft: '0.6rem', fontSize: '0.7rem', color: '#38bdf8' }}>
               ▶ RFI cleaning active
             </span>
@@ -267,6 +269,13 @@ export default function Spectrogram({
       </div>
 
       <div className="plot-area">
+        {/* Empty state before first Load */}
+        {!hasLoaded && !loading && !plotData && (
+          <div className="status-message">
+            <span>Select a station and date, then press Load.</span>
+          </div>
+        )}
+
         {/* Global spinner while the spectrogram loads */}
         {loading && (
           <div className="status-message">

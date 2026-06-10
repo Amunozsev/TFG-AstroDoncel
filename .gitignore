@@ -16,3 +16,6 @@
 # JSON generado por el script (artefacto derivado de /data)
 frontend/public/datos_prueba.json
 
+# Reference docs and third-party analyzer (large, not part of the project source)
+/docs/
+/e-Callisto_FITS_Analyzer-master/

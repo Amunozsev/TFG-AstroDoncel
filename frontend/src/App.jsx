@@ -14,7 +14,7 @@ export default function App() {
   const [stations, setStations]             = useState(FALLBACK_STATIONS);
   const [stationsSource, setStationsSource] = useState('');
   const [station, setStation]               = useState('SPAIN-SIGUENZA');
-  const [date, setDate]                     = useState('2024-05-08');
+  const [date, setDate]                     = useState(() => new Date().toISOString().slice(0, 10));
 
   // Daily burst list
   const [files, setFiles]                   = useState([]);
@@ -27,7 +27,8 @@ export default function App() {
   const [zmin, setZmin]                     = useState(-5);
   const [zmax, setZmax]                     = useState(30);
   const [useCustomZ, setUseCustomZ]         = useState(false);
-  const [triggerLoad, setTriggerLoad]       = useState(1);
+  const [triggerLoad, setTriggerLoad]       = useState(0);
+  const [hasLoaded, setHasLoaded]           = useState(false);
 
   // ── Load station list ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -76,6 +77,13 @@ export default function App() {
   }, [station, date, loadFiles]);
 
   function handleLoad() {
+    setHasLoaded(true);
+    setTriggerLoad((n) => n + 1);
+  }
+
+  function handleChipClick(filename) {
+    setSelectedFile(filename);
+    setHasLoaded(true);
     setTriggerLoad((n) => n + 1);
   }
 
@@ -172,7 +180,7 @@ export default function App() {
                         <button
                           key={f.filename}
                           className={`burst-chip ${selectedFile === f.filename ? 'active' : ''}`}
-                          onClick={() => setSelectedFile(f.filename)}
+                          onClick={() => handleChipClick(f.filename)}
                           title={f.filename}
                         >
                           {displayLabel}
@@ -276,9 +284,9 @@ export default function App() {
           <button
             className="btn-load"
             onClick={handleLoad}
-            disabled={!selectedFile && files.length > 0}
+            disabled={!station || !date || (files.length > 0 && !selectedFile)}
           >
-            ▶ Reload
+            {hasLoaded ? '▶ Reload' : '▶ Load'}
           </button>
         </div>
 
@@ -305,6 +313,7 @@ export default function App() {
           zmin={useCustomZ ? zmin : null}
           zmax={useCustomZ ? zmax : null}
           triggerLoad={triggerLoad}
+          hasLoaded={hasLoaded}
           onDataLoaded={handleDataLoaded}
         />
       </main>
