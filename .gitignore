@@ -18,3 +18,7 @@ frontend/public/datos_prueba.json
 
 # Configuración local de Claude Code
 .claude/
+
+# Reference docs and third-party analyzer (large, not part of the project source)
+/docs/
+/e-Callisto_FITS_Analyzer-master/
