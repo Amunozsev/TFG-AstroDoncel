@@ -887,13 +887,15 @@ def get_spectrogram(
 async def get_spectrogram_combine(
     date: str = Query(..., description="Observation date, format YYYY-MM-DD"),
     stations: list[str] = Query(..., description="Station names to combine"),
+    filename: str = Query(default=None, description="Primary station filename for 15-min block sync"),
     sahan_filter: bool = Query(default=False, description="Apply full RFI cleaning"),
 ):
     """Return per-station spectrograms for multiple stations, processed concurrently.
 
-    Each station is an independent layer with its own freq_axis and time_axis.
-    The frontend stacks them on shared Plotly axes — no resampling is performed.
-    Stations that fail are reported in `failed`; only a total failure returns 404.
+    When `filename` is provided, the primary station (stations[0]) is fetched with
+    that exact file and all secondary stations are synced to the same 15-minute block
+    by scanning for a file whose HHMM matches the primary's. Stations with no matching
+    file for that block are reported in `failed`.
     """
     try:
         datetime.strptime(date, "%Y-%m-%d")
@@ -908,15 +910,64 @@ async def get_spectrogram_combine(
             detail=f"Too many stations requested: {len(stations)} > {_MAX_COMBINE_STATIONS}.",
         )
 
-    def _process_one(st: str) -> tuple[str, SpectrogramResponse | None, str | None]:
+    # Derive HHMM target for time-sync (strip colons from "HH:MM:SS" → "HHMMSS")
+    target_hhmm: str | None = None
+    if filename:
+        raw = _time_from_filename(filename).replace(":", "")  # "HHMMSS" or "??????"
+        if len(raw) >= 4 and raw[:4].isdigit():
+            target_hhmm = raw[:4]
+
+    def _process_one(
+        st: str,
+        exact_filename: str | None,
+        match_hhmm: str | None,
+    ) -> tuple[str, SpectrogramResponse | None, str | None]:
         try:
-            return st, _build_spectrogram(st, date, sahan_filter=sahan_filter), None
+            if exact_filename:
+                # Primary station: use the exact file the user selected
+                logger.info("combine: station=%s exact_file=%s", st, exact_filename)
+                result = _build_spectrogram(st, date, filename=exact_filename, sahan_filter=sahan_filter)
+            elif match_hhmm:
+                # Secondary station: scan available files and pick the one matching HHMM
+                local = set(_list_local_fits_files(st, date))
+                ethz = set(_list_ethz_files(st, date))
+                all_files = sorted(local | ethz)
+                matched = next(
+                    (
+                        f for f in all_files
+                        if _time_from_filename(f).replace(":", "")[:4] == match_hhmm
+                    ),
+                    None,
+                )
+                if matched is None:
+                    raise FileNotFoundError(
+                        f"No file for time block {match_hhmm[:2]}:{match_hhmm[2:]} on {date}."
+                    )
+                logger.info("combine: station=%s matched_file=%s", st, matched)
+                result = _build_spectrogram(st, date, filename=matched, sahan_filter=sahan_filter)
+            else:
+                # No time anchor was derived — refuse rather than silently loading an
+                # arbitrary file, which would produce unsynchronised or duplicated data.
+                raise FileNotFoundError(
+                    f"No time anchor for station '{st}': cannot determine which "
+                    "15-minute block to load. Provide a primary filename."
+                )
+            return st, result, None
         except Exception as exc:
             logger.warning("combine: %s failed: %s", st, exc)
             return st, None, str(exc)
 
+    # Primary station gets the exact filename; secondaries get HHMM sync
+    tasks = [
+        (st, filename if (i == 0 and filename) else None, target_hhmm if i > 0 else None)
+        for i, st in enumerate(stations)
+    ]
+
     loop = asyncio.get_event_loop()
-    futures = [loop.run_in_executor(_COMBINE_EXECUTOR, _process_one, st) for st in stations]
+    futures = [
+        loop.run_in_executor(_COMBINE_EXECUTOR, _process_one, st, fname, hhmm)
+        for st, fname, hhmm in tasks
+    ]
     results = await asyncio.gather(*futures)
 
     layers: list[SpectrogramResponse] = []
