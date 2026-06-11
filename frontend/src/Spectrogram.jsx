@@ -88,46 +88,12 @@ const COLORSCALES = {
 };
 
 export default function Spectrogram({
-  station, date, filename, useSahanFilter, showGoes,
-  colormap, zmin, zmax, triggerLoad, hasLoaded, onDataLoaded,
+  layers, layerState, failedStations,
+  date, showGoes, colormap, zmin, zmax,
+  triggerLoad, hasLoaded, loading, error, useSahanFilter,
 }) {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [plotData, setPlotData] = useState(null);
   const [goesData, setGoesData] = useState(null);
   const [goesStatus, setGoesStatus] = useState('');
-
-  // ── Fetch spectrogram ────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!hasLoaded || triggerLoad === 0) return;
-    async function fetchSpectrogram() {
-      setLoading(true);
-      setError(null);
-      try {
-        let url =
-          `${API_BASE_URL}/api/spectrogram` +
-          `?station=${encodeURIComponent(station)}` +
-          `&date=${encodeURIComponent(date)}` +
-          `&sahan_filter=${useSahanFilter}`;
-        if (filename) url += `&filename=${encodeURIComponent(filename)}`;
-
-        const res = await fetch(url);
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(body.detail ?? `Error ${res.status}`);
-        }
-        const data = await res.json();
-        setPlotData(data);
-        if (onDataLoaded) onDataLoaded(data.vmin, data.vmax);
-      } catch (err) {
-        setError(err.message);
-        setPlotData(null);
-      } finally {
-        setLoading(false);
-      }
-    }
-    fetchSpectrogram();
-  }, [triggerLoad]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Fetch GOES XRS ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -157,41 +123,65 @@ export default function Spectrogram({
     fetchGoes();
   }, [showGoes, triggerLoad]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Scale values ─────────────────────────────────────────────────────────
-  const finalZmin = zmin !== null ? zmin : plotData?.vmin;
-  const finalZmax = zmax !== null ? zmax : plotData?.vmax;
+  // Drop layers with empty/malformed axes — prevents Plotly from stretching the
+  // X-axis across months when a secondary station returned stale/mismatched data.
+  const validLayers = layers.filter(
+    (l) =>
+      Array.isArray(l.time_axis) && l.time_axis.length > 0 &&
+      Array.isArray(l.freq_axis) && l.freq_axis.length > 0
+  );
+
+  // ── Visible layers (for GOES time-clip and colorbar placement) ───────────
+  const visibleLayers = validLayers.filter(
+    (l) => layerState[l.station]?.visible !== false
+  );
 
   // ── Plotly traces ────────────────────────────────────────────────────────
   const traces = [];
 
-  if (plotData) {
+  validLayers.forEach((layer) => {
+    const ls = layerState[layer.station] ?? { visible: true, opacity: 1 };
+    const isFirstVisible = visibleLayers[0]?.station === layer.station;
+    const layerZmin = zmin !== null ? zmin : layer.vmin;
+    const layerZmax = zmax !== null ? zmax : layer.vmax;
+
     traces.push({
       type: 'heatmap',
-      x: plotData.time_axis,
-      y: plotData.freq_axis,
-      z: plotData.z,
-      zmin: finalZmin,
-      zmax: finalZmax,
+      x: layer.time_axis,
+      y: layer.freq_axis,
+      z: layer.z,
+      zmin: layerZmin,
+      zmax: layerZmax,
       colorscale: COLORSCALES[colormap] ?? COLORSCALES.hot,
-      colorbar: {
+      opacity: ls.opacity,
+      visible: ls.visible,
+      name: layer.station,
+      showscale: isFirstVisible,
+      colorbar: isFirstVisible ? {
         title: { text: 'dB', side: 'right' },
         tickfont: { color: '#aaaaaa', size: 10 },
         titlefont: { color: '#aaaaaa', size: 11 },
         x: 0.88,
         bgcolor: 'rgba(0,0,0,0)',
         outlinewidth: 0,
-      },
+      } : undefined,
+      hovertemplate: `<b>${layer.station}</b><br>%{x}<br>%{y} MHz<br>%{z:.2f} dB<extra></extra>`,
       yaxis: 'y',
       xaxis: 'x',
     });
-  }
+  });
 
-  if (goesData?.available && goesData.xrsb?.length > 0 && plotData?.time_axis?.length > 0) {
+  // ── GOES overlay — time window is the UNION of all visible layers ─────────
+  if (goesData?.available && goesData.xrsb?.length > 0 && visibleLayers.length > 0) {
     const satLabel = goesData.satellite ? `GOES-${goesData.satellite}` : 'GOES';
 
-    // Clip GOES data to the spectrogram time window (ISO 8601 string comparison is safe)
-    const tStart = plotData.time_axis[0];
-    const tEnd = plotData.time_axis[plotData.time_axis.length - 1];
+    const tStart = visibleLayers
+      .map((l) => l.time_axis[0])
+      .reduce((a, b) => (a < b ? a : b));
+    const tEnd = visibleLayers
+      .map((l) => l.time_axis[l.time_axis.length - 1])
+      .reduce((a, b) => (a > b ? a : b));
+
     const gTimes = [];
     const gFlux = [];
     for (let i = 0; i < goesData.times.length; i++) {
@@ -216,6 +206,8 @@ export default function Spectrogram({
     }
   }
 
+  const hasGoesTrace = traces.some((t) => t.yaxis === 'y2');
+
   const layout = {
     paper_bgcolor: '#080d12',
     plot_bgcolor: '#080d12',
@@ -232,7 +224,7 @@ export default function Spectrogram({
       gridcolor: '#1a2f46',
       linecolor: '#1a2f46',
     },
-    ...(traces.length > 1 ? {
+    ...(hasGoesTrace ? {
       yaxis2: {
         title: { text: 'GOES Flux (W/m²)', font: { color: '#f87171', size: 11 } },
         overlaying: 'y',
@@ -252,31 +244,38 @@ export default function Spectrogram({
     autosize: true,
   };
 
+  // ── Header title ─────────────────────────────────────────────────────────
+  const headerTitle = (() => {
+    if (layers.length === 0) return 'e-CALLISTO Spain · Solar Spectrogram Portal';
+    if (layers.length === 1) return `${layers[0].station} · ${layers[0].date}`;
+    return `${layers.length} stations · ${layers[0].date}`;
+  })();
+
   return (
     <>
       <div className="main-header">
         <h2>
-          {plotData ? `${plotData.station} · ${plotData.date}` : 'e-CALLISTO Spain · Solar Spectrogram Portal'}
-          {useSahanFilter && plotData && (
+          {headerTitle}
+          {useSahanFilter && layers.length > 0 && (
             <span style={{ marginLeft: '0.6rem', fontSize: '0.7rem', color: '#38bdf8' }}>
               ▶ RFI cleaning active
             </span>
           )}
         </h2>
-        {plotData && (
-          <span className="file-badge">{plotData.filename}</span>
+        {layers.length === 1 && (
+          <span className="file-badge">{layers[0].filename}</span>
         )}
       </div>
 
       <div className="plot-area">
         {/* Empty state before first Load */}
-        {!hasLoaded && !loading && !plotData && (
+        {!hasLoaded && !loading && layers.length === 0 && !error && (
           <div className="status-message">
             <span>Select a station and date, then press Load.</span>
           </div>
         )}
 
-        {/* Global spinner while the spectrogram loads */}
+        {/* Spinner */}
         {loading && (
           <div className="status-message">
             <div className="spinner" />
@@ -308,7 +307,7 @@ export default function Spectrogram({
         )}
 
         {/* Chart */}
-        {plotData && !loading && (
+        {validLayers.length > 0 && !loading && (
           <Plot
             data={traces}
             layout={layout}
