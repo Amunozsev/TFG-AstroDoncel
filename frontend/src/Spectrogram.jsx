@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Plotly from 'plotly.js-dist';
 import _factory from 'react-plotly.js/factory';
 
@@ -95,6 +95,22 @@ export default function Spectrogram({
   const [goesData, setGoesData] = useState(null);
   const [goesStatus, setGoesStatus] = useState('');
 
+  // ── Zoom state ───────────────────────────────────────────────────────────
+  // zoomPatches: { [station]: SpectrogramResponse } — the high-res slice data
+  const [zoomPatches, setZoomPatches] = useState({});
+  const [isZoomed, setIsZoomed]       = useState(false);
+  const [zoomFetching, setZoomFetching] = useState(false);
+  const debounceRef = useRef(null);
+  const lastZoomRef = useRef(null);  // deduplicate identical relayout events
+
+  // Reset zoom whenever a new overview is loaded
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    lastZoomRef.current = null;
+    setZoomPatches({});
+    setIsZoomed(false);
+  }, [triggerLoad]);
+
   // ── Fetch GOES XRS ───────────────────────────────────────────────────────
   useEffect(() => {
     if (!hasLoaded || triggerLoad === 0) return;
@@ -123,6 +139,93 @@ export default function Spectrogram({
     fetchGoes();
   }, [showGoes, triggerLoad]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── Zoom handlers ────────────────────────────────────────────────────────
+  function handleResetZoom() {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    lastZoomRef.current = null;
+    setZoomPatches({});
+    setIsZoomed(false);
+  }
+
+  async function fetchZoomPatches(x0, x1, y0, y1, targetLayers) {
+    if (targetLayers.length === 0) return;
+    setZoomFetching(true);
+    try {
+      const results = await Promise.all(
+        targetLayers.map(async (layer) => {
+          const params = new URLSearchParams({
+            station: layer.station,
+            date: layer.date,
+            filename: layer.filename,
+            t0: String(x0),
+            t1: String(x1),
+            f0: String(Math.min(y0, y1)),
+            f1: String(Math.max(y0, y1)),
+            sahan_filter: String(useSahanFilter),
+          });
+          try {
+            const res = await fetch(`${API_BASE_URL}/api/spectrogram/zoom?${params}`);
+            if (!res.ok) {
+              const body = await res.json().catch(() => ({}));
+              console.warn('Zoom failed for', layer.station, ':', body.detail);
+              return null;
+            }
+            return await res.json();
+          } catch (err) {
+            console.warn('Zoom fetch error for', layer.station, err);
+            return null;
+          }
+        })
+      );
+      const patches = {};
+      for (let i = 0; i < targetLayers.length; i++) {
+        if (results[i]) patches[targetLayers[i].station] = results[i];
+      }
+      if (Object.keys(patches).length > 0) {
+        setZoomPatches(patches);
+        setIsZoomed(true);
+      }
+    } finally {
+      setZoomFetching(false);
+    }
+  }
+
+  function handleRelayout(eventData) {
+    // Double-click / autorange resets → revert to overview
+    if (
+      eventData['xaxis.autorange'] === true ||
+      eventData['yaxis.autorange'] === true ||
+      eventData['autosize'] === true
+    ) {
+      if (isZoomed) handleResetZoom();
+      return;
+    }
+
+    const x0 = eventData['xaxis.range[0]'] ?? eventData['xaxis.range']?.[0];
+    const x1 = eventData['xaxis.range[1]'] ?? eventData['xaxis.range']?.[1];
+    const y0 = eventData['yaxis.range[0]'] ?? eventData['yaxis.range']?.[0];
+    const y1 = eventData['yaxis.range[1]'] ?? eventData['yaxis.range']?.[1];
+
+    if (x0 == null || x1 == null || y0 == null || y1 == null) return;
+
+    // Deduplicate: skip if bounds are identical to the last fetched request
+    const key = `${x0}|${x1}|${y0}|${y1}`;
+    if (lastZoomRef.current === key) return;
+    lastZoomRef.current = key;
+
+    // Determine which layers to zoom (visible ones with filename set)
+    const targets = validLayers.filter(
+      (l) => layerState[l.station]?.visible !== false && l.filename
+    );
+    if (targets.length === 0) return;
+
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      fetchZoomPatches(x0, x1, y0, y1, targets);
+    }, 350);
+  }
+
+  // ── Layer preparation ────────────────────────────────────────────────────
   // Drop layers with empty/malformed axes — prevents Plotly from stretching the
   // X-axis across months when a secondary station returned stale/mismatched data.
   const validLayers = layers.filter(
@@ -140,16 +243,20 @@ export default function Spectrogram({
   const traces = [];
 
   validLayers.forEach((layer) => {
+    // When zoomed, swap in the high-res patch for this layer if available
+    const patch = isZoomed ? zoomPatches[layer.station] : null;
+    const src = patch ?? layer;
+
     const ls = layerState[layer.station] ?? { visible: true, opacity: 1 };
     const isFirstVisible = visibleLayers[0]?.station === layer.station;
-    const layerZmin = zmin !== null ? zmin : layer.vmin;
-    const layerZmax = zmax !== null ? zmax : layer.vmax;
+    const layerZmin = zmin !== null ? zmin : src.vmin;
+    const layerZmax = zmax !== null ? zmax : src.vmax;
 
     traces.push({
       type: 'heatmap',
-      x: layer.time_axis,
-      y: layer.freq_axis,
-      z: layer.z,
+      x: src.time_axis,
+      y: src.freq_axis,
+      z: src.z,
       zmin: layerZmin,
       zmax: layerZmax,
       colorscale: COLORSCALES[colormap] ?? COLORSCALES.hot,
@@ -175,11 +282,14 @@ export default function Spectrogram({
   if (goesData?.available && goesData.xrsb?.length > 0 && visibleLayers.length > 0) {
     const satLabel = goesData.satellite ? `GOES-${goesData.satellite}` : 'GOES';
 
+    // Use patch time range if zoomed, otherwise full layer range
+    const getSrcFor = (l) => (isZoomed && zoomPatches[l.station]) ? zoomPatches[l.station] : l;
+
     const tStart = visibleLayers
-      .map((l) => l.time_axis[0])
+      .map((l) => getSrcFor(l).time_axis[0])
       .reduce((a, b) => (a < b ? a : b));
     const tEnd = visibleLayers
-      .map((l) => l.time_axis[l.time_axis.length - 1])
+      .map((l) => { const s = getSrcFor(l); return s.time_axis[s.time_axis.length - 1]; })
       .reduce((a, b) => (a > b ? a : b));
 
     const gTimes = [];
@@ -261,10 +371,27 @@ export default function Spectrogram({
               ▶ RFI cleaning active
             </span>
           )}
+          {zoomFetching && (
+            <span style={{ marginLeft: '0.6rem', fontSize: '0.7rem', color: '#a3e635' }}>
+              ⟳ loading high-res…
+            </span>
+          )}
+          {isZoomed && !zoomFetching && (
+            <span style={{ marginLeft: '0.6rem', fontSize: '0.7rem', color: '#4ade80' }}>
+              ⤢ high-res
+            </span>
+          )}
         </h2>
-        {layers.length === 1 && (
-          <span className="file-badge">{layers[0].filename}</span>
-        )}
+        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+          {isZoomed && (
+            <button className="btn-reset-zoom" onClick={handleResetZoom}>
+              ↩ Overview
+            </button>
+          )}
+          {layers.length === 1 && (
+            <span className="file-badge">{layers[0].filename}</span>
+          )}
+        </div>
       </div>
 
       <div className="plot-area">
@@ -314,6 +441,7 @@ export default function Spectrogram({
             config={{ responsive: true, displayModeBar: true, displaylogo: false }}
             useResizeHandler
             style={{ width: '100%', height: '100%' }}
+            onRelayout={handleRelayout}
           />
         )}
       </div>

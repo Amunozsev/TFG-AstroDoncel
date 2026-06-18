@@ -11,6 +11,8 @@ import html
 import logging
 import os
 import re
+import threading
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from urllib.error import URLError
@@ -683,6 +685,76 @@ def _header_to_dict(header) -> dict:
     return result
 
 
+# ── Raw FITS cache (avoids re-parsing the same file on every zoom) ────────────
+
+_RAW_CACHE: OrderedDict[str, tuple] = OrderedDict()
+_RAW_CACHE_LOCK = threading.Lock()
+_RAW_CACHE_MAX = 8
+
+
+def _load_raw_cached(
+    fits_path: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, object]:
+    """Open a FITS file and return (data, freqs, time_arr, header), using an LRU cache.
+
+    The returned arrays are the *raw* unprocessed data — background subtraction
+    and RFI cleaning are intentionally NOT applied here so that callers can slice
+    first and then process only the relevant region.
+    Cached entries are never mutated by callers (all processing functions create
+    new arrays), so it is safe to return the arrays without copying.
+    """
+    with _RAW_CACHE_LOCK:
+        if fits_path in _RAW_CACHE:
+            _RAW_CACHE.move_to_end(fits_path)
+            return _RAW_CACHE[fits_path]
+    # Cache miss — load outside the lock so we don't block other threads
+    with fits.open(fits_path, memmap=False) as hdul:
+        data, freqs, time_arr = _load_callisto_data(hdul)
+        header = hdul[0].header.copy()
+    entry = (data, freqs, time_arr, header)
+    with _RAW_CACHE_LOCK:
+        # A concurrent thread may have inserted the same key; prefer its entry
+        if fits_path not in _RAW_CACHE:
+            _RAW_CACHE[fits_path] = entry
+        _RAW_CACHE.move_to_end(fits_path)
+        while len(_RAW_CACHE) > _RAW_CACHE_MAX:
+            _RAW_CACHE.popitem(last=False)
+        return _RAW_CACHE[fits_path]
+
+
+def _decimate_time(
+    data: np.ndarray,
+    time_labels: list[str],
+    max_cols: int,
+) -> tuple[np.ndarray, list[str]]:
+    """Block-mean the time axis down to at most max_cols columns.
+
+    Frequencies are NOT decimated. The time labels list is decimated in lockstep
+    by taking the first label of each block (the block-start timestamp).
+    """
+    n_cols = data.shape[1]
+    if n_cols <= max_cols:
+        return data, time_labels
+    k = max(1, n_cols // max_cols)
+    n_trim = (n_cols // k) * k
+    decimated = data[:, :n_trim].reshape(data.shape[0], n_trim // k, k).mean(axis=2)
+    dec_labels = time_labels[::k][: n_trim // k]
+    return decimated, dec_labels
+
+
+def _parse_utc(s: str) -> datetime:
+    """Parse an ISO-8601 / Plotly date string to an aware UTC datetime."""
+    s = s.strip().replace(" ", "T").rstrip("Z")
+    # Strip explicit timezone offset if present (assume UTC)
+    s = re.sub(r"[+-]\d{2}:\d{2}$", "", s)
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    raise ValueError(f"Cannot parse timestamp: {s!r}")
+
+
 # ── Single-station pipeline helper ───────────────────────────────────────────
 
 def _build_spectrogram(
@@ -691,11 +763,16 @@ def _build_spectrogram(
     filename: str | None = None,
     file_path: str | None = None,
     sahan_filter: bool = False,
+    max_time_bins: int | None = None,
 ) -> SpectrogramResponse:
     """Resolve a FITS file and run the full processing pipeline for one station.
 
     Raises FileNotFoundError when no file can be located, RuntimeError on
     processing failures. Never raises HTTPException — callers handle that.
+
+    When max_time_bins is set, the time axis is block-mean decimated BEFORE
+    background subtraction, so the processing pipeline operates on the lighter
+    decimated matrix. This is the intended path for overview loads.
     """
     if file_path:
         if not os.path.isfile(file_path):
@@ -727,43 +804,46 @@ def _build_spectrogram(
 
     logger.info("Processing %s", fits_path)
     try:
-        with fits.open(fits_path, memmap=False) as hdul:
-            data, freqs, time_arr = _load_callisto_data(hdul)
-            header = hdul[0].header
-            time_labels = _times_to_utc(time_arr, header)
+        data_raw, freqs, time_arr, header = _load_raw_cached(fits_path)
+        time_labels = _times_to_utc(time_arr, header)
 
-            data = _subtract_background(data)
+        if max_time_bins is not None:
+            data, time_labels = _decimate_time(data_raw, time_labels, max_time_bins)
+        else:
+            data = data_raw
 
-            rfi_masked: list[int] = []
-            if sahan_filter:
-                data, rfi_masked = _clean_rfi(data)
-                logger.info("RFI filter applied: %d channels masked", len(rfi_masked))
+        data = _subtract_background(data)
 
-            finite_vals = data[np.isfinite(data)]
-            if finite_vals.size == 0:
-                vmin, vmax = 0.0, 1.0
-            else:
-                vmin, vmax = _percentile_clip_global(data.astype(float))
+        rfi_masked: list[int] = []
+        if sahan_filter:
+            data, rfi_masked = _clean_rfi(data)
+            logger.info("RFI filter applied: %d channels masked", len(rfi_masked))
 
-            data_out = np.nan_to_num(
-                np.array(data, dtype=float),
-                nan=0.0,
-                posinf=vmax,
-                neginf=vmin,
-            )
+        finite_vals = data[np.isfinite(data)]
+        if finite_vals.size == 0:
+            vmin, vmax = 0.0, 1.0
+        else:
+            vmin, vmax = _percentile_clip_global(data.astype(float))
 
-            return SpectrogramResponse(
-                station=station,
-                date=date,
-                filename=os.path.basename(fits_path),
-                time_axis=time_labels,
-                freq_axis=[round(float(f), 3) for f in freqs],
-                z=[[round(float(v), 4) for v in row] for row in data_out.tolist()],
-                vmin=round(vmin, 4),
-                vmax=round(vmax, 4),
-                fits_header=_header_to_dict(header),
-                rfi_masked_channels=rfi_masked,
-            )
+        data_out = np.nan_to_num(
+            np.array(data, dtype=float),
+            nan=0.0,
+            posinf=vmax,
+            neginf=vmin,
+        )
+
+        return SpectrogramResponse(
+            station=station,
+            date=date,
+            filename=os.path.basename(fits_path),
+            time_axis=time_labels,
+            freq_axis=[round(float(f), 3) for f in freqs],
+            z=[[round(float(v), 4) for v in row] for row in data_out.tolist()],
+            vmin=round(vmin, 4),
+            vmax=round(vmax, 4),
+            fits_header=_header_to_dict(header),
+            rfi_masked_channels=rfi_masked,
+        )
     except Exception as exc:
         raise RuntimeError(f"Error processing FITS '{fits_path}': {exc}") from exc
 
@@ -854,6 +934,7 @@ def get_spectrogram(
     filename: str = Query(default=None, description="Specific FITS filename"),
     file_path: str = Query(default=None, description="Absolute path (manual override)"),
     sahan_filter: bool = Query(default=False, description="Apply full RFI cleaning"),
+    max_time_bins: int = Query(default=None, description="Decimate time axis to at most N columns (overview mode)"),
 ):
     """Return the spectrogram for an e-Callisto station.
 
@@ -874,7 +955,10 @@ def get_spectrogram(
 
     try:
         return _build_spectrogram(
-            station, date, filename=filename, file_path=file_path, sahan_filter=sahan_filter
+            station, date,
+            filename=filename, file_path=file_path,
+            sahan_filter=sahan_filter,
+            max_time_bins=max_time_bins,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
@@ -889,6 +973,7 @@ async def get_spectrogram_combine(
     stations: list[str] = Query(..., description="Station names to combine"),
     filename: str = Query(default=None, description="Primary station filename for 15-min block sync"),
     sahan_filter: bool = Query(default=False, description="Apply full RFI cleaning"),
+    max_time_bins: int = Query(default=None, description="Decimate time axis to at most N columns (overview mode)"),
 ):
     """Return per-station spectrograms for multiple stations, processed concurrently.
 
@@ -926,7 +1011,10 @@ async def get_spectrogram_combine(
             if exact_filename:
                 # Primary station: use the exact file the user selected
                 logger.info("combine: station=%s exact_file=%s", st, exact_filename)
-                result = _build_spectrogram(st, date, filename=exact_filename, sahan_filter=sahan_filter)
+                result = _build_spectrogram(
+                    st, date, filename=exact_filename,
+                    sahan_filter=sahan_filter, max_time_bins=max_time_bins,
+                )
             elif match_hhmm:
                 # Secondary station: scan available files and pick the one matching HHMM
                 local = set(_list_local_fits_files(st, date))
@@ -944,7 +1032,10 @@ async def get_spectrogram_combine(
                         f"No file for time block {match_hhmm[:2]}:{match_hhmm[2:]} on {date}."
                     )
                 logger.info("combine: station=%s matched_file=%s", st, matched)
-                result = _build_spectrogram(st, date, filename=matched, sahan_filter=sahan_filter)
+                result = _build_spectrogram(
+                    st, date, filename=matched,
+                    sahan_filter=sahan_filter, max_time_bins=max_time_bins,
+                )
             else:
                 # No time anchor was derived — refuse rather than silently loading an
                 # arbitrary file, which would produce unsynchronised or duplicated data.
@@ -985,6 +1076,140 @@ async def get_spectrogram_combine(
         )
 
     return CombinedSpectrogramResponse(date=date, layers=layers, failed=failed)
+
+
+# ── High-resolution zoom patch ────────────────────────────────────────────────
+
+_MAX_ZOOM_COLS = 1500  # if a zoom slice exceeds this, decimate it too
+
+
+@app.get("/api/spectrogram/zoom", response_model=SpectrogramResponse)
+def get_spectrogram_zoom(
+    station: str = Query(..., description="e-Callisto station"),
+    date: str = Query(..., description="Observation date, format YYYY-MM-DD"),
+    filename: str = Query(..., description="Exact filename already shown in the overview"),
+    t0: str = Query(..., description="Start time ISO-8601 UTC (from Plotly xaxis.range)"),
+    t1: str = Query(..., description="End time ISO-8601 UTC (from Plotly xaxis.range)"),
+    f0: float = Query(..., description="Start frequency MHz (from Plotly yaxis.range)"),
+    f1: float = Query(..., description="End frequency MHz (from Plotly yaxis.range)"),
+    sahan_filter: bool = Query(default=False),
+):
+    """Return a maximum-resolution patch for a time+frequency bounding box.
+
+    Uses the raw-data LRU cache so repeated zoom requests on the same file
+    do not re-parse the FITS. Background subtraction and optional RFI cleaning
+    are recomputed on the slice only, so contrast is optimised for the zoomed
+    region — intentional behaviour.
+    """
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid date format: '{date}'")
+
+    # Resolve the FITS file (must already be local — overview guarantees this)
+    local_path = os.path.join(DATA_DIR_LOCAL, filename)
+    if os.path.isfile(local_path):
+        fits_path = local_path
+    else:
+        fits_path = _download_from_ethz(station, date, filename=filename)
+    if not fits_path:
+        raise HTTPException(
+            status_code=404,
+            detail=f"File '{filename}' not found for station '{station}' on {date}.",
+        )
+
+    try:
+        data_raw, freqs, time_arr, header = _load_raw_cached(fits_path)
+        time_labels: list[str] = _times_to_utc(time_arr, header)
+
+        # ── Column indices (time) ─────────────────────────────────────────────
+        try:
+            t0_ts = _parse_utc(t0).timestamp()
+            t1_ts = _parse_utc(t1).timestamp()
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Cannot parse time bounds: {exc}")
+        if t0_ts > t1_ts:
+            t0_ts, t1_ts = t1_ts, t0_ts
+
+        label_ts = np.array([_parse_utc(lb).timestamp() for lb in time_labels])
+        col0 = int(np.searchsorted(label_ts, t0_ts, side="left"))
+        col1 = int(np.searchsorted(label_ts, t1_ts, side="right"))
+        col0 = max(0, col0)
+        col1 = min(data_raw.shape[1], col1)
+
+        # ── Row indices (frequency, handle descending axis) ───────────────────
+        freqs_arr = np.asarray(freqs)
+        f_lo, f_hi = min(f0, f1), max(f0, f1)
+        if freqs_arr.size > 1 and freqs_arr[-1] > freqs_arr[0]:
+            # Ascending frequency axis
+            row0 = int(np.searchsorted(freqs_arr, f_lo, side="left"))
+            row1 = int(np.searchsorted(freqs_arr, f_hi, side="right"))
+        else:
+            # Descending: flip, searchsort, then map back to original indices
+            freqs_flip = freqs_arr[::-1]
+            r0 = int(np.searchsorted(freqs_flip, f_lo, side="left"))
+            r1 = int(np.searchsorted(freqs_flip, f_hi, side="right"))
+            n = len(freqs_arr)
+            row0 = n - r1
+            row1 = n - r0
+        row0 = max(0, row0)
+        row1 = min(data_raw.shape[0], row1)
+
+        if col1 <= col0 or row1 <= row0:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Zoom box is outside data range or too narrow "
+                    f"(cols {col0}:{col1}, rows {row0}:{row1})."
+                ),
+            )
+
+        # ── Slice ─────────────────────────────────────────────────────────────
+        data_slice = data_raw[row0:row1, col0:col1]
+        freqs_slice = freqs_arr[row0:row1]
+        time_slice: list[str] = time_labels[col0:col1]
+
+        # Decimate only if the slice is still very wide
+        if data_slice.shape[1] > _MAX_ZOOM_COLS:
+            data_slice, time_slice = _decimate_time(data_slice, time_slice, _MAX_ZOOM_COLS)
+
+        # ── Process on the slice ──────────────────────────────────────────────
+        data_proc = _subtract_background(data_slice)
+        rfi_masked: list[int] = []
+        if sahan_filter:
+            data_proc, rfi_masked = _clean_rfi(data_proc)
+
+        finite_vals = data_proc[np.isfinite(data_proc)]
+        if finite_vals.size == 0:
+            vmin, vmax = 0.0, 1.0
+        else:
+            vmin, vmax = _percentile_clip_global(data_proc.astype(float))
+
+        data_out = np.nan_to_num(
+            np.array(data_proc, dtype=float),
+            nan=0.0,
+            posinf=vmax,
+            neginf=vmin,
+        )
+
+        return SpectrogramResponse(
+            station=station,
+            date=date,
+            filename=filename,
+            time_axis=time_slice,
+            freq_axis=[round(float(f), 3) for f in freqs_slice],
+            z=[[round(float(v), 4) for v in row] for row in data_out.tolist()],
+            vmin=round(vmin, 4),
+            vmax=round(vmax, 4),
+            fits_header=_header_to_dict(header),
+            rfi_masked_channels=rfi_masked,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Zoom failed for %s %s: %s", station, filename, exc)
+        raise HTTPException(status_code=500, detail=f"Zoom processing failed: {exc}")
 
 
 # ── GOES/XRS overlay (ported from goes_overlay.py by Sahan, simplified) ──────

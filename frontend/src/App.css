@@ -498,3 +498,23 @@
   padding: 0.2rem 0;
   font-style: italic;
 }
+
+/* ── Reset-zoom button (shown in header while a high-res patch is active) ─── */
+.btn-reset-zoom {
+  padding: 0.25rem 0.55rem;
+  background: #0d2840;
+  color: #4ade80;
+  border: 1px solid #166534;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+.btn-reset-zoom:hover {
+  background: #14532d;
+  color: #86efac;
+}

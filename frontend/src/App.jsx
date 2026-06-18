@@ -106,6 +106,7 @@ export default function App() {
           const params = new URLSearchParams({
             date,
             sahan_filter: String(useSahanFilter),
+            max_time_bins: '1500',
           });
           if (selectedFile) params.set('filename', selectedFile);
           selectedStations.forEach((s) => params.append('stations', s));
@@ -122,7 +123,8 @@ export default function App() {
             `${API_BASE}/api/spectrogram` +
             `?station=${encodeURIComponent(selectedStations[0] ?? station)}` +
             `&date=${encodeURIComponent(date)}` +
-            `&sahan_filter=${useSahanFilter}`;
+            `&sahan_filter=${useSahanFilter}` +
+            `&max_time_bins=1500`;
           if (selectedFile) url += `&filename=${encodeURIComponent(selectedFile)}`;
           const res = await fetch(url);
           if (!res.ok) {
