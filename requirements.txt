@@ -1,5 +1,24 @@
-astropy
-numpy
-scipy
-fastapi
-uvicorn
+# AstroDoncel – Backend  (Python 3.12+)
+# Instalar con:  pip install -r requirements.txt
+
+# --- Framework web ---
+fastapi==0.139.0
+uvicorn[standard]==0.49.0      # servidor ASGI con recarga automática
+
+# --- Procesamiento científico / astronómico ---
+astropy==8.0.0
+numpy==2.5.0
+scipy==1.18.0
+sunpy[net,timeseries]==8.0.0    # GOES/XRS overlay vía Fido (NOAA NGDC)
+mpl-animators==1.2.4            # requerido por sunpy.timeseries (import interno)
+pandas==3.0.3                   # requerido por sunpy.timeseries.to_dataframe()
+
+# --- Validación de datos (incluida en FastAPI, se especifica por claridad) ---
+pydantic==2.13.4
+
+# --- Futuras dependencias (se activarán en sprints posteriores) ---
+# sqlalchemy==2.0.40           # ORM para PostgreSQL
+# asyncpg==0.30.0              # driver async para PostgreSQL
+# psycopg2-binary==2.9.10      # driver síncrono (migrations con Alembic)
+# tensorflow==2.19.0           # modelo CNN de clasificación de SRBs
+# scikit-learn==1.6.1          # preprocesamiento para el modelo de IA
