@@ -18,8 +18,10 @@ Interactive web portal for visualisation and analysis of solar radio spectrogram
 | **Background subtraction** | Robust baseline using the 25th percentile of each frequency channel (always active) |
 | **Absolute time axis** | Real ISO 8601 UTC timestamps reconstructed from `DATE-OBS + TIME-OBS + CDELT1` in the FITS header |
 | **Adjustable contrast** | `Z min / Z max` sliders with automatic computation from the 2–98 percentile range of processed data |
-| **GOES/XRS overlay** | Overlays GOES X-ray flux (XRS-B channel, 0.1–0.8 nm) on a secondary logarithmic Y axis via `sunpy.net.Fido` |
-| **Scientific colormap** | matplotlib `hot` scale (black → red → yellow → white), standard in e-CALLISTO publications |
+| **GOES/XRS overlay** | Overlays GOES X-ray flux (XRS-B channel, 0.1–0.8 nm) on a secondary logarithmic Y axis via `sunpy.net.Fido`, clipped to the visible time window |
+| **Colormap selection** | 11 selectable colorscales (Observatory default, Hot, Viridis, Plasma, Inferno, Magma, Cividis, Turbo, Jet, RdYlBu, Cubehelix, Bone) |
+| **Multi-station comparison** | Select several stations at once; spectrograms are fetched concurrently and time-synced to the same 15-minute block |
+| **High-resolution zoom** | Box-selecting a region in the plot fetches a full-resolution patch for that time/frequency window instead of the decimated overview |
 
 ---
 
@@ -35,6 +37,7 @@ Interactive web portal for visualisation and analysis of solar radio spectrogram
 ┌────────────────────▼─────────────────────────────────┐
 │                FastAPI (Python)                       │
 │   /api/stations  /api/files  /api/spectrogram         │
+│   /api/spectrogram/combine  /api/spectrogram/zoom     │
 │   /api/goes      /health                              │
 │                                                       │
 │   astropy · numpy · scipy · sunpy                    │
@@ -53,7 +56,7 @@ Interactive web portal for visualisation and analysis of solar radio spectrogram
 
 ### Prerequisites
 
-- Python 3.11+ with `pip`
+- Python 3.12+ with `pip`
 - Node.js 18+
 
 ### 1. Clone the repository
@@ -106,6 +109,8 @@ Open your browser at `http://localhost:5173`.
 | `GET` | `/api/stations` | List of active e-CALLISTO stations |
 | `GET` | `/api/files` | Available bursts for a given `station` + `date` |
 | `GET` | `/api/spectrogram` | Processed spectrogram as JSON |
+| `GET` | `/api/spectrogram/combine` | Processed spectrograms for multiple stations, time-synced and fetched concurrently |
+| `GET` | `/api/spectrogram/zoom` | Full-resolution patch for a time/frequency bounding box |
 | `GET` | `/api/goes` | GOES XRS-B flux for a given date |
 
 ### `/api/files`
@@ -138,6 +143,25 @@ GET /api/spectrogram?station=SPAIN-SIGUENZA&date=2024-05-08
 
 Returns `time_axis` (ISO 8601 UTC), `freq_axis` (MHz), `z` (intensity in dB), `vmin/vmax`, and the full FITS header.
 
+### `/api/spectrogram/combine`
+
+```
+GET /api/spectrogram/combine?date=2024-05-08&stations=SPAIN-SIGUENZA&stations=SPAIN-ALCALA
+    &filename=SPAIN-SIGUENZA_20240508_080000_01.fit.gz
+```
+
+Fetches and processes each station concurrently, syncing secondary stations to the same 15-minute block as the primary. Returns a `layers` array (one `SpectrogramResponse` per station) plus `failed` for any station without a matching file.
+
+### `/api/spectrogram/zoom`
+
+```
+GET /api/spectrogram/zoom?station=SPAIN-SIGUENZA&date=2024-05-08
+    &filename=SPAIN-SIGUENZA_20240508_080000_01.fit.gz
+    &t0=2024-05-08T08:05:00Z&t1=2024-05-08T08:10:00Z&f0=45&f1=80
+```
+
+Returns a full-resolution slice for the given time/frequency box, reprocessed (background subtraction, optional RFI filter) on the slice only. Used by the frontend when the user box-selects a region on the plot.
+
 ### `/api/goes`
 
 ```
@@ -161,14 +185,14 @@ GET /api/goes?date=2024-05-08
 ```
 TFG-AstroDoncel/
 ├── backend/
-│   ├── main.py               # FastAPI endpoints + scientific pipeline
-│   └── requirements.txt      # Python dependencies
+│   └── main.py               # FastAPI endpoints + scientific pipeline
 ├── frontend/
 │   ├── src/
 │   │   ├── App.jsx           # Main logic and sidebar
 │   │   ├── Spectrogram.jsx   # Plotly component (heatmap + GOES overlay)
 │   │   └── App.css           # Dashboard styles
 │   └── package.json
+├── requirements.txt          # Python dependencies (install from repo root)
 ├── data/                     # Downloaded FITS files (not versioned)
 │   └── goes_cache/           # GOES NetCDF file cache
 └── README.md
@@ -202,7 +226,7 @@ _percentile_clip_global()   ← Compute vmin (p2) and vmax (p98) for contrast
 _times_to_utc()             ← ISO 8601 UTC from DATE-OBS + TIME-OBS + CDELT1
         │
         ▼
-JSON → Plotly heatmap (colorscale: hot)
+JSON → Plotly heatmap (selectable colorscale, default: observatory)
 ```
 
 ---
