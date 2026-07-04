@@ -127,6 +127,7 @@ export default function Spectrogram({
   triggerLoad, hasLoaded, loading, error,
   useSahanFilter, rfiParams,
   compareMode, autoContrastZoom, rulerMode,
+  burstResults,
 }) {
   const [goesData, setGoesData] = useState(null);
   const [goesStatus, setGoesStatus] = useState('');
@@ -408,6 +409,36 @@ export default function Spectrogram({
 
   const srcFor = (layer) => (isZoomed && zoomPatches[layer.station]) ? zoomPatches[layer.station] : layer;
 
+  // ── ML burst-event highlights (amber boxes + score labels) ────────────────
+  const addBurstShapes = (layer, axisId) => {
+    const res = burstResults?.[layer.station];
+    if (!res?.available || !res.events?.length) return;
+    for (const ev of res.events) {
+      if (!ev.start_utc || !ev.end_utc) continue;
+      layout.shapes.push({
+        type: 'rect',
+        xref: 'x',
+        yref: axisId,
+        x0: ev.start_utc, x1: ev.end_utc,
+        y0: ev.freq_band_mhz[0], y1: ev.freq_band_mhz[1],
+        line: { color: '#fbbf24', width: 1.5, dash: 'dot' },
+        fillcolor: 'rgba(251,191,36,0.10)',
+        layer: 'above',
+      });
+      layout.annotations.push({
+        xref: 'x',
+        yref: axisId,
+        x: ev.start_utc,
+        y: ev.freq_band_mhz[1],
+        xanchor: 'left', yanchor: 'bottom',
+        text: `⚡ p=${ev.peak_score.toFixed(2)}`,
+        showarrow: false,
+        font: { color: '#fbbf24', size: 9 },
+        bgcolor: 'rgba(13,27,42,0.75)',
+      });
+    }
+  };
+
   const contrastFor = (layer) => {
     const patch = isZoomed ? zoomPatches[layer.station] : null;
     const base = patch && autoContrastZoom ? patch : layer;
@@ -475,6 +506,8 @@ export default function Spectrogram({
         font: { color: '#7fb3d3', size: 10 },
         bgcolor: 'rgba(13,27,42,0.75)',
       });
+
+      addBurstShapes(layer, axisId);
     });
 
     // Anchor the shared time axis to the bottom panel
@@ -522,6 +555,8 @@ export default function Spectrogram({
         yaxis: 'y',
         xaxis: 'x',
       });
+
+      if (ls.visible) addBurstShapes(layer, 'y');
     });
   }
 
