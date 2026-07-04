@@ -64,6 +64,10 @@ export default function App() {
   const [showHeaderViewer, setShowHeaderViewer] = useState(false);
   const [headerLayerIdx, setHeaderLayerIdx] = useState(0);
 
+  // Automatic burst detection (CNN+MIL): { [station]: BurstDetectResponse }
+  const [burstResults, setBurstResults]     = useState({});
+  const [burstDetecting, setBurstDetecting] = useState(false);
+
   // ── Load station list ─────────────────────────────────────────────────────
   useEffect(() => {
     async function loadStations() {
@@ -202,12 +206,44 @@ export default function App() {
 
   function handleLoad() {
     setHasLoaded(true);
+    setBurstResults({}); // stale detections don't apply to a new load
     setTriggerLoad((n) => n + 1);
+  }
+
+  // ── Automatic burst detection on every loaded layer ───────────────────────
+  async function handleDetectBursts() {
+    if (layers.length === 0 || burstDetecting) return;
+    setBurstDetecting(true);
+    try {
+      const results = await Promise.all(
+        layers.map(async (l) => {
+          const params = new URLSearchParams({
+            station: l.station,
+            date: l.date,
+            filename: l.filename,
+          });
+          try {
+            const res = await fetch(`${API_BASE}/api/burst/detect?${params}`);
+            if (!res.ok) {
+              const body = await res.json().catch(() => ({}));
+              return [l.station, { available: false, reason: body.detail ?? `Error ${res.status}` }];
+            }
+            return [l.station, await res.json()];
+          } catch (err) {
+            return [l.station, { available: false, reason: err.message }];
+          }
+        })
+      );
+      setBurstResults(Object.fromEntries(results));
+    } finally {
+      setBurstDetecting(false);
+    }
   }
 
   function handleChipClick(filename) {
     setSelectedFile(filename);
     setHasLoaded(true);
+    setBurstResults({});
     setTriggerLoad((n) => n + 1);
   }
 
@@ -495,6 +531,29 @@ export default function App() {
             >
               🗎 FITS header
             </button>
+            <button
+              className="btn-tool"
+              onClick={handleDetectBursts}
+              disabled={layers.length === 0 || burstDetecting}
+              title="Run the trained CNN+MIL classifier (Sahan's Burst_No_Burst) on every loaded layer"
+            >
+              {burstDetecting ? '⟳ Detecting…' : '☀ Detect bursts (ML)'}
+            </button>
+            {Object.entries(burstResults).map(([st, r]) => (
+              <span
+                key={st}
+                className={`stat-chip${r.available && r.is_burst ? ' burst-hit' : ''}`}
+                title={
+                  r.available
+                    ? `Model ${r.model_version} · ${r.n_windows} windows · ${r.inference_ms} ms`
+                    : r.reason
+                }
+              >
+                {r.available
+                  ? `${st}: p=${r.file_score.toFixed(2)}${r.is_burst ? ` ⚡ ${r.events.length} event${r.events.length === 1 ? '' : 's'}` : ' · no burst'}`
+                  : `${st}: unavailable`}
+              </span>
+            ))}
             {rulerMode && (
               <span className="tab-hint">
                 Click two points on the plot — the drift readout appears in the header. Toggle off to clear.
@@ -713,6 +772,7 @@ export default function App() {
           compareMode={compareMode}
           autoContrastZoom={autoContrastZoom}
           rulerMode={rulerMode}
+          burstResults={burstResults}
         />
       </main>
 

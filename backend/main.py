@@ -151,6 +151,23 @@ class CombinedSpectrogramResponse(BaseModel):
     failed: list[dict]   # [{station, reason}, ...] for stations with no data
 
 
+class BurstDetectResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}  # allow the model_version field
+
+    station: str
+    date: str
+    filename: str
+    available: bool
+    reason: str = ""
+    model_version: str | None = None
+    threshold: float | None = None
+    file_score: float | None = None
+    is_burst: bool | None = None
+    n_windows: int | None = None
+    inference_ms: float | None = None
+    events: list[dict] = []
+
+
 class GoesResponse(BaseModel):
     date: str
     available: bool
@@ -505,17 +522,13 @@ def _observation_start(header) -> datetime:
         return datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
-def _times_to_utc(time_arr: np.ndarray, header) -> list[str]:
-    """Convert relative time offsets (seconds) to absolute ISO 8601 UTC timestamps.
+def _time_offsets_seconds(time_arr: np.ndarray, header) -> np.ndarray:
+    """Normalise the raw time axis to seconds since observation start.
 
-    Each value in `time_arr` is interpreted as seconds elapsed since the
-    observation start (DATE-OBS + TIME-OBS). If CDELT1 is available it is used
-    to rescale the axis when the time array consists of integer indices.
+    If CDELT1 is available it is used to rescale the axis when the time array
+    consists of integer indices (steps of ~1.0).
     """
-    base = _observation_start(header)
-
     arr = np.asarray(time_arr, dtype=float).ravel()
-    # If the array looks like consecutive integer indices (0,1,2,...), rescale with CDELT1
     cdelt1 = header.get("CDELT1")
     if cdelt1 is not None and arr.size > 1:
         diffs = np.diff(arr)
@@ -525,6 +538,17 @@ def _times_to_utc(time_arr: np.ndarray, header) -> list[str]:
                 arr = arr * float(cdelt1)
             except Exception:
                 pass
+    return arr
+
+
+def _times_to_utc(time_arr: np.ndarray, header) -> list[str]:
+    """Convert relative time offsets (seconds) to absolute ISO 8601 UTC timestamps.
+
+    Each value in `time_arr` is interpreted as seconds elapsed since the
+    observation start (DATE-OBS + TIME-OBS).
+    """
+    base = _observation_start(header)
+    arr = _time_offsets_seconds(time_arr, header)
 
     labels: list[str] = []
     for t in arr:
@@ -1297,6 +1321,80 @@ def get_spectrogram_zoom(
     except Exception as exc:
         logger.exception("Zoom failed for %s %s: %s", station, filename, exc)
         raise HTTPException(status_code=500, detail=f"Zoom processing failed: {exc}")
+
+
+# ── Automatic burst detection (CNN+MIL from Burst_No_Burst by Sahan) ─────────
+
+# Single worker: CPU inference is heavy and the model bundle is a shared
+# singleton — serialising requests avoids thrashing.
+_BURST_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="burst")
+
+
+@app.get("/api/burst/detect", response_model=BurstDetectResponse)
+async def detect_burst(
+    station: str = Query(..., description="e-Callisto station"),
+    date: str = Query(..., description="Observation date, format YYYY-MM-DD"),
+    filename: str = Query(..., description="Exact FITS filename (as shown in the overview)"),
+):
+    """Run the trained CNN+MIL burst classifier on one FITS file.
+
+    Ported from Burst_No_Burst by Sahan: model-specific preprocessing
+    (log1p → running-quantile baseline → per-frequency normalisation → RFI
+    mitigation → clipping), 128×128 windowing, window CNN scoring and MIL
+    bag pooling. Returns the file-level burst probability, the calibrated
+    threshold and the candidate event intervals (time + frequency band).
+
+    torch is optional: when it is not installed the endpoint answers with
+    available=false and a reason instead of failing.
+    """
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid date format: '{date}'")
+
+    from backend import burst_detect  # deferred: torch import stays optional
+
+    ok, reason = burst_detect.is_available()
+    if not ok:
+        return BurstDetectResponse(
+            station=station, date=date, filename=filename,
+            available=False, reason=reason,
+        )
+
+    # Resolve the FITS file (usually already local — the overview loaded it)
+    local_path = os.path.join(DATA_DIR_LOCAL, filename)
+    if os.path.isfile(local_path):
+        fits_path = local_path
+    else:
+        fits_path = _download_from_ethz(station, date, filename=filename)
+    if not fits_path:
+        raise HTTPException(
+            status_code=404,
+            detail=f"File '{filename}' not found for station '{station}' on {date}.",
+        )
+
+    def _run() -> dict:
+        data_raw, freqs, time_arr, header = _load_raw_cached(fits_path)
+        time_s = _time_offsets_seconds(time_arr, header)
+        obs_start = _observation_start(header)
+        return burst_detect.detect_bursts(data_raw, freqs, time_s, obs_start)
+
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(_BURST_EXECUTOR, _run)
+    except Exception as exc:
+        logger.exception("Burst detection failed for %s: %s", filename, exc)
+        raise HTTPException(status_code=500, detail=f"Burst detection failed: {exc}")
+
+    logger.info(
+        "Burst detection %s: score=%.3f (threshold %.2f), %d event(s), %.0f ms",
+        filename, result["file_score"], result["threshold"],
+        len(result["events"]), result["inference_ms"],
+    )
+    return BurstDetectResponse(
+        station=station, date=date, filename=filename,
+        available=True, **result,
+    )
 
 
 # ── GOES/XRS overlay (ported from goes_overlay.py by Sahan, simplified) ──────

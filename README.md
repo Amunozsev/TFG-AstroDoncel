@@ -24,6 +24,7 @@ Interactive web portal for visualisation and analysis of solar radio spectrogram
 | **High-resolution zoom** | Box-selecting a region fetches a full-resolution patch for that time/frequency window. Works per-panel in multi-station mode; the overview contrast is kept by default (optional auto-contrast on zoom); in-flight requests are cancelled when a newer zoom arrives |
 | **Toolbar tabs** | Processing / Display / Solar context / Layers / Tools tabs above the plot; the sidebar keeps only station, date and burst selection |
 | **Drift ruler** | Click two points on the spectrogram to measure Δt, Δf and the drift rate (MHz/s) — key for classifying Type II/III bursts |
+| **Automatic burst detection (ML)** | Runs Sahan's trained CNN+MIL classifier (*Burst_No_Burst*, `deploy_v1`) on every loaded layer: file-level burst probability against the calibrated threshold (0.6) plus candidate event intervals (time + frequency band) highlighted on the plot. Requires `torch` (optional — the endpoint degrades gracefully without it) |
 | **FITS header viewer** | Inspect the full FITS header of any loaded layer from the Tools tab |
 | **Burst navigation UX** | Station search box, collapsible per-hour groups with counts, ←/→ keyboard stepping through files, explicit primary-station picker for multi-station sync |
 
@@ -115,6 +116,7 @@ Open your browser at `http://localhost:5173`.
 | `GET` | `/api/spectrogram` | Processed spectrogram as JSON |
 | `GET` | `/api/spectrogram/combine` | Processed spectrograms for multiple stations, time-synced and fetched concurrently |
 | `GET` | `/api/spectrogram/zoom` | Full-resolution patch for a time/frequency bounding box |
+| `GET` | `/api/burst/detect` | CNN+MIL burst classification for a FITS file (probability, threshold, event intervals) |
 | `GET` | `/api/goes` | GOES XRS-B flux for a given date |
 
 ### `/api/files`
@@ -175,6 +177,39 @@ GET /api/spectrogram/zoom?station=SPAIN-SIGUENZA&date=2024-05-08
 ```
 
 Returns a full-resolution slice for the given time/frequency box, reprocessed (background subtraction, optional RFI filter) on the slice only. Used by the frontend when the user box-selects a region on the plot.
+
+### `/api/burst/detect`
+
+```
+GET /api/burst/detect?station=AUSTRALIA-ASSA&date=2022-02-08
+    &filename=Australia-ASSA_20220208_213000_62.fit.gz
+```
+
+```json
+{
+  "available": true,
+  "model_version": "20260218T113917Z",
+  "threshold": 0.6,
+  "file_score": 0.9597,
+  "is_burst": true,
+  "events": [
+    {
+      "start_utc": "2022-02-08T21:32:40Z",
+      "end_utc": "2022-02-08T21:40:08Z",
+      "peak_score": 0.9579,
+      "mean_score": 0.8788,
+      "freq_band_mhz": [15.0, 86.938]
+    }
+  ]
+}
+```
+
+Pipeline (ported from *Burst_No_Burst* `infer/deploy.py`, validated against the
+author's reference prediction on the same file): model-specific preprocessing
+(log1p → running-quantile baseline → per-frequency robust normalisation → RFI
+mitigation → clipping) → 128×128 windowing → window CNN → MIL noisy-or pooling →
+median-smoothed event extraction. ~0.5 s per file on CPU. If `torch` is not
+installed the endpoint replies `available: false` with the reason.
 
 ### `/api/goes`
 
