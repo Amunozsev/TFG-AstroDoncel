@@ -14,14 +14,18 @@ Interactive web portal for visualisation and analysis of solar radio spectrogram
 | **Live station list** | Fetches active stations from the ETHZ archive (soleil.i4ds.ch); falls back to a static list of 76 real stations when offline |
 | **Burst navigation** | For each station + date, lists all available files (~15 min segments) with their start time, grouped by hour; the first one loads automatically |
 | **Auto-download** | If a file is not in the local cache, it is downloaded from the ETHZ archive transparently |
-| **RFI pipeline (Sahan)** | 2D median filter → hot-channel detection (MAD z-score) → interpolation repair → per-channel percentile clipping |
+| **RFI pipeline v2 (Sahan)** | Ported from Burst_No_Burst: persistent narrowband detection by channel occupancy + impulsive RFI via connected components + channel-median inpainting; all thresholds adjustable from the UI, per-request stats (`rfi_stats`) |
 | **Background subtraction** | Robust baseline using the 25th percentile of each frequency channel (always active) |
 | **Absolute time axis** | Real ISO 8601 UTC timestamps reconstructed from `DATE-OBS + TIME-OBS + CDELT1` in the FITS header |
 | **Adjustable contrast** | `Z min / Z max` sliders with automatic computation from the 2–98 percentile range of processed data |
 | **GOES/XRS overlay** | Overlays GOES X-ray flux (XRS-B channel, 0.1–0.8 nm) on a secondary logarithmic Y axis via `sunpy.net.Fido`, clipped to the visible time window |
 | **Colormap selection** | 11 selectable colorscales (Observatory default, Hot, Viridis, Plasma, Inferno, Magma, Cividis, Turbo, Jet, RdYlBu, Cubehelix, Bone) |
-| **Multi-station comparison** | Select several stations at once; spectrograms are fetched concurrently and time-synced to the same 15-minute block |
-| **High-resolution zoom** | Box-selecting a region in the plot fetches a full-resolution patch for that time/frequency window instead of the decimated overview |
+| **Multi-station comparison** | Select several stations at once; spectrograms are fetched concurrently and time-synced to the same 15-minute block. Two comparison modes: **stacked synchronised panels** (default, one subplot per station sharing the UT axis — as in Sahan's Multi-Station Comparison) and **translucent overlay** (upper layers use an alpha-graded colorscale so only bright bursts blend on top) |
+| **High-resolution zoom** | Box-selecting a region fetches a full-resolution patch for that time/frequency window. Works per-panel in multi-station mode; the overview contrast is kept by default (optional auto-contrast on zoom); in-flight requests are cancelled when a newer zoom arrives |
+| **Toolbar tabs** | Processing / Display / Solar context / Layers / Tools tabs above the plot; the sidebar keeps only station, date and burst selection |
+| **Drift ruler** | Click two points on the spectrogram to measure Δt, Δf and the drift rate (MHz/s) — key for classifying Type II/III bursts |
+| **FITS header viewer** | Inspect the full FITS header of any loaded layer from the Tools tab |
+| **Burst navigation UX** | Station search box, collapsible per-hour groups with counts, ←/→ keyboard stepping through files, explicit primary-station picker for multi-station sync |
 
 ---
 
@@ -139,9 +143,19 @@ The `★` prefix marks files already downloaded to the local cache.
 GET /api/spectrogram?station=SPAIN-SIGUENZA&date=2024-05-08
     &filename=SPAIN-SIGUENZA_20240508_080000_01.fit.gz
     &sahan_filter=false
+    &rfi_z_thresh=6.0&rfi_occupancy=0.15&rfi_min_component=9&rfi_impulsive=true
 ```
 
-Returns `time_axis` (ISO 8601 UTC), `freq_axis` (MHz), `z` (intensity in dB), `vmin/vmax`, and the full FITS header.
+Returns `time_axis` (ISO 8601 UTC), `freq_axis` (MHz), `z` (intensity in dB), `vmin/vmax`, the full FITS header, `rfi_masked_channels`, and `rfi_stats` (`persistent_channels`, `masked_fraction`, `occupancy_mean`).
+
+RFI parameters (accepted by `/api/spectrogram`, `/api/spectrogram/combine` and `/api/spectrogram/zoom`):
+
+| Param | Default | Meaning |
+|---|---|---|
+| `rfi_z_thresh` | 6.0 | Robust z-score threshold (per-channel and global) |
+| `rfi_occupancy` | 0.15 | Fraction of time samples above threshold for a channel to count as persistent RFI |
+| `rfi_min_component` | 9 | Minimum connected-component size (pixels) for the impulsive stage |
+| `rfi_impulsive` | true | Enable the impulsive stage (very bright bursts can also form large components — disable if a burst disappears) |
 
 ### `/api/spectrogram/combine`
 
@@ -214,10 +228,12 @@ _subtract_background()      ← Baseline subtraction: 25th percentile per row
                               (robust against intense solar emission)
         │
         ▼  [if sahan_filter=true]
-_clean_rfi()                ← 2D median filter (3×3)
-                              Hot-channel detection (MAD z-score, threshold 6σ)
-                              Repair by interpolation from neighbours
-                              Outlier clipping (99.5th percentile per channel)
+_mitigate_rfi()             ← RFI v2 (ported from Burst_No_Burst by Sahan):
+                              1. Persistent narrowband RFI by channel occupancy
+                                 (fraction of samples with |z| > z_thresh)
+                              2. Impulsive RFI via connected components
+                                 (scipy.ndimage.label, min component size)
+                              3. Inpainting with the channel median
         │
         ▼
 _percentile_clip_global()   ← Compute vmin (p2) and vmax (p98) for contrast
@@ -233,7 +249,7 @@ JSON → Plotly heatmap (selectable colorscale, default: observatory)
 
 ## Credits and references
 
-- **RFI scientific engine:** ported and adapted from [e-CALLISTO FITS Analyzer v2.4.1](https://github.com/saandev/e-callisto_fits_analyzer) by Sahan S. Liyanage, Astronomical and Space Science Unit, University of Colombo, Sri Lanka.
+- **RFI scientific engine (v2):** ported and adapted from *Burst_No_Burst* (preprocess/rfi.py) and the [e-CALLISTO FITS Analyzer](https://github.com/saandev/e-callisto_fits_analyzer) by Sahan S. Liyanage, Astronomical and Space Science Unit, University of Colombo, Sri Lanka. The stacked-panel comparison view follows the Analyzer's Multi-Station Comparison workspace; the drift ruler follows its Ruler measurements tool.
 - **e-CALLISTO network:** Christian Monstein, ETH Zürich / Institute for Astronomy, Eidgenössische Technische Hochschule.
 - **GOES/XRS data:** NOAA National Centers for Environmental Information (NCEI), downloaded via [SunPy](https://sunpy.org/).
 - **Stack:** [FastAPI](https://fastapi.tiangolo.com/) · [astropy](https://www.astropy.org/) · [SunPy](https://sunpy.org/) · [React](https://react.dev/) · [Vite](https://vitejs.dev/) · [Plotly.js](https://plotly.com/javascript/)

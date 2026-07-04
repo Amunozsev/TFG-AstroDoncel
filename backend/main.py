@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import threading
+import warnings
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -23,7 +24,7 @@ from astropy.io import fits
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from scipy.ndimage import median_filter
+from scipy.ndimage import label as ndi_label
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -141,6 +142,7 @@ class SpectrogramResponse(BaseModel):
     vmax: float
     fits_header: dict
     rfi_masked_channels: list[int] = []
+    rfi_stats: dict = {}
 
 
 class CombinedSpectrogramResponse(BaseModel):
@@ -559,105 +561,139 @@ def _subtract_background(data: np.ndarray) -> np.ndarray:
     return out
 
 
-def _robust_z_score(values: np.ndarray) -> np.ndarray:
-    """MAD-based robust z-score (ported from rfi_filters._robust_z by Sahan)."""
-    arr = np.asarray(values, dtype=float)
+def _detect_persistent_narrowband_rfi(
+    data: np.ndarray,
+    z_thresh: float = 6.0,
+    occupancy_thresh: float = 0.15,
+    eps: float = 1e-6,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Detect persistent narrowband RFI channels by time-occupancy.
+
+    Ported from Burst_No_Burst preprocess/rfi.detect_persistent_narrowband_rfi()
+    by Sahan. For each frequency channel, computes a per-channel robust z-score
+    over time and flags the channel when the fraction of samples exceeding
+    z_thresh is above occupancy_thresh. Far more reliable than level-based
+    scoring on background-subtracted data (where channel medians are ~0).
+
+    Returns (2D boolean mask, per-channel occupancy fractions).
+    """
+    arr = np.asarray(data, dtype=np.float32)
+    with warnings.catch_warnings():
+        # All-NaN rows (dead channels) are expected; they yield occ=0 below.
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        med = np.nanmedian(arr, axis=1, keepdims=True)
+        mad = np.nanmedian(np.abs(arr - med), axis=1, keepdims=True)
+    with np.errstate(invalid="ignore"):
+        z = (arr - med) / (mad + eps)
+        occ = np.mean(np.abs(z) > z_thresh, axis=1)
+    occ = np.nan_to_num(occ, nan=0.0)
+    ch_mask = occ > occupancy_thresh
+    mask = np.repeat(ch_mask[:, None], arr.shape[1], axis=1)
+    return mask, occ.astype(np.float32)
+
+
+def _detect_impulsive_rfi(
+    data: np.ndarray,
+    z_thresh: float = 6.0,
+    min_component_size: int = 9,
+    eps: float = 1e-6,
+) -> np.ndarray:
+    """Detect impulsive RFI hotspots via connected components.
+
+    Ported from Burst_No_Burst preprocess/rfi.detect_impulsive_rfi() by Sahan.
+    Thresholds the global robust z-score and keeps only connected components
+    of at least min_component_size pixels (tiny isolated blips are ignored).
+    Component filtering is vectorised with bincount instead of the original
+    per-component loop.
+    """
+    arr = np.asarray(data, dtype=np.float32)
     med = np.nanmedian(arr)
     mad = np.nanmedian(np.abs(arr - med))
-    if not np.isfinite(mad) or mad <= 0:
-        std = np.nanstd(arr)
-        if np.isfinite(std) and std > 0:
-            return (arr - med) / std
-        return np.where(np.abs(arr - med) > 0, np.inf, 0.0).astype(float)
-    return 0.6745 * (arr - med) / mad
+    with np.errstate(invalid="ignore"):
+        z = (arr - med) / (mad + eps)
+        candidate = np.abs(z) > z_thresh
+    candidate &= np.isfinite(arr)
+    labeled, n_comp = ndi_label(candidate)
+    if n_comp == 0:
+        return np.zeros_like(candidate, dtype=bool)
+    sizes = np.bincount(labeled.ravel())
+    keep = np.zeros(n_comp + 1, dtype=bool)
+    keep[1:] = sizes[1:] >= max(1, int(min_component_size))
+    return keep[labeled]
 
 
-def _mask_hot_channels(data: np.ndarray, z_thresh: float = 6.0) -> list[int]:
-    """Detect frequency channels dominated by RFI.
+def _inpaint_with_channel_median(data: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Replace masked samples with their channel median (global-median fallback).
 
-    Ported from rfi_filters._mask_hot_channels() by Sahan.
-    Combines absolute level and variability of each row into a score, then
-    applies a robust z-score to identify statistical outliers.
+    Ported from Burst_No_Burst preprocess/rfi.inpaint_with_channel_median() by Sahan.
     """
-    if data.ndim != 2 or data.shape[0] == 0:
-        return []
-    row_med = np.nanmedian(data, axis=1)
-    row_mad = np.nanmedian(np.abs(data - row_med[:, None]), axis=1)
-    score = np.abs(row_med) + row_mad
-    z = _robust_z_score(score)
-    return [int(i) for i in np.where(z > float(z_thresh))[0].tolist()]
+    arr = np.asarray(data, dtype=np.float32)
+    mask = np.asarray(mask, dtype=bool)
+    out = arr.copy()
+
+    finite = np.where(np.isfinite(out), out, np.nan)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        row_median = np.nanmedian(finite, axis=1)
+        global_median = np.nanmedian(finite)
+    if not np.isfinite(global_median):
+        global_median = 0.0
+
+    for f in range(out.shape[0]):
+        row_mask = mask[f]
+        if not row_mask.any():
+            continue
+        fill = row_median[f]
+        if not np.isfinite(fill):
+            fill = global_median
+        out[f, row_mask] = fill
+    return out.astype(np.float32)
 
 
-def _repair_masked_channels(data: np.ndarray, masked: list[int]) -> np.ndarray:
-    """Interpolate masked channels from their adjacent neighbours.
-
-    Ported from rfi_filters._repair_masked_channels() by Sahan.
-    """
-    if not masked:
-        return data
-    out = data.copy()
-    n = out.shape[0]
-    for idx in masked:
-        if idx <= 0:
-            out[idx] = out[1] if n > 1 else out[0]
-        elif idx >= n - 1:
-            out[idx] = out[n - 2] if n > 1 else out[0]
-        else:
-            out[idx] = 0.5 * (out[idx - 1] + out[idx + 1])
-    return out
-
-
-def _percentile_clip_per_channel(data: np.ndarray, upper: float = 99.5) -> np.ndarray:
-    """Clip high outliers per channel while preserving burst morphology.
-
-    Ported from rfi_filters._percentile_clip_per_channel() by Sahan.
-    Only clips the high end; the low end is preserved to retain structure.
-    """
-    if data.ndim != 2 or upper <= 0 or upper >= 100:
-        return data
-    out = data.copy()
-    highs = np.nanpercentile(out, upper, axis=1)
-    for i in range(out.shape[0]):
-        out[i] = np.minimum(out[i], highs[i])
-    return out
-
-
-def _clean_rfi(
+def _mitigate_rfi(
     data: np.ndarray,
     *,
-    kernel_time: int = 3,
-    kernel_freq: int = 3,
-    channel_z_threshold: float = 6.0,
-    percentile_clip: float = 99.5,
-) -> tuple[np.ndarray, list[int]]:
-    """Full RFI cleaning pipeline. Ported from rfi_filters.clean_rfi() by Sahan.
+    z_thresh: float = 6.0,
+    occupancy_thresh: float = 0.15,
+    min_component_size: int = 9,
+    impulsive: bool = True,
+) -> tuple[np.ndarray, list[int], dict]:
+    """Full RFI mitigation pipeline (v2). Ported from Burst_No_Burst
+    preprocess/rfi.mitigate_rfi() by Sahan.
 
     Steps:
-    1. 2D median filter → removes point spikes in time and frequency.
-    2. Hot-channel detection via robust z-score.
-    3. Repair masked channels by interpolation from neighbours.
-    4. High-outlier clipping per channel (preserves burst morphology).
+    1. Persistent narrowband RFI: per-channel occupancy of |z| > z_thresh.
+    2. Impulsive RFI: connected components of the global z-score map
+       (optional — strong solar bursts can also form large bright components,
+       so this stage can be disabled from the UI).
+    3. Inpaint every masked sample with its channel median.
 
-    Returns (cleaned_data, list_of_masked_channel_indices).
+    Returns (cleaned_data, masked_channel_indices, stats).
     """
     arr = np.asarray(data, dtype=np.float32)
     if arr.ndim != 2:
-        raise ValueError("_clean_rfi expects a 2D array (freq, time).")
+        raise ValueError("_mitigate_rfi expects a 2D array (freq, time).")
 
-    def _ensure_odd(v: int) -> int:
-        v = max(1, int(v))
-        return v if v % 2 != 0 else v + 1
+    persistent_mask, occupancy = _detect_persistent_narrowband_rfi(
+        arr, z_thresh=float(z_thresh), occupancy_thresh=float(occupancy_thresh)
+    )
+    if impulsive:
+        impulsive_mask = _detect_impulsive_rfi(
+            arr, z_thresh=float(z_thresh), min_component_size=int(min_component_size)
+        )
+    else:
+        impulsive_mask = np.zeros_like(persistent_mask, dtype=bool)
+    combined_mask = persistent_mask | impulsive_mask
+    cleaned = _inpaint_with_channel_median(arr, combined_mask)
 
-    filtered = median_filter(
-        arr,
-        size=(_ensure_odd(kernel_freq), _ensure_odd(kernel_time)),
-        mode="nearest",
-    ).astype(np.float32)
-    masked = _mask_hot_channels(arr, z_thresh=float(channel_z_threshold))
-    repaired = _repair_masked_channels(filtered, masked)
-    clipped = _percentile_clip_per_channel(repaired, upper=float(percentile_clip))
-
-    return clipped.astype(np.float32), masked
+    masked_channels = [int(i) for i in np.where(np.any(persistent_mask, axis=1))[0]]
+    stats = {
+        "persistent_channels": len(masked_channels),
+        "masked_fraction": round(float(combined_mask.mean()), 5),
+        "occupancy_mean": round(float(np.mean(occupancy)), 5),
+        "impulsive_enabled": bool(impulsive),
+    }
+    return cleaned.astype(np.float32), masked_channels, stats
 
 
 def _percentile_clip_global(data: np.ndarray, lo: float = 2.0, hi: float = 98.0) -> tuple[float, float]:
@@ -764,6 +800,10 @@ def _build_spectrogram(
     file_path: str | None = None,
     sahan_filter: bool = False,
     max_time_bins: int | None = None,
+    rfi_z_thresh: float = 6.0,
+    rfi_occupancy: float = 0.15,
+    rfi_min_component: int = 9,
+    rfi_impulsive: bool = True,
 ) -> SpectrogramResponse:
     """Resolve a FITS file and run the full processing pipeline for one station.
 
@@ -815,9 +855,19 @@ def _build_spectrogram(
         data = _subtract_background(data)
 
         rfi_masked: list[int] = []
+        rfi_stats: dict = {}
         if sahan_filter:
-            data, rfi_masked = _clean_rfi(data)
-            logger.info("RFI filter applied: %d channels masked", len(rfi_masked))
+            data, rfi_masked, rfi_stats = _mitigate_rfi(
+                data,
+                z_thresh=rfi_z_thresh,
+                occupancy_thresh=rfi_occupancy,
+                min_component_size=rfi_min_component,
+                impulsive=rfi_impulsive,
+            )
+            logger.info(
+                "RFI v2 applied: %d persistent channels, %.2f%% samples masked",
+                len(rfi_masked), 100.0 * rfi_stats.get("masked_fraction", 0.0),
+            )
 
         finite_vals = data[np.isfinite(data)]
         if finite_vals.size == 0:
@@ -843,6 +893,7 @@ def _build_spectrogram(
             vmax=round(vmax, 4),
             fits_header=_header_to_dict(header),
             rfi_masked_channels=rfi_masked,
+            rfi_stats=rfi_stats,
         )
     except Exception as exc:
         raise RuntimeError(f"Error processing FITS '{fits_path}': {exc}") from exc
@@ -935,6 +986,10 @@ def get_spectrogram(
     file_path: str = Query(default=None, description="Absolute path (manual override)"),
     sahan_filter: bool = Query(default=False, description="Apply full RFI cleaning"),
     max_time_bins: int = Query(default=None, description="Decimate time axis to at most N columns (overview mode)"),
+    rfi_z_thresh: float = Query(default=6.0, ge=0.5, le=20.0, description="RFI robust z-score threshold"),
+    rfi_occupancy: float = Query(default=0.15, ge=0.01, le=1.0, description="RFI channel occupancy threshold"),
+    rfi_min_component: int = Query(default=9, ge=1, le=500, description="Min connected-component size for impulsive RFI"),
+    rfi_impulsive: bool = Query(default=True, description="Enable impulsive (connected-component) RFI stage"),
 ):
     """Return the spectrogram for an e-Callisto station.
 
@@ -945,7 +1000,8 @@ def get_spectrogram(
 
     Processing pipeline:
     - Always: robust background subtraction (25th percentile per frequency channel).
-    - If sahan_filter=true: additionally applies full RFI cleaning.
+    - If sahan_filter=true: additionally applies RFI mitigation v2 (occupancy +
+      connected components + channel-median inpainting, from Burst_No_Burst).
     - vmin/vmax are always recomputed on the processed data.
     """
     try:
@@ -959,6 +1015,10 @@ def get_spectrogram(
             filename=filename, file_path=file_path,
             sahan_filter=sahan_filter,
             max_time_bins=max_time_bins,
+            rfi_z_thresh=rfi_z_thresh,
+            rfi_occupancy=rfi_occupancy,
+            rfi_min_component=rfi_min_component,
+            rfi_impulsive=rfi_impulsive,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
@@ -974,6 +1034,10 @@ async def get_spectrogram_combine(
     filename: str = Query(default=None, description="Primary station filename for 15-min block sync"),
     sahan_filter: bool = Query(default=False, description="Apply full RFI cleaning"),
     max_time_bins: int = Query(default=None, description="Decimate time axis to at most N columns (overview mode)"),
+    rfi_z_thresh: float = Query(default=6.0, ge=0.5, le=20.0),
+    rfi_occupancy: float = Query(default=0.15, ge=0.01, le=1.0),
+    rfi_min_component: int = Query(default=9, ge=1, le=500),
+    rfi_impulsive: bool = Query(default=True),
 ):
     """Return per-station spectrograms for multiple stations, processed concurrently.
 
@@ -1002,6 +1066,13 @@ async def get_spectrogram_combine(
         if len(raw) >= 4 and raw[:4].isdigit():
             target_hhmm = raw[:4]
 
+    rfi_kwargs = dict(
+        rfi_z_thresh=rfi_z_thresh,
+        rfi_occupancy=rfi_occupancy,
+        rfi_min_component=rfi_min_component,
+        rfi_impulsive=rfi_impulsive,
+    )
+
     def _process_one(
         st: str,
         exact_filename: str | None,
@@ -1014,6 +1085,7 @@ async def get_spectrogram_combine(
                 result = _build_spectrogram(
                     st, date, filename=exact_filename,
                     sahan_filter=sahan_filter, max_time_bins=max_time_bins,
+                    **rfi_kwargs,
                 )
             elif match_hhmm:
                 # Secondary station: scan available files and pick the one matching HHMM
@@ -1035,6 +1107,7 @@ async def get_spectrogram_combine(
                 result = _build_spectrogram(
                     st, date, filename=matched,
                     sahan_filter=sahan_filter, max_time_bins=max_time_bins,
+                    **rfi_kwargs,
                 )
             else:
                 # No time anchor was derived — refuse rather than silently loading an
@@ -1080,7 +1153,9 @@ async def get_spectrogram_combine(
 
 # ── High-resolution zoom patch ────────────────────────────────────────────────
 
-_MAX_ZOOM_COLS = 1500  # if a zoom slice exceeds this, decimate it too
+# Zoom patches may be denser than the 1500-col overview: this ceiling only
+# guards against pathological requests (e.g. full-file zoom at raw resolution).
+_MAX_ZOOM_COLS = 2400
 
 
 @app.get("/api/spectrogram/zoom", response_model=SpectrogramResponse)
@@ -1093,6 +1168,10 @@ def get_spectrogram_zoom(
     f0: float = Query(..., description="Start frequency MHz (from Plotly yaxis.range)"),
     f1: float = Query(..., description="End frequency MHz (from Plotly yaxis.range)"),
     sahan_filter: bool = Query(default=False),
+    rfi_z_thresh: float = Query(default=6.0, ge=0.5, le=20.0),
+    rfi_occupancy: float = Query(default=0.15, ge=0.01, le=1.0),
+    rfi_min_component: int = Query(default=9, ge=1, le=500),
+    rfi_impulsive: bool = Query(default=True),
 ):
     """Return a maximum-resolution patch for a time+frequency bounding box.
 
@@ -1176,8 +1255,15 @@ def get_spectrogram_zoom(
         # ── Process on the slice ──────────────────────────────────────────────
         data_proc = _subtract_background(data_slice)
         rfi_masked: list[int] = []
+        rfi_stats: dict = {}
         if sahan_filter:
-            data_proc, rfi_masked = _clean_rfi(data_proc)
+            data_proc, rfi_masked, rfi_stats = _mitigate_rfi(
+                data_proc,
+                z_thresh=rfi_z_thresh,
+                occupancy_thresh=rfi_occupancy,
+                min_component_size=rfi_min_component,
+                impulsive=rfi_impulsive,
+            )
 
         finite_vals = data_proc[np.isfinite(data_proc)]
         if finite_vals.size == 0:
@@ -1203,6 +1289,7 @@ def get_spectrogram_zoom(
             vmax=round(vmax, 4),
             fits_header=_header_to_dict(header),
             rfi_masked_channels=rfi_masked,
+            rfi_stats=rfi_stats,
         )
 
     except HTTPException:

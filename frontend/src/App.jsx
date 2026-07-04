@@ -10,26 +10,42 @@ const FALLBACK_STATIONS = [
   'SSRT', 'SWISS-LANDSCHLACHT',
 ];
 
+const TABS = [
+  { id: 'processing', label: 'Processing' },
+  { id: 'display',    label: 'Display' },
+  { id: 'context',    label: 'Solar context' },
+  { id: 'layers',     label: 'Layers' },
+  { id: 'tools',      label: 'Tools' },
+];
+
 export default function App() {
   const [stations, setStations]             = useState(FALLBACK_STATIONS);
   const [stationsSource, setStationsSource] = useState('');
-  // Primary station: drives the burst-file list
-  const [station, setStation]               = useState('SPAIN-SIGUENZA');
+  const [stationFilter, setStationFilter]   = useState('');
+  // Primary station: drives the burst-file list and the 15-min sync block.
+  // No station is preselected on startup — the user must pick one.
+  const [station, setStation]               = useState(null);
   // All stations selected for multi-layer loading
-  const [selectedStations, setSelectedStations] = useState(['SPAIN-SIGUENZA']);
+  const [selectedStations, setSelectedStations] = useState([]);
   const [date, setDate]                     = useState(() => new Date().toISOString().slice(0, 10));
 
   // Daily burst list (primary station only)
   const [files, setFiles]                   = useState([]);
   const [filesLoading, setFilesLoading]     = useState(false);
   const [selectedFile, setSelectedFile]     = useState(null);
+  const [collapsedHours, setCollapsedHours] = useState({});
 
   const [useSahanFilter, setSahan]          = useState(false);
+  const [rfiParams, setRfiParams]           = useState({
+    zThresh: 6.0, occupancy: 0.15, minComponent: 9, impulsive: true,
+  });
   const [showGoes, setShowGoes]             = useState(false);
   const [colormap, setColormap]             = useState('observatory');
   const [zmin, setZmin]                     = useState(-5);
   const [zmax, setZmax]                     = useState(30);
   const [useCustomZ, setUseCustomZ]         = useState(false);
+  const [compareMode, setCompareMode]       = useState('panels'); // 'panels' | 'overlay'
+  const [autoContrastZoom, setAutoContrastZoom] = useState(false);
   const [triggerLoad, setTriggerLoad]       = useState(0);
   const [hasLoaded, setHasLoaded]           = useState(false);
 
@@ -42,6 +58,12 @@ export default function App() {
   // Per-layer UI state: { [station]: { visible: bool, opacity: number } }
   const [layerState, setLayerState]         = useState({});
 
+  // Toolbar tabs / tools
+  const [activeTab, setActiveTab]           = useState(null);
+  const [rulerMode, setRulerMode]           = useState(false);
+  const [showHeaderViewer, setShowHeaderViewer] = useState(false);
+  const [headerLayerIdx, setHeaderLayerIdx] = useState(0);
+
   // ── Load station list ─────────────────────────────────────────────────────
   useEffect(() => {
     async function loadStations() {
@@ -52,9 +74,9 @@ export default function App() {
         if (data.stations?.length > 0) {
           setStations(data.stations);
           setStationsSource(data.source);
-          if (!data.stations.includes(station)) {
-            setStation(data.stations[0]);
-            setSelectedStations([data.stations[0]]);
+          if (station && !data.stations.includes(station)) {
+            setStation(null);
+            setSelectedStations([]);
           }
         }
       } catch (err) {
@@ -67,9 +89,11 @@ export default function App() {
 
   // ── Reload burst list when primary station or date changes ────────────────
   const loadFiles = useCallback(async (st, dt) => {
-    setFilesLoading(true);
     setFiles([]);
     setSelectedFile(null);
+    setCollapsedHours({});
+    if (!st) return;
+    setFilesLoading(true);
     try {
       const res = await fetch(
         `${API_BASE}/api/files?station=${encodeURIComponent(st)}&date=${encodeURIComponent(dt)}`
@@ -94,6 +118,7 @@ export default function App() {
   // ── Fetch spectrogram layers on explicit Load ─────────────────────────────
   useEffect(() => {
     if (!hasLoaded || triggerLoad === 0) return;
+    if (selectedStations.length === 0) return;
 
     async function fetchLayers() {
       setFetchLoading(true);
@@ -102,14 +127,25 @@ export default function App() {
         let newLayers;
         let newFailed = [];
 
+        const rfiQS = {
+          rfi_z_thresh: String(rfiParams.zThresh),
+          rfi_occupancy: String(rfiParams.occupancy),
+          rfi_min_component: String(rfiParams.minComponent),
+          rfi_impulsive: String(rfiParams.impulsive),
+        };
+
         if (selectedStations.length > 1) {
           const params = new URLSearchParams({
             date,
             sahan_filter: String(useSahanFilter),
             max_time_bins: '1500',
+            ...rfiQS,
           });
           if (selectedFile) params.set('filename', selectedFile);
-          selectedStations.forEach((s) => params.append('stations', s));
+          // Primary station first so the backend anchors the 15-min block to it
+          const ordered = [station, ...selectedStations.filter((s) => s !== station)]
+            .filter(Boolean);
+          ordered.forEach((s) => params.append('stations', s));
           const res = await fetch(`${API_BASE}/api/spectrogram/combine?${params}`);
           if (!res.ok) {
             const body = await res.json().catch(() => ({}));
@@ -119,14 +155,15 @@ export default function App() {
           newLayers = data.layers;
           newFailed = data.failed ?? [];
         } else {
-          let url =
-            `${API_BASE}/api/spectrogram` +
-            `?station=${encodeURIComponent(selectedStations[0] ?? station)}` +
-            `&date=${encodeURIComponent(date)}` +
-            `&sahan_filter=${useSahanFilter}` +
-            `&max_time_bins=1500`;
-          if (selectedFile) url += `&filename=${encodeURIComponent(selectedFile)}`;
-          const res = await fetch(url);
+          const params = new URLSearchParams({
+            station: selectedStations[0],
+            date,
+            sahan_filter: String(useSahanFilter),
+            max_time_bins: '1500',
+            ...rfiQS,
+          });
+          if (selectedFile) params.set('filename', selectedFile);
+          const res = await fetch(`${API_BASE}/api/spectrogram?${params}`);
           if (!res.ok) {
             const body = await res.json().catch(() => ({}));
             throw new Error(body.detail ?? `Error ${res.status}`);
@@ -168,22 +205,38 @@ export default function App() {
     setTriggerLoad((n) => n + 1);
   }
 
-  // Chip click only appears in single-station mode (burst list is hidden otherwise)
   function handleChipClick(filename) {
     setSelectedFile(filename);
     setHasLoaded(true);
     setTriggerLoad((n) => n + 1);
   }
 
+  // ── Keyboard navigation: ←/→ steps through the burst list ─────────────────
+  useEffect(() => {
+    function onKey(e) {
+      if (files.length === 0) return;
+      const tag = e.target?.tagName;
+      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      e.preventDefault();
+      const idx = files.findIndex((f) => f.filename === selectedFile);
+      const next = e.key === 'ArrowRight'
+        ? Math.min(files.length - 1, idx + 1)
+        : Math.max(0, idx - 1);
+      if (next !== idx && files[next]) handleChipClick(files[next].filename);
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [files, selectedFile]); // eslint-disable-line react-hooks/exhaustive-deps
+
   function toggleStation(s) {
     if (selectedStations.includes(s)) {
-      if (selectedStations.length === 1) return; // always keep at least one selected
       const next = selectedStations.filter((x) => x !== s);
       setSelectedStations(next);
-      if (station === s) setStation(next[0]); // keep primary valid after removal
+      if (station === s) setStation(next[0] ?? null); // keep primary valid after removal
     } else {
       setSelectedStations([...selectedStations, s]);
-      setStation(s); // newly added station becomes primary for file list
+      if (!station) setStation(s); // first pick becomes primary; later picks don't steal it
     }
   }
 
@@ -195,15 +248,269 @@ export default function App() {
     setLayerState((prev) => ({ ...prev, [st]: { ...prev[st], opacity } }));
   }
 
+  function setRfiParam(key, value) {
+    setRfiParams((prev) => ({ ...prev, [key]: value }));
+  }
+
   const loadDisabled =
     !date ||
     selectedStations.length === 0 ||
     (files.length > 0 && !selectedFile);
 
+  const filteredStations = stationFilter
+    ? stations.filter((s) => s.toUpperCase().includes(stationFilter.toUpperCase()))
+    : stations;
+
+  const rfiStats = layers[0]?.rfi_stats ?? null;
+
+  // ── Tab panel contents ─────────────────────────────────────────────────────
+  function renderTabPanel() {
+    switch (activeTab) {
+      case 'processing':
+        return (
+          <div className="tab-panel">
+            <div className="tab-group">
+              <label className="control-checkbox">
+                <input
+                  type="checkbox"
+                  checked={useSahanFilter}
+                  onChange={(e) => setSahan(e.target.checked)}
+                />
+                RFI filter v2 (Sahan)
+              </label>
+              <label className="control-checkbox" title="Connected-component stage; can also mask very bright bursts — disable if a burst disappears">
+                <input
+                  type="checkbox"
+                  checked={rfiParams.impulsive}
+                  disabled={!useSahanFilter}
+                  onChange={(e) => setRfiParam('impulsive', e.target.checked)}
+                />
+                Impulsive stage
+              </label>
+            </div>
+            <label className="tab-field">
+              Z threshold
+              <input
+                type="number" className="control-input tab-num"
+                min="0.5" max="20" step="0.5"
+                value={rfiParams.zThresh}
+                disabled={!useSahanFilter}
+                onChange={(e) => setRfiParam('zThresh', parseFloat(e.target.value) || 6)}
+              />
+            </label>
+            <label className="tab-field">
+              Occupancy
+              <input
+                type="number" className="control-input tab-num"
+                min="0.01" max="1" step="0.01"
+                value={rfiParams.occupancy}
+                disabled={!useSahanFilter}
+                onChange={(e) => setRfiParam('occupancy', parseFloat(e.target.value) || 0.15)}
+              />
+            </label>
+            <label className="tab-field">
+              Min component
+              <input
+                type="number" className="control-input tab-num"
+                min="1" max="500" step="1"
+                value={rfiParams.minComponent}
+                disabled={!useSahanFilter}
+                onChange={(e) => setRfiParam('minComponent', parseInt(e.target.value, 10) || 9)}
+              />
+            </label>
+            <div className="tab-group">
+              <button
+                className="btn-apply"
+                onClick={handleLoad}
+                disabled={loadDisabled}
+                title="Re-run the pipeline with the current RFI parameters"
+              >
+                Apply
+              </button>
+              {rfiStats && rfiStats.persistent_channels !== undefined && (
+                <span className="stat-chip" title="Stats from the last processed layer">
+                  {rfiStats.persistent_channels} ch masked ·{' '}
+                  {(rfiStats.masked_fraction * 100).toFixed(2)}% samples
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      case 'display':
+        return (
+          <div className="tab-panel">
+            <label className="tab-field">
+              Colormap
+              <select
+                className="control-input"
+                value={colormap}
+                onChange={(e) => setColormap(e.target.value)}
+              >
+                <option value="observatory">Default</option>
+                <option value="hot">Hot</option>
+                <option value="inferno">Inferno</option>
+                <option value="magma">Magma</option>
+                <option value="plasma">Plasma</option>
+                <option value="viridis">Viridis</option>
+                <option value="cividis">Cividis</option>
+                <option value="turbo">Turbo</option>
+                <option value="jet">Jet</option>
+                <option value="rdylbu">RdYlBu</option>
+                <option value="cubehelix">Cubehelix</option>
+                <option value="bone_r">Bone (inverted)</option>
+              </select>
+            </label>
+            <label className="tab-field">
+              Comparison mode
+              <div className="segmented">
+                <button
+                  className={compareMode === 'panels' ? 'active' : ''}
+                  onClick={() => setCompareMode('panels')}
+                  title="One synchronised panel per station (recommended)"
+                >
+                  Panels
+                </button>
+                <button
+                  className={compareMode === 'overlay' ? 'active' : ''}
+                  onClick={() => setCompareMode('overlay')}
+                  title="Translucent blend: upper layers fade out at low intensity"
+                >
+                  Overlay
+                </button>
+              </div>
+            </label>
+            <div className="tab-group">
+              <label className="control-checkbox">
+                <input
+                  type="checkbox"
+                  checked={useCustomZ}
+                  onChange={(e) => setUseCustomZ(e.target.checked)}
+                />
+                Manual contrast
+              </label>
+              <label className="control-checkbox" title="Recompute vmin/vmax on the zoomed region instead of keeping the overview contrast">
+                <input
+                  type="checkbox"
+                  checked={autoContrastZoom}
+                  onChange={(e) => setAutoContrastZoom(e.target.checked)}
+                />
+                Auto-contrast on zoom
+              </label>
+            </div>
+            <label className="tab-field slider-field">
+              <span className="slider-row">
+                <span>Z min</span>
+                <span className="slider-value">{zmin}</span>
+              </span>
+              <input
+                type="range" className="control-slider"
+                min="-100" max="50" step="0.5"
+                value={zmin}
+                disabled={!useCustomZ}
+                onChange={(e) => { setUseCustomZ(true); setZmin(parseFloat(e.target.value)); }}
+              />
+            </label>
+            <label className="tab-field slider-field">
+              <span className="slider-row">
+                <span>Z max</span>
+                <span className="slider-value">{zmax}</span>
+              </span>
+              <input
+                type="range" className="control-slider"
+                min="-50" max="300" step="0.5"
+                value={zmax}
+                disabled={!useCustomZ}
+                onChange={(e) => { setUseCustomZ(true); setZmax(parseFloat(e.target.value)); }}
+              />
+            </label>
+          </div>
+        );
+      case 'context':
+        return (
+          <div className="tab-panel">
+            <label className="control-checkbox">
+              <input
+                type="checkbox"
+                checked={showGoes}
+                onChange={(e) => setShowGoes(e.target.checked)}
+              />
+              Overlay GOES/XRS data (0.1–0.8 nm)
+            </label>
+            <span className="tab-hint">
+              First fetch of a day downloads the NetCDF from NOAA (~10–30 s); later requests use the cache.
+            </span>
+          </div>
+        );
+      case 'layers':
+        return (
+          <div className="tab-panel">
+            {layers.length === 0 && failedStations.length === 0 && (
+              <span className="tab-hint">Load one or more stations to manage layers.</span>
+            )}
+            {layers.map((layer) => {
+              const ls = layerState[layer.station] ?? { visible: true, opacity: 1 };
+              return (
+                <div key={layer.station} className="layer-row tab-layer-row">
+                  <label className="layer-name">
+                    <input
+                      type="checkbox"
+                      checked={ls.visible}
+                      onChange={(e) => setLayerVisible(layer.station, e.target.checked)}
+                    />
+                    <span title={layer.station}>{layer.station}</span>
+                  </label>
+                  <input
+                    type="range"
+                    className="control-slider"
+                    min="0" max="1" step="0.05"
+                    value={ls.opacity}
+                    onChange={(e) => setLayerOpacity(layer.station, parseFloat(e.target.value))}
+                    title={`Opacity: ${ls.opacity}`}
+                  />
+                </div>
+              );
+            })}
+            {failedStations.map((f) => (
+              <div key={f.station} className="layer-failed">
+                ⚠ {f.station}: {f.reason}
+              </div>
+            ))}
+          </div>
+        );
+      case 'tools':
+        return (
+          <div className="tab-panel">
+            <button
+              className={`btn-tool${rulerMode ? ' active' : ''}`}
+              onClick={() => setRulerMode((r) => !r)}
+              title="Click two points on the spectrogram to measure Δt, Δf and drift rate (MHz/s)"
+            >
+              📐 Drift ruler {rulerMode ? 'ON' : ''}
+            </button>
+            <button
+              className="btn-tool"
+              onClick={() => { setHeaderLayerIdx(0); setShowHeaderViewer(true); }}
+              disabled={layers.length === 0}
+              title="Inspect the FITS header of a loaded layer"
+            >
+              🗎 FITS header
+            </button>
+            {rulerMode && (
+              <span className="tab-hint">
+                Click two points on the plot — the drift readout appears in the header. Toggle off to clear.
+              </span>
+            )}
+          </div>
+        );
+      default:
+        return null;
+    }
+  }
+
   return (
     <div className="dashboard">
 
-      {/* ── Sidebar ── */}
+      {/* ── Sidebar: observation essentials only ── */}
       <aside className="sidebar">
         <div className="sidebar-header">
           <h1>e-CALLISTO<br /><span>Spain</span></h1>
@@ -224,13 +531,23 @@ export default function App() {
                 {stationsSource === 'ethz' ? '● ETHZ' : '● local'}
               </span>
             )}
-            {selectedStations.length > 1 && (
+            {selectedStations.length > 0 && (
               <span style={{ fontSize: '0.65rem', color: '#38bdf8', marginLeft: '0.3rem' }}>
                 {selectedStations.length} selected
               </span>
             )}
+            <input
+              type="text"
+              className="control-input station-search"
+              placeholder="Filter stations…"
+              value={stationFilter}
+              onChange={(e) => setStationFilter(e.target.value)}
+            />
             <div className="station-checklist">
-              {stations.map((s) => (
+              {filteredStations.length === 0 && (
+                <p className="files-hint" style={{ padding: '0.3rem 0.5rem' }}>No match.</p>
+              )}
+              {filteredStations.map((s) => (
                 <label
                   key={s}
                   className={`station-check-row${selectedStations.includes(s) ? ' selected' : ''}`}
@@ -269,8 +586,25 @@ export default function App() {
               )}
             </h2>
 
-            {filesLoading && <p className="files-hint">Querying ETHZ…</p>}
-            {!filesLoading && files.length === 0 && <p className="files-hint">No files available.</p>}
+            {/* Primary-station picker: anchors the 15-min block for the others */}
+            {selectedStations.length > 1 && (
+              <label className="control-label" style={{ marginBottom: '0.4rem' }}>
+                Primary station
+                <select
+                  className="control-input"
+                  value={station ?? ''}
+                  onChange={(e) => setStation(e.target.value)}
+                >
+                  {selectedStations.map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+
+            {!station && <p className="files-hint">Select a station first.</p>}
+            {station && filesLoading && <p className="files-hint">Querying ETHZ…</p>}
+            {station && !filesLoading && files.length === 0 && <p className="files-hint">No files available.</p>}
 
             {!filesLoading && files.length > 0 && (
               <div className="burst-list">
@@ -283,149 +617,42 @@ export default function App() {
                   }, {})
                 )
                   .sort(([a], [b]) => Number(a) - Number(b))
-                  .map(([hour, bursts]) => (
-                    <div key={hour} className="burst-hour-group">
-                      <div className="burst-hour-header">{hour}:xx UTC</div>
-                      {bursts.map((f) => {
-                        const isCached = f.label.startsWith('★');
-                        const displayLabel = isCached ? `★ ${f.time.slice(3)}` : f.time.slice(3);
-                        return (
-                          <button
-                            key={f.filename}
-                            className={`burst-chip ${selectedFile === f.filename ? 'active' : ''}`}
-                            onClick={() => handleChipClick(f.filename)}
-                            title={f.filename}
-                          >
-                            {displayLabel}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ))}
+                  .map(([hour, bursts]) => {
+                    const collapsed = collapsedHours[hour] ?? false;
+                    return (
+                      <div key={hour} className="burst-hour-group">
+                        <div
+                          className="burst-hour-header collapsible"
+                          onClick={() =>
+                            setCollapsedHours((prev) => ({ ...prev, [hour]: !collapsed }))
+                          }
+                        >
+                          <span className="chevron">{collapsed ? '▸' : '▾'}</span>
+                          {hour}:xx UTC
+                          <span className="hour-count">({bursts.length})</span>
+                        </div>
+                        {!collapsed && bursts.map((f) => {
+                          const isCached = f.label.startsWith('★');
+                          const displayLabel = isCached ? `★ ${f.time.slice(3)}` : f.time.slice(3);
+                          return (
+                            <button
+                              key={f.filename}
+                              className={`burst-chip ${selectedFile === f.filename ? 'active' : ''}`}
+                              onClick={() => handleChipClick(f.filename)}
+                              title={f.filename}
+                            >
+                              {displayLabel}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
               </div>
             )}
-        </div>
-
-        <div className="sidebar-section">
-          <h2 className="section-title">Processing</h2>
-
-          <label className="control-checkbox">
-            <input
-              type="checkbox"
-              checked={useSahanFilter}
-              onChange={(e) => setSahan(e.target.checked)}
-            />
-            Full RFI filter (Sahan)
-          </label>
-
-          <label className="control-checkbox">
-            <input
-              type="checkbox"
-              checked={showGoes}
-              onChange={(e) => setShowGoes(e.target.checked)}
-            />
-            Overlay GOES/XRS data
-          </label>
-
-          <label className="control-label" style={{ marginTop: '0.5rem' }}>
-            Colormap
-            <select
-              className="control-input"
-              value={colormap}
-              onChange={(e) => setColormap(e.target.value)}
-            >
-              <option value="observatory">Default</option>
-              <option value="hot">Hot</option>
-              <option value="inferno">Inferno</option>
-              <option value="magma">Magma</option>
-              <option value="plasma">Plasma</option>
-              <option value="viridis">Viridis</option>
-              <option value="cividis">Cividis</option>
-              <option value="turbo">Turbo</option>
-              <option value="jet">Jet</option>
-              <option value="rdylbu">RdYlBu</option>
-              <option value="cubehelix">Cubehelix</option>
-              <option value="bone_r">Bone (inverted)</option>
-            </select>
-          </label>
-        </div>
-
-        {/* ── Layer controls (shown after first successful load) ────────────── */}
-        {hasLoaded && (layers.length > 0 || failedStations.length > 0) && (
-          <div className="sidebar-section">
-            <h2 className="section-title">Layers</h2>
-            {layers.map((layer) => {
-              const ls = layerState[layer.station] ?? { visible: true, opacity: 1 };
-              return (
-                <div key={layer.station} className="layer-row">
-                  <label className="layer-name">
-                    <input
-                      type="checkbox"
-                      checked={ls.visible}
-                      onChange={(e) => setLayerVisible(layer.station, e.target.checked)}
-                    />
-                    <span title={layer.station}>{layer.station}</span>
-                  </label>
-                  <input
-                    type="range"
-                    className="control-slider"
-                    min="0" max="1" step="0.05"
-                    value={ls.opacity}
-                    onChange={(e) => setLayerOpacity(layer.station, parseFloat(e.target.value))}
-                    title={`Opacity: ${ls.opacity}`}
-                  />
-                </div>
-              );
-            })}
-            {failedStations.map((f) => (
-              <div key={f.station} className="layer-failed">
-                ⚠ {f.station}: {f.reason}
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div className="sidebar-section">
-          <h2 className="section-title">Contrast</h2>
-
-          <label className="control-checkbox" style={{ marginBottom: '0.5rem' }}>
-            <input
-              type="checkbox"
-              checked={useCustomZ}
-              onChange={(e) => setUseCustomZ(e.target.checked)}
-            />
-            Manual adjustment
-          </label>
-
-          <label className="control-label">
-            <span className="slider-row">
-              <span>Z min</span>
-              <span className="slider-value">{zmin}</span>
-            </span>
-            <input
-              type="range"
-              className="control-slider"
-              min="-100" max="50" step="0.5"
-              value={zmin}
-              disabled={!useCustomZ}
-              onChange={(e) => { setUseCustomZ(true); setZmin(parseFloat(e.target.value)); }}
-            />
-          </label>
-
-          <label className="control-label">
-            <span className="slider-row">
-              <span>Z max</span>
-              <span className="slider-value">{zmax}</span>
-            </span>
-            <input
-              type="range"
-              className="control-slider"
-              min="-50" max="300" step="0.5"
-              value={zmax}
-              disabled={!useCustomZ}
-              onChange={(e) => { setUseCustomZ(true); setZmax(parseFloat(e.target.value)); }}
-            />
-          </label>
+            {files.length > 0 && (
+              <p className="files-hint" style={{ marginTop: '0.3rem' }}>← → to step through files</p>
+            )}
         </div>
 
         <div className="sidebar-section" style={{ flex: 'none' }}>
@@ -451,6 +678,23 @@ export default function App() {
 
       {/* ── Main area ── */}
       <main className="main-content">
+        {/* Toolbar tabs (replaces the old crowded sidebar sections) */}
+        <div className="top-tabs">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              className={`tab-btn${activeTab === t.id ? ' active' : ''}`}
+              onClick={() => setActiveTab(activeTab === t.id ? null : t.id)}
+            >
+              {t.label}
+              {t.id === 'layers' && layers.length > 0 && (
+                <span className="tab-badge">{layers.length}</span>
+              )}
+            </button>
+          ))}
+        </div>
+        {activeTab && renderTabPanel()}
+
         <Spectrogram
           layers={layers}
           layerState={layerState}
@@ -465,8 +709,48 @@ export default function App() {
           loading={fetchLoading}
           error={fetchError}
           useSahanFilter={useSahanFilter}
+          rfiParams={rfiParams}
+          compareMode={compareMode}
+          autoContrastZoom={autoContrastZoom}
+          rulerMode={rulerMode}
         />
       </main>
+
+      {/* ── FITS header viewer modal ── */}
+      {showHeaderViewer && layers.length > 0 && (
+        <div className="modal-overlay" onClick={() => setShowHeaderViewer(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>FITS header — {layers[headerLayerIdx]?.station}</h3>
+              <button className="modal-close" onClick={() => setShowHeaderViewer(false)}>✕</button>
+            </div>
+            {layers.length > 1 && (
+              <select
+                className="control-input"
+                style={{ margin: '0 1rem 0.5rem' }}
+                value={headerLayerIdx}
+                onChange={(e) => setHeaderLayerIdx(parseInt(e.target.value, 10))}
+              >
+                {layers.map((l, i) => (
+                  <option key={l.station} value={i}>{l.station} · {l.filename}</option>
+                ))}
+              </select>
+            )}
+            <div className="modal-body">
+              <table className="header-table">
+                <tbody>
+                  {Object.entries(layers[headerLayerIdx]?.fits_header ?? {}).map(([k, v]) => (
+                    <tr key={k}>
+                      <td className="header-key">{k}</td>
+                      <td className="header-val">{String(v)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );
