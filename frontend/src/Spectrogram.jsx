@@ -546,26 +546,41 @@ export default function Spectrogram({
     }
 
     if (gTimes.length > 0) {
-      traces.push({
-        type: 'scattergl',
-        x: gTimes,
-        y: gFlux,
-        mode: 'lines',
-        name: `${satLabel} XRS-B (0.1–0.8 nm)`,
-        line: { color: '#f87171', width: 1.5 },
-        yaxis: 'y8',
-        xaxis: 'x',
-        hovertemplate: '%{x}<br>%{y:.2e} W/m²<extra>' + satLabel + '</extra>',
+      // In panels mode the flux curve is repeated on every panel (each on its
+      // own log axis overlaying that panel); in overlay mode a single curve
+      // overlays the shared y axis. GOES axes start at y8 (panels use y..y6).
+      const overlayTargets = compareMode === 'panels' && panelLayers.length > 0
+        ? panelLayers.map((_, i) => panelAxisId(i))
+        : ['y'];
+      overlayTargets.forEach((targetAxis, i) => {
+        const goesAxisNum = 8 + i;
+        traces.push({
+          // SVG scatter (not scattergl): one trace per panel would need one
+          // WebGL context each, and browsers cap those. ~1k points is cheap.
+          type: 'scatter',
+          x: gTimes,
+          y: gFlux,
+          mode: 'lines',
+          name: `${satLabel} XRS-B (0.1–0.8 nm)`,
+          showlegend: i === 0,
+          line: { color: '#f87171', width: 1.5 },
+          yaxis: `y${goesAxisNum}`,
+          xaxis: 'x',
+          hovertemplate: '%{x}<br>%{y:.2e} W/m²<extra>' + satLabel + '</extra>',
+        });
+        layout[`yaxis${goesAxisNum}`] = {
+          title: i === 0
+            ? { text: 'GOES Flux (W/m²)', font: { color: '#f87171', size: 11 } }
+            : undefined,
+          overlaying: targetAxis,
+          side: 'right',
+          type: 'log',
+          tickfont: { color: '#f87171', size: 9 },
+          showticklabels: i === 0,
+          showgrid: false,
+          position: 0.98,
+        };
       });
-      layout.yaxis8 = {
-        title: { text: 'GOES Flux (W/m²)', font: { color: '#f87171', size: 11 } },
-        overlaying: 'y',
-        side: 'right',
-        type: 'log',
-        tickfont: { color: '#f87171', size: 9 },
-        showgrid: false,
-        position: 0.98,
-      };
     }
   }
 
