@@ -415,14 +415,18 @@ export default function Spectrogram({
     if (!res?.available || !res.events?.length) return;
     for (const ev of res.events) {
       if (!ev.start_utc || !ev.end_utc) continue;
+      const isFallback = ev.source === 'visual_fallback'
+        || res.event_source === 'visual_fallback'
+        || res.event_source === 'visual_candidate';
+      const scoreText = Number.isFinite(ev.peak_score) ? ev.peak_score.toFixed(2) : '?';
       layout.shapes.push({
         type: 'rect',
         xref: 'x',
         yref: axisId,
         x0: ev.start_utc, x1: ev.end_utc,
         y0: ev.freq_band_mhz[0], y1: ev.freq_band_mhz[1],
-        line: { color: '#fbbf24', width: 1.5, dash: 'dot' },
-        fillcolor: 'rgba(251,191,36,0.10)',
+        line: { color: '#fbbf24', width: isFallback ? 1.25 : 1.6, dash: isFallback ? 'dash' : 'dot' },
+        fillcolor: isFallback ? 'rgba(251,191,36,0.07)' : 'rgba(251,191,36,0.10)',
         layer: 'above',
       });
       layout.annotations.push({
@@ -431,7 +435,7 @@ export default function Spectrogram({
         x: ev.start_utc,
         y: ev.freq_band_mhz[1],
         xanchor: 'left', yanchor: 'bottom',
-        text: `⚡ p=${ev.peak_score.toFixed(2)}`,
+        text: `${isFallback ? 'cand ' : ''}p=${scoreText}`,
         showarrow: false,
         font: { color: '#fbbf24', size: 9 },
         bgcolor: 'rgba(13,27,42,0.75)',

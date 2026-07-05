@@ -432,6 +432,117 @@ def _extract_events(
     return events
 
 
+def _extract_visual_fallback_events(
+    data_raw: np.ndarray,
+    freqs: np.ndarray,
+    time_axis_s: np.ndarray,
+    obs_start_dt,
+    file_score: float,
+) -> list[dict]:
+    """Locate visually obvious vertical transients when MIL says burst but
+    Sahan's window-event heuristic cannot form a contiguous event.
+
+    This is a fallback localizer, not a replacement for the calibrated CNN+MIL
+    score. It uses row-wise background suppression similar to the portal's
+    display pipeline, then searches for short high-percentile time spikes above
+    30 MHz so low-frequency clutter and horizontal RFI do not dominate.
+    """
+    arr = np.asarray(data_raw, dtype=np.float32)
+    freq_arr = np.asarray(freqs, dtype=float)
+    time_arr = np.asarray(time_axis_s, dtype=float)
+    if arr.ndim != 2 or arr.shape[1] < 8 or freq_arr.size == 0:
+        return []
+
+    baseline = np.nanpercentile(arr, 25.0, axis=1, keepdims=True).astype(np.float32)
+    bg = arr - baseline
+    row_med = np.nanmedian(bg, axis=1, keepdims=True)
+    row_mad = np.nanmedian(np.abs(bg - row_med), axis=1, keepdims=True)
+    norm = (bg - row_med) / (row_mad + np.float32(1e-6))
+
+    band_mask = freq_arr >= 30.0
+    if int(np.count_nonzero(band_mask)) < 8:
+        band_mask = np.ones_like(freq_arr, dtype=bool)
+
+    score = np.nanpercentile(norm[band_mask, :], 98.0, axis=0)
+    score = median_filter(score.astype(np.float32), size=9, mode="nearest")
+    finite = score[np.isfinite(score)]
+    if finite.size == 0:
+        return []
+
+    med = float(np.median(finite))
+    mad = float(np.median(np.abs(finite - med)))
+    sigma = 1.4826 * mad
+    if not np.isfinite(sigma) or sigma <= 1e-6:
+        sigma = float(np.nanstd(finite))
+    if not np.isfinite(sigma) or sigma <= 1e-6:
+        return []
+
+    z = (score - med) / sigma
+    raw_segments = _find_contiguous_segments(z >= 8.0)
+    if not raw_segments:
+        return []
+
+    merged: list[tuple[int, int]] = []
+    for start, end in raw_segments:
+        if merged and start - merged[-1][1] <= 16:
+            merged[-1] = (merged[-1][0], end)
+        else:
+            merged.append((start, end))
+
+    def _t_seconds(idx: int) -> float:
+        if time_arr.size == 0:
+            return float(idx)
+        return float(time_arr[int(np.clip(idx, 0, len(time_arr) - 1))])
+
+    def _iso(seconds: float) -> str | None:
+        if obs_start_dt is None:
+            return None
+        ts = obs_start_dt + timedelta(seconds=float(seconds))
+        return ts.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+
+    events: list[dict] = []
+    band_indices = np.where(band_mask)[0]
+    for start, end in merged:
+        if end - start + 1 < 4:
+            continue
+        s0 = max(0, start - 8)
+        s1 = min(arr.shape[1] - 1, end + 8)
+        local_band = norm[band_mask, s0 : s1 + 1]
+        if local_band.size == 0:
+            continue
+
+        strong_threshold = np.nanpercentile(local_band, 99.0)
+        strong = np.argwhere(local_band >= strong_threshold)
+        if strong.size:
+            f_idx = band_indices[strong[:, 0]]
+            f_low = float(np.nanmin(freq_arr[f_idx]))
+            f_high = float(np.nanmax(freq_arr[f_idx]))
+        else:
+            f_low = float(np.nanmin(freq_arr[band_mask]))
+            f_high = float(np.nanmax(freq_arr[band_mask]))
+
+        start_s = _t_seconds(s0)
+        end_s = _t_seconds(s1)
+        local_z = float(np.nanmax(z[start : end + 1]))
+        events.append({
+            "start_utc": _iso(start_s),
+            "end_utc": _iso(end_s),
+            "start_s": round(float(start_s), 3),
+            "end_s": round(float(end_s), 3),
+            "peak_score": round(float(file_score), 4),
+            "mean_score": round(float(file_score), 4),
+            "freq_band_mhz": [
+                round(float(min(f_low, f_high)), 3),
+                round(float(max(f_low, f_high)), 3),
+            ],
+            "source": "visual_fallback",
+            "localizer_z": round(local_z, 2),
+        })
+
+    events.sort(key=lambda ev: ev.get("localizer_z", 0.0), reverse=True)
+    return events[:3]
+
+
 # ── Public entry point ────────────────────────────────────────────────────────
 
 def detect_bursts(
@@ -469,14 +580,29 @@ def detect_bursts(
         smooth_kernel=int(inf_cfg.get("smooth_kernel", 5)),
         min_event_windows=int(inf_cfg.get("min_event_windows", 3)),
     )
+    event_source = "sahan_window_postprocess"
+    threshold = float(bundle["threshold"])
+    candidate_floor = 0.40
+    if file_score >= candidate_floor and not events:
+        events = _extract_visual_fallback_events(
+            data_raw=data_raw,
+            freqs=np.asarray(freqs, dtype=float),
+            time_axis_s=np.asarray(time_arr_s, dtype=float),
+            obs_start_dt=obs_start_dt,
+            file_score=float(file_score),
+        )
+        if events:
+            event_source = "visual_fallback" if file_score >= threshold else "visual_candidate"
 
     return {
         "model_version": bundle["model_version"],
         "bundle_name": bundle["bundle_name"],
-        "threshold": float(bundle["threshold"]),
+        "threshold": threshold,
         "file_score": round(float(file_score), 4),
-        "is_burst": bool(file_score >= float(bundle["threshold"])),
+        "is_burst": bool(file_score >= threshold),
+        "is_candidate": bool(file_score >= candidate_floor and len(events) > 0),
         "n_windows": int(windows_np.shape[0]),
         "events": events,
+        "event_source": event_source,
         "inference_ms": round((time.perf_counter() - t0) * 1000.0, 1),
     }
