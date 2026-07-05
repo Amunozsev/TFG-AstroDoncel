@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import Spectrogram from './Spectrogram';
+import StationsMap from './StationsMap';
+import { apiFetch } from './api';
 import './App.css';
-
-const API_BASE = 'http://localhost:8000';
 
 const FALLBACK_STATIONS = [
   'ALASKA-HAARP', 'AUSTRIA-UNIGRAZ', 'BIR', 'HUMAIN', 'LEARMONTH',
@@ -19,6 +19,8 @@ const TABS = [
 ];
 
 export default function App() {
+  // Top-level view: the spectrogram portal or the world stations map.
+  const [view, setView]                     = useState('portal'); // 'portal' | 'map'
   const [stations, setStations]             = useState(FALLBACK_STATIONS);
   const [stationsSource, setStationsSource] = useState('');
   const [stationFilter, setStationFilter]   = useState('');
@@ -72,7 +74,7 @@ export default function App() {
   useEffect(() => {
     async function loadStations() {
       try {
-        const res = await fetch(`${API_BASE}/api/stations`);
+        const res = await apiFetch('/api/stations');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         if (data.stations?.length > 0) {
@@ -99,8 +101,8 @@ export default function App() {
     if (!st) return;
     setFilesLoading(true);
     try {
-      const res = await fetch(
-        `${API_BASE}/api/files?station=${encodeURIComponent(st)}&date=${encodeURIComponent(dt)}`
+      const res = await apiFetch(
+        `/api/files?station=${encodeURIComponent(st)}&date=${encodeURIComponent(dt)}`
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -116,7 +118,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    loadFiles(station, date);
+    queueMicrotask(() => loadFiles(station, date));
   }, [station, date, loadFiles]);
 
   // ── Fetch spectrogram layers on explicit Load ─────────────────────────────
@@ -150,7 +152,7 @@ export default function App() {
           const ordered = [station, ...selectedStations.filter((s) => s !== station)]
             .filter(Boolean);
           ordered.forEach((s) => params.append('stations', s));
-          const res = await fetch(`${API_BASE}/api/spectrogram/combine?${params}`);
+          const res = await apiFetch(`/api/spectrogram/combine?${params}`);
           if (!res.ok) {
             const body = await res.json().catch(() => ({}));
             throw new Error(body.detail ?? `Error ${res.status}`);
@@ -167,7 +169,7 @@ export default function App() {
             ...rfiQS,
           });
           if (selectedFile) params.set('filename', selectedFile);
-          const res = await fetch(`${API_BASE}/api/spectrogram?${params}`);
+          const res = await apiFetch(`/api/spectrogram?${params}`);
           if (!res.ok) {
             const body = await res.json().catch(() => ({}));
             throw new Error(body.detail ?? `Error ${res.status}`);
@@ -210,6 +212,18 @@ export default function App() {
     setTriggerLoad((n) => n + 1);
   }
 
+  // ── Open a station from the map: select it and load its spectrograms ───────
+  function handleOpenStation(st) {
+    setSelectedStations([st]);
+    setStation(st);
+    setStationFilter('');
+    setSelectedFile(null);      // let the backend pick the first file of the day
+    setView('portal');
+    setHasLoaded(true);
+    setBurstResults({});
+    setTriggerLoad((n) => n + 1);
+  }
+
   // ── Automatic burst detection on every loaded layer ───────────────────────
   async function handleDetectBursts() {
     if (layers.length === 0 || burstDetecting) return;
@@ -223,7 +237,7 @@ export default function App() {
             filename: l.filename,
           });
           try {
-            const res = await fetch(`${API_BASE}/api/burst/detect?${params}`);
+            const res = await apiFetch(`/api/burst/detect?${params}`);
             if (!res.ok) {
               const body = await res.json().catch(() => ({}));
               return [l.station, { available: false, reason: body.detail ?? `Error ${res.status}` }];
@@ -263,7 +277,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [files, selectedFile]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [files, selectedFile]);
 
   function toggleStation(s) {
     if (selectedStations.includes(s)) {
@@ -567,7 +581,30 @@ export default function App() {
   }
 
   return (
-    <div className="dashboard">
+    <div className="app-root">
+      <nav className="app-nav">
+        <span className="app-brand">e-CALLISTO<b>Spain</b></span>
+        <div className="app-nav-tabs">
+          <button
+            className={view === 'portal' ? 'active' : ''}
+            onClick={() => setView('portal')}
+          >
+            Portal
+          </button>
+          <button
+            className={view === 'map' ? 'active' : ''}
+            onClick={() => setView('map')}
+          >
+            Stations Map
+          </button>
+        </div>
+        <span className="app-nav-spacer" />
+      </nav>
+
+      {view === 'map' ? (
+        <StationsMap onOpenStation={handleOpenStation} />
+      ) : (
+        <div className="dashboard">
 
       {/* ── Sidebar: observation essentials only ── */}
       <aside className="sidebar">
@@ -812,6 +849,8 @@ export default function App() {
         </div>
       )}
 
+        </div>
+      )}
     </div>
   );
 }

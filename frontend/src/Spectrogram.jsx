@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Plotly from 'plotly.js-dist';
 import _factory from 'react-plotly.js/factory';
+import { apiFetch } from './api';
 
 const Plot = (_factory.default ?? _factory)(Plotly);
-
-const API_BASE_URL = 'http://localhost:8000';
 
 // All colorscales defined as explicit RGB arrays so they work regardless of the
 // Plotly.js bundle version. Mirrors the colormap set in Sahan's FITS Analyzer.
@@ -122,7 +121,7 @@ const panelAxisId = (i) => (i === 0 ? 'y' : `y${i + 1}`);
 const panelAxisKey = (i) => (i === 0 ? 'yaxis' : `yaxis${i + 1}`);
 
 export default function Spectrogram({
-  layers, layerState, failedStations,
+  layers, layerState,
   date, showGoes, colormap, zmin, zmax,
   triggerLoad, hasLoaded, loading, error,
   useSahanFilter, rfiParams,
@@ -161,27 +160,30 @@ export default function Spectrogram({
 
   // Reset zoom + ruler whenever a new overview is loaded or the mode changes
   useEffect(() => {
-    clearZoomState();
-    setRulerPoints([]);
-  }, [triggerLoad, compareMode]); // eslint-disable-line react-hooks/exhaustive-deps
+    queueMicrotask(() => {
+      clearZoomState();
+      setRulerPoints([]);
+    });
+  }, [triggerLoad, compareMode]);
 
   useEffect(() => {
-    setRulerPoints([]);
+    queueMicrotask(() => setRulerPoints([]));
   }, [rulerMode]);
 
   // ── Fetch GOES XRS ───────────────────────────────────────────────────────
   useEffect(() => {
     if (!hasLoaded || triggerLoad === 0) return;
     if (!showGoes) {
-      setGoesData(null);
-      setGoesStatus('');
+      queueMicrotask(() => {
+        setGoesData(null);
+        setGoesStatus('');
+      });
       return;
     }
     async function fetchGoes() {
       setGoesStatus('Loading GOES…');
       try {
-        const url = `${API_BASE_URL}/api/goes?date=${encodeURIComponent(date)}`;
-        const res = await fetch(url);
+        const res = await apiFetch(`/api/goes?date=${encodeURIComponent(date)}`);
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           throw new Error(body.detail ?? `Error GOES ${res.status}`);
@@ -245,8 +247,8 @@ export default function Spectrogram({
             rfi_impulsive: String(rfiParams?.impulsive ?? true),
           });
           try {
-            const res = await fetch(
-              `${API_BASE_URL}/api/spectrogram/zoom?${params}`,
+            const res = await apiFetch(
+              `/api/spectrogram/zoom?${params}`,
               { signal: ctrl.signal }
             );
             if (!res.ok) {
@@ -360,9 +362,11 @@ export default function Spectrogram({
   // on the exact same code path that keeps react-plotly's internal sync alive).
   // Handlers dereference refs so the latest closure always runs (no staleness).
   const relayoutRef = useRef(null);
-  relayoutRef.current = handleRelayout;
   const clickRef = useRef(null);
-  clickRef.current = handlePlotClick;
+  useEffect(() => {
+    relayoutRef.current = handleRelayout;
+    clickRef.current = handlePlotClick;
+  });
   const onRelayoutStable = useCallback((e) => relayoutRef.current?.(e), []);
   const onClickStable = useCallback((e) => clickRef.current?.(e), []);
   const bindPlotEvents = useCallback((_figure, gd) => {

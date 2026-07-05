@@ -814,3 +814,194 @@
   color: #c8d6e5;
   word-break: break-all;
 }
+
+/* ============================================================
+   Top navigation + view switching
+   ============================================================ */
+.app-root {
+  display: flex;
+  flex-direction: column;
+  height: 100svh;
+  overflow: hidden;
+  background: #080d12;
+}
+
+.app-nav {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  height: 46px;
+  min-height: 46px;
+  padding: 0 1.25rem;
+  background: #0b1622;
+  border-bottom: 1px solid #1a2f46;
+}
+
+.app-brand {
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: #e8f4fd;
+}
+.app-brand b {
+  color: #38bdf8;
+  margin-left: 0.4rem;
+  font-weight: 700;
+}
+
+.app-nav-tabs {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.app-nav-tabs button {
+  padding: 0.4rem 0.95rem;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  color: #6f9bb8;
+  font-size: 0.8rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.app-nav-tabs button:hover { color: #cfe6f5; background: #12283c; }
+.app-nav-tabs button.active { color: #38bdf8; background: #0f2438; }
+
+.app-nav-spacer { flex: 1; }
+
+/* The dashboard now lives under the nav bar, not the full viewport. */
+.app-root .dashboard {
+  height: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* ============================================================
+   Stations map
+   ============================================================ */
+.stations-map {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: radial-gradient(circle at 50% 30%, #101f30 0%, #080d12 70%);
+  color: #c8d6e5;
+}
+
+.map-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 0.85rem 1.25rem;
+  border-bottom: 1px solid #14283c;
+}
+
+.map-title-block h2 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #e8f4fd;
+  letter-spacing: 0.02em;
+}
+
+.map-subtitle {
+  margin: 0.25rem 0 0;
+  font-size: 0.72rem;
+  color: #6f9bb8;
+  display: flex;
+  align-items: center;
+}
+
+.map-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.map-seg button { font-size: 0.76rem; padding: 0.35rem 0.75rem; }
+
+.map-check {
+  display: flex;
+  align-items: center;
+  gap: 0.32rem;
+  font-size: 0.74rem;
+  color: #9db9ca;
+  cursor: pointer;
+  user-select: none;
+}
+.map-check input { accent-color: #38bdf8; cursor: pointer; }
+.map-check input:disabled { cursor: not-allowed; }
+
+.map-search {
+  background: #0a1828;
+  border: 1px solid #1e3a52;
+  border-radius: 4px;
+  color: #c8d6e5;
+  font-size: 0.74rem;
+  font-family: inherit;
+  padding: 0.35rem 0.6rem;
+  width: 150px;
+  outline: none;
+}
+.map-search:focus { border-color: #38bdf8; }
+.map-search::placeholder { color: #4a6b82; }
+
+.map-refresh {
+  background: #0a1828;
+  border: 1px solid #1e3a52;
+  border-radius: 4px;
+  color: #7fb3d3;
+  font-size: 0.9rem;
+  cursor: pointer;
+  padding: 0.3rem 0.55rem;
+  line-height: 1;
+  transition: background 0.15s, color 0.15s;
+}
+.map-refresh:hover { background: #0d1e2e; color: #38bdf8; }
+
+.map-canvas {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.map-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.9rem;
+  color: #6f9bb8;
+  z-index: 5;
+}
+.map-error { color: #f87171; }
+
+.map-statusbar {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  padding: 0.5rem 1.25rem;
+  border-top: 1px solid #14283c;
+  font-size: 0.74rem;
+  color: #9db9ca;
+  flex-wrap: wrap;
+}
+.map-stat { display: flex; align-items: center; gap: 0.35rem; }
+.map-stat-muted { color: #5a7d94; }
+.map-stat-warn { color: #f59e0b; }
+
+.dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  margin: 0 0.25rem;
+}
+.dot-green { background: #22c55e; box-shadow: 0 0 5px #22c55e88; }
+.dot-red { background: #ef4444; box-shadow: 0 0 5px #ef444488; }
