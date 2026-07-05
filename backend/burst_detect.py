@@ -33,10 +33,7 @@ except ImportError as exc:  # torch is optional — degrade gracefully
 
 # Deployment bundle shipped with Sahan's Burst_No_Burst (trained CNN+MIL).
 _DEFAULT_BUNDLE_DIR = os.path.normpath(
-    os.path.join(
-        os.path.dirname(__file__), "..",
-        "Sahan", "Burst_No_Burst-master", "deploy", "deploy_v1",
-    )
+    os.path.join(os.path.dirname(__file__), "model", "burst_detector")
 )
 BUNDLE_DIR = os.environ.get("BURST_MODEL_DIR", _DEFAULT_BUNDLE_DIR)
 

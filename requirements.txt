@@ -16,7 +16,6 @@ sunpy[net,timeseries]==8.0.0
 mpl-animators==1.2.4
 pandas==3.0.3
 
-# Optional ML burst detection:
-# The /api/burst/detect endpoint degrades gracefully if torch is missing.
-# Install torch only when the target machine has enough RAM/build time:
-# torch --index-url https://download.pytorch.org/whl/cpu
+# ML burst detection (CPU inference)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.7.0+cpu
