@@ -3,76 +3,218 @@
 Bachelor's Thesis - Universidad de Alcala - 2026  
 Author: Alfonso Munoz Sevillano
 
-AstroDoncel is an interactive web portal for visualising and analysing solar
-radio spectrograms from the e-CALLISTO network. The project is split into:
+AstroDoncel is an interactive web application for visualising and analysing
+solar radio spectrograms from the e-CALLISTO network. It combines a React
+frontend with a FastAPI backend that downloads, parses and processes CALLISTO
+FITS files.
 
-- `frontend/`: React + Vite + Plotly, intended for Vercel.
-- `backend/`: FastAPI + scientific Python stack, intended for Railway.
+The goal of the project is to make solar radio burst inspection easier:
+stations can be selected from the network, files can be browsed by date and
+time, spectrograms can be compared across stations, and processing tools such
+as RFI filtering, GOES/XRS context, high-resolution zoom and drift measurements
+are available from the browser.
 
-There is no login layer. The frontend is public and calls the backend API
-directly.
+## Features
 
-## Main Features
+### Station Discovery
 
-- Live e-CALLISTO station list from the ETHZ archive, with local fallback.
-- Station world map with operative/offline status and day-night overlay.
-- FITS auto-download and local cache in `data/`.
-- Single-station and multi-station spectrogram loading.
-- Time-synchronised multi-layer comparison.
-- RFI mitigation pipeline ported from Sahan's tools.
-- High-resolution zoom patch endpoint.
-- GOES/XRS overlay through SunPy/Fido.
-- FITS header viewer.
-- Drift ruler for measuring time, frequency and drift rate.
-- Optional ML burst detection endpoint when `torch` and the model bundle are available.
+- Loads the live e-CALLISTO station list from the ETHZ archive.
+- Falls back to a static station list if the archive is unreachable.
+- Provides a station search box in the sidebar.
+- Supports selecting one or multiple stations.
+- Includes a station map view with operative/offline status.
+- Shows station coordinates on a globe or flat map.
+- Learns station coordinates from FITS headers when available.
+- Keeps approximate fallback coordinates for known stations.
+- Displays monthly burst counts per station when ETHZ burst lists are available.
+- Includes day/night terminator and subsolar point overlays on the map.
+
+### Spectrogram Loading
+
+- Select a station and observation date.
+- Lists available FITS files grouped by hour.
+- Marks locally cached files.
+- Loads single-station spectrograms.
+- Loads multiple stations concurrently.
+- Synchronises multi-station comparisons to the same 15-minute time block.
+- Can read FITS files from:
+  - local `data/` cache,
+  - optional NAS/external data directory,
+  - ETHZ remote archive.
+- Auto-downloads missing files from ETHZ and caches them locally.
+
+### Processing
+
+- Reads CALLISTO FITS data through `astropy`.
+- Extracts frequency and time axes from FITS tables, WCS headers or fallback metadata.
+- Converts relative FITS time axes to absolute UTC timestamps.
+- Applies robust per-frequency background subtraction.
+- Optional RFI mitigation pipeline inspired by Sahan's tools:
+  - persistent narrowband RFI detection by channel occupancy,
+  - impulsive RFI detection through connected components,
+  - channel-median inpainting,
+  - adjustable thresholds from the UI.
+- Computes contrast using percentile clipping.
+- Exposes RFI statistics to the frontend.
+
+### Visualisation
+
+- Plotly heatmap spectrogram rendering.
+- Multiple scientific colour scales:
+  - Observatory,
+  - Hot,
+  - Inferno,
+  - Magma,
+  - Plasma,
+  - Viridis,
+  - Cividis,
+  - Turbo,
+  - Jet,
+  - RdYlBu,
+  - Cubehelix,
+  - Bone inverted.
+- Manual contrast controls with `Z min` and `Z max`.
+- Optional auto-contrast on high-resolution zoom.
+- Multi-station display modes:
+  - stacked synchronised panels,
+  - translucent overlay.
+- Per-layer visibility and opacity controls.
+- High-resolution zoom requests for selected time/frequency regions.
+- FITS header viewer modal.
+- Keyboard navigation through files with left/right arrows.
+
+### Solar Context
+
+- Optional GOES/XRS overlay using SunPy/Fido.
+- Selects preferred GOES satellites by observation epoch.
+- Clips GOES data to the visible spectrogram time window.
+- Caches downloaded GOES files in `data/goes_cache/`.
+- Returns a graceful unavailable response if GOES data cannot be fetched.
+
+### Analysis Tools
+
+- Drift ruler:
+  - click two points on the spectrogram,
+  - measure time difference,
+  - measure frequency difference,
+  - calculate drift rate in MHz/s.
+- Optional automatic burst detection endpoint:
+  - uses a CNN+MIL model bundle when available,
+  - returns file-level probability,
+  - returns candidate event intervals,
+  - degrades gracefully if `torch` or the model bundle is missing.
+
+## Architecture
+
+```text
+Browser
+  React + Vite
+  Plotly.js
+  App.jsx
+  Spectrogram.jsx
+  StationsMap.jsx
+        |
+        | HTTP / JSON
+        v
+FastAPI backend
+  /api/stations
+  /api/stations/geo
+  /api/files
+  /api/spectrogram
+  /api/spectrogram/combine
+  /api/spectrogram/zoom
+  /api/goes
+  /api/burst/detect
+        |
+        | FITS / NetCDF / text indices
+        v
+ETHZ e-CALLISTO archive + NOAA/SunPy data sources
+```
+
+The frontend is responsible for interaction, layout and plotting. The backend
+is responsible for I/O, FITS parsing, numerical processing and external data
+fetching.
 
 ## Project Structure
 
 ```text
 TFG-AstroDoncel/
   backend/
-    main.py              FastAPI API and scientific pipeline
+    main.py              FastAPI app, API endpoints and scientific pipeline
     burst_detect.py      Optional CNN+MIL burst detector
   frontend/
+    public/
     src/
-      App.jsx            Main React UI
-      Spectrogram.jsx    Plotly spectrogram view
+      App.jsx            Main application state and controls
+      Spectrogram.jsx    Plotly spectrogram rendering and zoom logic
       StationsMap.jsx    Station map view
-      api.js             Frontend API base URL helper
-    package.json         Vercel/Node dependencies and scripts
-  data/                  Local FITS and cache files, not for deployment
-  requirements.txt       Railway/Python backend dependencies
-  railway.json           Railway backend start command
+      api.js             API base URL helper
+      App.css            Main styles
+      index.css          Global styles
+    package.json         Frontend dependencies and scripts
+  data/
+    goes_cache/          Local GOES cache
+    station_coords.json  Learned station coordinates, if generated
+  requirements.txt       Backend Python dependencies
 ```
 
-## Local Development
+`data/` is used as a local runtime cache. It should not be treated as source
+code.
 
-### 1. Backend
+## Requirements
 
-From the repository root:
+### Backend
+
+- Python 3.12+
+- `pip`
+- Dependencies from `requirements.txt`
+
+### Frontend
+
+- Node.js 18+
+- npm
+
+## Local Installation
+
+Clone the repository:
+
+```powershell
+git clone https://github.com/Amunozsev/TFG-AstroDoncel.git
+cd TFG-AstroDoncel
+```
+
+Create and activate a Python virtual environment:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\activate
+```
+
+Install backend dependencies:
+
+```powershell
 pip install -r requirements.txt
+```
+
+Start the backend:
+
+```powershell
 uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Backend URL:
+The backend will be available at:
 
 ```text
 http://localhost:8000
 ```
 
-API docs:
+The API documentation will be available at:
 
 ```text
 http://localhost:8000/docs
 ```
 
-### 2. Frontend
-
-In another terminal:
+In another terminal, install and start the frontend:
 
 ```powershell
 cd frontend
@@ -80,210 +222,268 @@ npm install
 npm run dev
 ```
 
-Frontend URL:
+The frontend will be available at:
 
 ```text
 http://localhost:5173
 ```
 
-By default, the frontend calls `http://localhost:8000`. For any other backend,
-set `VITE_API_BASE_URL`.
+## Configuration
 
-## Environment Variables
+### Frontend API URL
 
-### Backend - Railway
-
-```text
-FRONTEND_ORIGINS=https://your-vercel-app.vercel.app,http://localhost:5173
-ECALLISTO_DATA_DIR=/var/services/web/ecallistodata
-BURST_MODEL_DIR=/app/Sahan/Burst_No_Burst-master/deploy/deploy_v1
-```
-
-Required:
-
-- `FRONTEND_ORIGINS`: comma-separated list of frontend origins allowed by CORS.
-
-Optional:
-
-- `ECALLISTO_DATA_DIR`: external NAS/data directory. If omitted, the backend uses local cache and ETHZ downloads.
-- `BURST_MODEL_DIR`: path to the optional ML burst detector model bundle.
-
-### Frontend - Vercel
+The frontend reads the backend URL from:
 
 ```text
-VITE_API_BASE_URL=https://your-railway-backend.up.railway.app
+VITE_API_BASE_URL
 ```
 
-This value is public because Vite exposes `VITE_*` variables in the browser
-bundle. Do not put secrets in `VITE_*` variables.
-
-## Deployment Overview
-
-Recommended split:
-
-- Railway hosts the FastAPI backend.
-- Vercel hosts the static Vite frontend.
-- GitHub stores the repository and triggers deployments.
-
-This is a good setup for this project because the backend needs long-running
-Python scientific dependencies, while the frontend is a static React app that
-Vercel serves very efficiently.
-
-## Deploy Backend to Railway
-
-1. Push the repository to GitHub.
-
-2. Go to Railway and create a new project.
-
-3. Choose `Deploy from GitHub repo`.
-
-4. Select this repository.
-
-5. Railway should use the root of the repository as the backend service.
-
-6. Confirm these deployment settings:
+If it is not set, it falls back to:
 
 ```text
-Build source: repository root
-Start command: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
-Healthcheck path: /health
+http://localhost:8000
 ```
 
-The included `railway.json` already defines the start command and healthcheck.
+For local development, no extra configuration is needed if the backend runs on
+port `8000`.
 
-7. Add the backend environment variable:
+### Backend CORS
+
+The backend reads allowed frontend origins from:
+
+```text
+FRONTEND_ORIGINS
+```
+
+Example:
 
 ```text
 FRONTEND_ORIGINS=http://localhost:5173
 ```
 
-Later, after Vercel gives you the final frontend URL, change it to:
+Multiple origins can be separated by commas.
+
+If `FRONTEND_ORIGINS` is not set, the backend allows:
 
 ```text
-FRONTEND_ORIGINS=https://your-vercel-app.vercel.app,http://localhost:5173
+http://localhost:5173
+http://127.0.0.1:5173
 ```
 
-8. In Railway, open the backend service settings and generate a public domain.
-
-9. Test the backend:
+### Optional Data Paths
 
 ```text
-https://your-railway-backend.up.railway.app/health
+ECALLISTO_DATA_DIR
 ```
 
-Expected response:
+Optional external directory for e-CALLISTO data organised as:
+
+```text
+YYYY/MM/DD/*.fit*
+```
+
+If this is not configured, the backend uses `data/` and the ETHZ archive.
+
+```text
+BURST_MODEL_DIR
+```
+
+Optional path to the CNN+MIL burst detector model bundle. If the model bundle
+or `torch` is missing, the burst detection endpoint returns `available: false`
+instead of crashing the backend.
+
+## How the Processing Pipeline Works
+
+1. The user selects station(s), date and optionally a FITS file.
+2. The frontend calls the backend API.
+3. The backend searches for the FITS file:
+   - first in `data/`,
+   - then in `ECALLISTO_DATA_DIR` if configured,
+   - then in the ETHZ archive.
+4. If needed, the backend downloads the FITS file into `data/`.
+5. The backend opens the FITS file with `astropy`.
+6. Raw data, frequency axis, time axis and header metadata are extracted.
+7. The time axis is converted to UTC timestamps.
+8. Background subtraction is applied per frequency channel.
+9. If enabled, RFI mitigation is applied.
+10. Data are clipped and serialised to JSON.
+11. The frontend renders the result with Plotly.
+
+## API Reference
+
+### `GET /health`
+
+Health check endpoint.
+
+Example response:
 
 ```json
 {"status":"ok","version":"0.2.0"}
 ```
 
-## Deploy Frontend to Vercel
+### `GET /api/stations`
 
-1. Go to Vercel and create a new project.
+Returns the station list.
 
-2. Import the same GitHub repository.
+Query parameters: none.
 
-3. Set the Vercel root directory to:
+Response fields:
+
+- `stations`
+- `source`
+
+### `GET /api/stations/geo`
+
+Returns station coordinates, operative status and monthly burst counts.
+
+Query parameters: none.
+
+Response fields:
+
+- `stations`
+- `source`
+- `operative_count`
+- `total_count`
+- `reference_date`
+- `burst_month`
+- `burst_total`
+- `unmapped`
+- `fits_coord_count`
+
+### `GET /api/files`
+
+Lists available FITS files for a station and date.
+
+Query parameters:
+
+- `station`
+- `date` in `YYYY-MM-DD`
+
+Example:
 
 ```text
-frontend
+/api/files?station=SPAIN-SIGUENZA&date=2024-05-08
 ```
 
-4. Confirm build settings:
+### `GET /api/spectrogram`
+
+Processes one station and returns one spectrogram layer.
+
+Query parameters:
+
+- `station`
+- `date`
+- `filename` optional
+- `sahan_filter` optional boolean
+- `max_time_bins` optional integer
+- `rfi_z_thresh`
+- `rfi_occupancy`
+- `rfi_min_component`
+- `rfi_impulsive`
+
+### `GET /api/spectrogram/combine`
+
+Processes several stations concurrently and aligns secondary stations to the
+primary station time block.
+
+Query parameters:
+
+- `stations` repeated parameter
+- `date`
+- `filename` optional primary station file
+- `sahan_filter`
+- `max_time_bins`
+- RFI parameters
+
+Example:
 
 ```text
-Framework preset: Vite
-Install command: npm install
-Build command: npm run build
-Output directory: dist
+/api/spectrogram/combine?date=2024-05-08&stations=SPAIN-SIGUENZA&stations=HUMAIN
 ```
 
-5. Add the frontend environment variable:
+### `GET /api/spectrogram/zoom`
 
-```text
-VITE_API_BASE_URL=https://your-railway-backend.up.railway.app
-```
+Returns a high-resolution patch for a selected time/frequency region.
 
-6. Deploy.
+Query parameters:
 
-7. Copy the final Vercel URL.
+- `station`
+- `date`
+- `filename`
+- `t0`
+- `t1`
+- `f0`
+- `f1`
+- RFI parameters
 
-8. Go back to Railway and update:
+### `GET /api/goes`
 
-```text
-FRONTEND_ORIGINS=https://your-vercel-app.vercel.app,http://localhost:5173
-```
+Returns GOES/XRS flux for a date.
 
-9. Redeploy Railway after changing the variable.
+Query parameters:
 
-10. Open the Vercel app and verify:
+- `date`
 
-- Station list loads.
-- Map loads.
-- Spectrogram load works.
-- Browser console has no CORS errors.
+### `GET /api/burst/detect`
 
-## What Uses `requirements.txt`?
+Runs optional CNN+MIL burst detection on one FITS file.
 
-`requirements.txt` is for the Railway backend only.
+Query parameters:
 
-Railway sees a Python backend, installs the packages from `requirements.txt`,
-then runs:
+- `station`
+- `date`
+- `filename`
 
-```bash
-uvicorn backend.main:app --host 0.0.0.0 --port $PORT
-```
+If `torch` or the model bundle is missing, the endpoint returns an unavailable
+response rather than failing backend startup.
 
-Vercel does not use `requirements.txt`. Vercel deploys the React frontend from
-`frontend/` and uses:
+## Useful Commands
 
-- `frontend/package.json`
-- `frontend/package-lock.json`
-- `frontend/vite.config.js`
-
-## API Reference
-
-| Method | Route | Description |
-|---|---|---|
-| `GET` | `/health` | Backend health check |
-| `GET` | `/api/stations` | List e-CALLISTO stations |
-| `GET` | `/api/stations/geo` | Station coordinates and operative state |
-| `GET` | `/api/files` | Available FITS files for station/date |
-| `GET` | `/api/spectrogram` | Process one spectrogram |
-| `GET` | `/api/spectrogram/combine` | Process multiple time-synced stations |
-| `GET` | `/api/spectrogram/zoom` | High-resolution zoom patch |
-| `GET` | `/api/goes` | GOES/XRS overlay data |
-| `GET` | `/api/burst/detect` | Optional ML burst detection |
-
-## Useful Checks
-
-Backend:
+Backend syntax/import check:
 
 ```powershell
 .\.venv\Scripts\python.exe -m compileall backend
 ```
 
-Frontend:
+Check backend dependencies:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install --dry-run -r requirements.txt
+```
+
+Frontend lint:
 
 ```powershell
 cd frontend
 npm run lint
+```
+
+Frontend production build:
+
+```powershell
+cd frontend
 npm run build
 ```
 
-## Notes
+Preview frontend production build locally:
 
-- Do not deploy the local `data/` cache unless you intentionally need sample files.
-- The first GOES request for a date can take several seconds because SunPy downloads data.
-- The ML detector is optional. If `torch` or the model bundle is missing, the endpoint responds with `available: false` instead of crashing the backend.
-- If Vercel cannot reach Railway, check `VITE_API_BASE_URL`.
-- If the browser shows CORS errors, check `FRONTEND_ORIGINS` in Railway and redeploy.
+```powershell
+cd frontend
+npm run preview
+```
 
-## Sources Used for Deployment Guidance
+## Notes and Limitations
 
-- Vercel Vite deployment docs: https://vercel.com/docs/frameworks/frontend/vite
-- Vercel monorepo docs: https://vercel.com/docs/monorepos
-- Vercel environment variables docs: https://vercel.com/docs/environment-variables
-- Vite env variable docs: https://vite.dev/guide/env-and-mode
-- Railway FastAPI deployment guide: https://docs.railway.com/guides/fastapi
-- Railway config-as-code reference: https://docs.railway.com/config-as-code/reference
+- The first request for a file may be slower if the backend needs to download it.
+- The first GOES request for a date may be slower because SunPy fetches external data.
+- Local cache files are runtime artefacts, not source code.
+- The automatic burst detector is optional and depends on `torch` plus a model bundle.
+- Some station coordinates are approximate until learned from real FITS headers.
+- Multi-station comparisons depend on matching 15-minute time blocks across stations.
+
+## Credits and References
+
+- e-CALLISTO network and ETHZ archive.
+- RFI and burst-detection ideas adapted from tools by Sahan S. Liyanage.
+- GOES/XRS data access through SunPy/Fido.
+- Built with FastAPI, astropy, numpy, scipy, SunPy, React, Vite and Plotly.js.
