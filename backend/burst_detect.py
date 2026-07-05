@@ -583,15 +583,36 @@ def detect_bursts(
     event_source = "sahan_window_postprocess"
     threshold = float(bundle["threshold"])
     candidate_floor = 0.40
-    if file_score >= candidate_floor and not events:
-        events = _extract_visual_fallback_events(
+    if not events:
+        visual_events = _extract_visual_fallback_events(
             data_raw=data_raw,
             freqs=np.asarray(freqs, dtype=float),
             time_axis_s=np.asarray(time_arr_s, dtype=float),
             obs_start_dt=obs_start_dt,
             file_score=float(file_score),
         )
-        if events:
+        strongest_visual = max((float(ev.get("localizer_z", 0.0)) for ev in visual_events), default=0.0)
+        widest_band = max(
+            (
+                abs(
+                    float(ev.get("freq_band_mhz", [0.0, 0.0])[1])
+                    - float(ev.get("freq_band_mhz", [0.0, 0.0])[0])
+                )
+                for ev in visual_events
+            ),
+            default=0.0,
+        )
+        # Some stations/focus codes (e.g. ALASKA-COHOE on 2026-06-29) are
+        # clear false negatives for the trained CNN+MIL model. Keep Sahan's
+        # calibrated score untouched, but surface very strong visual transients
+        # as candidates so the user can inspect them instead of silently losing
+        # the event.
+        strong_visual_candidate = (
+            (strongest_visual >= 10.0 and widest_band >= 5.0)
+            or strongest_visual >= 14.0
+        )
+        if visual_events and (file_score >= candidate_floor or strong_visual_candidate):
+            events = visual_events
             event_source = "visual_fallback" if file_score >= threshold else "visual_candidate"
 
     return {
@@ -600,7 +621,7 @@ def detect_bursts(
         "threshold": threshold,
         "file_score": round(float(file_score), 4),
         "is_burst": bool(file_score >= threshold),
-        "is_candidate": bool(file_score >= candidate_floor and len(events) > 0),
+        "is_candidate": bool(len(events) > 0 and (file_score >= candidate_floor or event_source == "visual_candidate")),
         "n_windows": int(windows_np.shape[0]),
         "events": events,
         "event_source": event_source,
