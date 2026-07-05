@@ -1,296 +1,289 @@
-# AstroDoncel — Solar Radio Spectrogram Portal (e-CALLISTO)
+# AstroDoncel - Solar Radio Spectrogram Portal
 
-> **Bachelor's Thesis · Universidad de Alcalá · 2026**
-> Author: Alfonso Muñoz Sevillano
+Bachelor's Thesis - Universidad de Alcala - 2026  
+Author: Alfonso Munoz Sevillano
 
-Interactive web portal for visualisation and analysis of solar radio spectrograms from the [e-CALLISTO](http://www.e-callisto.org/) network. Select any network station, browse bursts for a given day hour by hour, and apply the RFI cleaning pipeline developed by Dr. Sahan S. Liyanage (University of Colombo).
+AstroDoncel is an interactive web portal for visualising and analysing solar
+radio spectrograms from the e-CALLISTO network. The project is split into:
 
----
+- `frontend/`: React + Vite + Plotly, intended for Vercel.
+- `backend/`: FastAPI + scientific Python stack, intended for Railway.
 
-## Features
+There is no login layer. The frontend is public and calls the backend API
+directly.
 
-| Feature | Details |
-|---|---|
-| **Live station list** | Fetches active stations from the ETHZ archive (soleil.i4ds.ch); falls back to a static list of 76 real stations when offline |
-| **Burst navigation** | For each station + date, lists all available files (~15 min segments) with their start time, grouped by hour; the first one loads automatically |
-| **Auto-download** | If a file is not in the local cache, it is downloaded from the ETHZ archive transparently |
-| **RFI pipeline v2 (Sahan)** | Ported from Burst_No_Burst: persistent narrowband detection by channel occupancy + impulsive RFI via connected components + channel-median inpainting; all thresholds adjustable from the UI, per-request stats (`rfi_stats`) |
-| **Background subtraction** | Robust baseline using the 25th percentile of each frequency channel (always active) |
-| **Absolute time axis** | Real ISO 8601 UTC timestamps reconstructed from `DATE-OBS + TIME-OBS + CDELT1` in the FITS header |
-| **Adjustable contrast** | `Z min / Z max` sliders with automatic computation from the 2–98 percentile range of processed data |
-| **GOES/XRS overlay** | Overlays GOES X-ray flux (XRS-B channel, 0.1–0.8 nm) on a secondary logarithmic Y axis via `sunpy.net.Fido`, clipped to the visible time window |
-| **Colormap selection** | 11 selectable colorscales (Observatory default, Hot, Viridis, Plasma, Inferno, Magma, Cividis, Turbo, Jet, RdYlBu, Cubehelix, Bone) |
-| **Multi-station comparison** | Select several stations at once; spectrograms are fetched concurrently and time-synced to the same 15-minute block. Two comparison modes: **stacked synchronised panels** (default, one subplot per station sharing the UT axis — as in Sahan's Multi-Station Comparison) and **translucent overlay** (upper layers use an alpha-graded colorscale so only bright bursts blend on top) |
-| **High-resolution zoom** | Box-selecting a region fetches a full-resolution patch for that time/frequency window. Works per-panel in multi-station mode; the overview contrast is kept by default (optional auto-contrast on zoom); in-flight requests are cancelled when a newer zoom arrives |
-| **Toolbar tabs** | Processing / Display / Solar context / Layers / Tools tabs above the plot; the sidebar keeps only station, date and burst selection |
-| **Drift ruler** | Click two points on the spectrogram to measure Δt, Δf and the drift rate (MHz/s) — key for classifying Type II/III bursts |
-| **Automatic burst detection (ML)** | Runs Sahan's trained CNN+MIL classifier (*Burst_No_Burst*, `deploy_v1`) on every loaded layer: file-level burst probability against the calibrated threshold (0.6) plus candidate event intervals (time + frequency band) highlighted on the plot. Requires `torch` (optional — the endpoint degrades gracefully without it) |
-| **FITS header viewer** | Inspect the full FITS header of any loaded layer from the Tools tab |
-| **Burst navigation UX** | Station search box, collapsible per-hour groups with counts, ←/→ keyboard stepping through files, explicit primary-station picker for multi-station sync |
+## Main Features
 
----
+- Live e-CALLISTO station list from the ETHZ archive, with local fallback.
+- Station world map with operative/offline status and day-night overlay.
+- FITS auto-download and local cache in `data/`.
+- Single-station and multi-station spectrogram loading.
+- Time-synchronised multi-layer comparison.
+- RFI mitigation pipeline ported from Sahan's tools.
+- High-resolution zoom patch endpoint.
+- GOES/XRS overlay through SunPy/Fido.
+- FITS header viewer.
+- Drift ruler for measuring time, frequency and drift rate.
+- Optional ML burst detection endpoint when `torch` and the model bundle are available.
 
-## Architecture
+## Project Structure
 
-```
-┌──────────────────────────────────────────────────────┐
-│                    Browser                           │
-│   React + Vite · Plotly.js (WebGL)                   │
-│   App.jsx  ←→  Spectrogram.jsx                       │
-└────────────────────┬─────────────────────────────────┘
-                     │ HTTP / JSON  (port 5173 → 8000)
-┌────────────────────▼─────────────────────────────────┐
-│                FastAPI (Python)                       │
-│   /api/stations  /api/files  /api/spectrogram         │
-│   /api/spectrogram/combine  /api/spectrogram/zoom     │
-│   /api/goes      /health                              │
-│                                                       │
-│   astropy · numpy · scipy · sunpy                    │
-└────────────────────┬─────────────────────────────────┘
-                     │ HTTP / FITS
-        ┌────────────▼───────────────┐
-        │  ETHZ Archive (HTTPS)      │
-        │  soleil.i4ds.ch/...        │
-        │  + NOAA NGDC (GOES/XRS)    │
-        └────────────────────────────┘
+```text
+TFG-AstroDoncel/
+  backend/
+    main.py              FastAPI API and scientific pipeline
+    burst_detect.py      Optional CNN+MIL burst detector
+  frontend/
+    src/
+      App.jsx            Main React UI
+      Spectrogram.jsx    Plotly spectrogram view
+      StationsMap.jsx    Station map view
+      api.js             Frontend API base URL helper
+    package.json         Vercel/Node dependencies and scripts
+  data/                  Local FITS and cache files, not for deployment
+  requirements.txt       Railway/Python backend dependencies
+  railway.json           Railway backend start command
 ```
 
----
+## Local Development
 
-## Getting started
+### 1. Backend
 
-### Prerequisites
+From the repository root:
 
-- Python 3.12+ with `pip`
-- Node.js 18+
-
-### 1. Clone the repository
-
-```bash
-git clone https://github.com/Amunozsev/TFG-AstroDoncel.git
-cd TFG-AstroDoncel
-```
-
-### 2. Backend (FastAPI)
-
-```bash
-# Create and activate a virtual environment
+```powershell
 python -m venv .venv
-
-# Windows
-.venv\Scripts\activate
-# macOS / Linux
-source .venv/bin/activate
-
-# Install dependencies
+.\.venv\Scripts\activate
 pip install -r requirements.txt
-
-# Start the server
 uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-The backend is available at `http://localhost:8000`.  
-Interactive API documentation is at `http://localhost:8000/docs`.
+Backend URL:
 
-> **Note on GOES/XRS:** The first time the GOES overlay is activated, `sunpy` downloads the NetCDF file from NOAA NGDC (~10–30 s). Subsequent requests use the local cache in `data/goes_cache/`.
+```text
+http://localhost:8000
+```
 
-### 3. Frontend (React + Vite)
+API docs:
 
-```bash
+```text
+http://localhost:8000/docs
+```
+
+### 2. Frontend
+
+In another terminal:
+
+```powershell
 cd frontend
 npm install
 npm run dev
 ```
 
-Open your browser at `http://localhost:5173`.
+Frontend URL:
 
----
+```text
+http://localhost:5173
+```
 
-## API reference
+By default, the frontend calls `http://localhost:8000`. For any other backend,
+set `VITE_API_BASE_URL`.
+
+## Environment Variables
+
+### Backend - Railway
+
+```text
+FRONTEND_ORIGINS=https://your-vercel-app.vercel.app,http://localhost:5173
+ECALLISTO_DATA_DIR=/var/services/web/ecallistodata
+BURST_MODEL_DIR=/app/Sahan/Burst_No_Burst-master/deploy/deploy_v1
+```
+
+Required:
+
+- `FRONTEND_ORIGINS`: comma-separated list of frontend origins allowed by CORS.
+
+Optional:
+
+- `ECALLISTO_DATA_DIR`: external NAS/data directory. If omitted, the backend uses local cache and ETHZ downloads.
+- `BURST_MODEL_DIR`: path to the optional ML burst detector model bundle.
+
+### Frontend - Vercel
+
+```text
+VITE_API_BASE_URL=https://your-railway-backend.up.railway.app
+```
+
+This value is public because Vite exposes `VITE_*` variables in the browser
+bundle. Do not put secrets in `VITE_*` variables.
+
+## Deployment Overview
+
+Recommended split:
+
+- Railway hosts the FastAPI backend.
+- Vercel hosts the static Vite frontend.
+- GitHub stores the repository and triggers deployments.
+
+This is a good setup for this project because the backend needs long-running
+Python scientific dependencies, while the frontend is a static React app that
+Vercel serves very efficiently.
+
+## Deploy Backend to Railway
+
+1. Push the repository to GitHub.
+
+2. Go to Railway and create a new project.
+
+3. Choose `Deploy from GitHub repo`.
+
+4. Select this repository.
+
+5. Railway should use the root of the repository as the backend service.
+
+6. Confirm these deployment settings:
+
+```text
+Build source: repository root
+Start command: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+Healthcheck path: /health
+```
+
+The included `railway.json` already defines the start command and healthcheck.
+
+7. Add the backend environment variable:
+
+```text
+FRONTEND_ORIGINS=http://localhost:5173
+```
+
+Later, after Vercel gives you the final frontend URL, change it to:
+
+```text
+FRONTEND_ORIGINS=https://your-vercel-app.vercel.app,http://localhost:5173
+```
+
+8. In Railway, open the backend service settings and generate a public domain.
+
+9. Test the backend:
+
+```text
+https://your-railway-backend.up.railway.app/health
+```
+
+Expected response:
+
+```json
+{"status":"ok","version":"0.2.0"}
+```
+
+## Deploy Frontend to Vercel
+
+1. Go to Vercel and create a new project.
+
+2. Import the same GitHub repository.
+
+3. Set the Vercel root directory to:
+
+```text
+frontend
+```
+
+4. Confirm build settings:
+
+```text
+Framework preset: Vite
+Install command: npm install
+Build command: npm run build
+Output directory: dist
+```
+
+5. Add the frontend environment variable:
+
+```text
+VITE_API_BASE_URL=https://your-railway-backend.up.railway.app
+```
+
+6. Deploy.
+
+7. Copy the final Vercel URL.
+
+8. Go back to Railway and update:
+
+```text
+FRONTEND_ORIGINS=https://your-vercel-app.vercel.app,http://localhost:5173
+```
+
+9. Redeploy Railway after changing the variable.
+
+10. Open the Vercel app and verify:
+
+- Station list loads.
+- Map loads.
+- Spectrogram load works.
+- Browser console has no CORS errors.
+
+## What Uses `requirements.txt`?
+
+`requirements.txt` is for the Railway backend only.
+
+Railway sees a Python backend, installs the packages from `requirements.txt`,
+then runs:
+
+```bash
+uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+```
+
+Vercel does not use `requirements.txt`. Vercel deploys the React frontend from
+`frontend/` and uses:
+
+- `frontend/package.json`
+- `frontend/package-lock.json`
+- `frontend/vite.config.js`
+
+## API Reference
 
 | Method | Route | Description |
-|--------|-------|-------------|
-| `GET` | `/health` | Server health check |
-| `GET` | `/api/stations` | List of active e-CALLISTO stations |
-| `GET` | `/api/files` | Available bursts for a given `station` + `date` |
-| `GET` | `/api/spectrogram` | Processed spectrogram as JSON |
-| `GET` | `/api/spectrogram/combine` | Processed spectrograms for multiple stations, time-synced and fetched concurrently |
-| `GET` | `/api/spectrogram/zoom` | Full-resolution patch for a time/frequency bounding box |
-| `GET` | `/api/burst/detect` | CNN+MIL burst classification for a FITS file (probability, threshold, event intervals) |
-| `GET` | `/api/goes` | GOES XRS-B flux for a given date |
-
-### `/api/files`
-
-```
-GET /api/files?station=SPAIN-SIGUENZA&date=2024-05-08
-```
-
-```json
-{
-  "station": "SPAIN-SIGUENZA",
-  "date": "2024-05-08",
-  "source": "ethz",
-  "files": [
-    { "filename": "SPAIN-SIGUENZA_20240508_080000_01.fit.gz", "time": "08:00:00", "label": "08:00:00" },
-    { "filename": "SPAIN-SIGUENZA_20240508_081500_01.fit.gz", "time": "08:15:00", "label": "★ 08:15:00" }
-  ]
-}
-```
-
-The `★` prefix marks files already downloaded to the local cache.
-
-### `/api/spectrogram`
-
-```
-GET /api/spectrogram?station=SPAIN-SIGUENZA&date=2024-05-08
-    &filename=SPAIN-SIGUENZA_20240508_080000_01.fit.gz
-    &sahan_filter=false
-    &rfi_z_thresh=6.0&rfi_occupancy=0.15&rfi_min_component=9&rfi_impulsive=true
-```
-
-Returns `time_axis` (ISO 8601 UTC), `freq_axis` (MHz), `z` (intensity in dB), `vmin/vmax`, the full FITS header, `rfi_masked_channels`, and `rfi_stats` (`persistent_channels`, `masked_fraction`, `occupancy_mean`).
-
-RFI parameters (accepted by `/api/spectrogram`, `/api/spectrogram/combine` and `/api/spectrogram/zoom`):
-
-| Param | Default | Meaning |
 |---|---|---|
-| `rfi_z_thresh` | 6.0 | Robust z-score threshold (per-channel and global) |
-| `rfi_occupancy` | 0.15 | Fraction of time samples above threshold for a channel to count as persistent RFI |
-| `rfi_min_component` | 9 | Minimum connected-component size (pixels) for the impulsive stage |
-| `rfi_impulsive` | true | Enable the impulsive stage (very bright bursts can also form large components — disable if a burst disappears) |
+| `GET` | `/health` | Backend health check |
+| `GET` | `/api/stations` | List e-CALLISTO stations |
+| `GET` | `/api/stations/geo` | Station coordinates and operative state |
+| `GET` | `/api/files` | Available FITS files for station/date |
+| `GET` | `/api/spectrogram` | Process one spectrogram |
+| `GET` | `/api/spectrogram/combine` | Process multiple time-synced stations |
+| `GET` | `/api/spectrogram/zoom` | High-resolution zoom patch |
+| `GET` | `/api/goes` | GOES/XRS overlay data |
+| `GET` | `/api/burst/detect` | Optional ML burst detection |
 
-### `/api/spectrogram/combine`
+## Useful Checks
 
-```
-GET /api/spectrogram/combine?date=2024-05-08&stations=SPAIN-SIGUENZA&stations=SPAIN-ALCALA
-    &filename=SPAIN-SIGUENZA_20240508_080000_01.fit.gz
-```
+Backend:
 
-Fetches and processes each station concurrently, syncing secondary stations to the same 15-minute block as the primary. Returns a `layers` array (one `SpectrogramResponse` per station) plus `failed` for any station without a matching file.
-
-### `/api/spectrogram/zoom`
-
-```
-GET /api/spectrogram/zoom?station=SPAIN-SIGUENZA&date=2024-05-08
-    &filename=SPAIN-SIGUENZA_20240508_080000_01.fit.gz
-    &t0=2024-05-08T08:05:00Z&t1=2024-05-08T08:10:00Z&f0=45&f1=80
+```powershell
+.\.venv\Scripts\python.exe -m compileall backend
 ```
 
-Returns a full-resolution slice for the given time/frequency box, reprocessed (background subtraction, optional RFI filter) on the slice only. Used by the frontend when the user box-selects a region on the plot.
+Frontend:
 
-### `/api/burst/detect`
-
-```
-GET /api/burst/detect?station=AUSTRALIA-ASSA&date=2022-02-08
-    &filename=Australia-ASSA_20220208_213000_62.fit.gz
-```
-
-```json
-{
-  "available": true,
-  "model_version": "20260218T113917Z",
-  "threshold": 0.6,
-  "file_score": 0.9597,
-  "is_burst": true,
-  "events": [
-    {
-      "start_utc": "2022-02-08T21:32:40Z",
-      "end_utc": "2022-02-08T21:40:08Z",
-      "peak_score": 0.9579,
-      "mean_score": 0.8788,
-      "freq_band_mhz": [15.0, 86.938]
-    }
-  ]
-}
+```powershell
+cd frontend
+npm run lint
+npm run build
 ```
 
-Pipeline (ported from *Burst_No_Burst* `infer/deploy.py`, validated against the
-author's reference prediction on the same file): model-specific preprocessing
-(log1p → running-quantile baseline → per-frequency robust normalisation → RFI
-mitigation → clipping) → 128×128 windowing → window CNN → MIL noisy-or pooling →
-median-smoothed event extraction. ~0.5 s per file on CPU. If `torch` is not
-installed the endpoint replies `available: false` with the reason.
+## Notes
 
-### `/api/goes`
+- Do not deploy the local `data/` cache unless you intentionally need sample files.
+- The first GOES request for a date can take several seconds because SunPy downloads data.
+- The ML detector is optional. If `torch` or the model bundle is missing, the endpoint responds with `available: false` instead of crashing the backend.
+- If Vercel cannot reach Railway, check `VITE_API_BASE_URL`.
+- If the browser shows CORS errors, check `FRONTEND_ORIGINS` in Railway and redeploy.
 
-```
-GET /api/goes?date=2024-05-08
-```
+## Sources Used for Deployment Guidance
 
-```json
-{
-  "date": "2024-05-08",
-  "available": true,
-  "satellite": 18,
-  "times": ["2024-05-08T00:00:00.000Z", "..."],
-  "xrsb": [1.2e-8, "..."]
-}
-```
-
----
-
-## Project structure
-
-```
-TFG-AstroDoncel/
-├── backend/
-│   └── main.py               # FastAPI endpoints + scientific pipeline
-├── frontend/
-│   ├── src/
-│   │   ├── App.jsx           # Main logic and sidebar
-│   │   ├── Spectrogram.jsx   # Plotly component (heatmap + GOES overlay)
-│   │   └── App.css           # Dashboard styles
-│   └── package.json
-├── requirements.txt          # Python dependencies (install from repo root)
-├── data/                     # Downloaded FITS files (not versioned)
-│   └── goes_cache/           # GOES NetCDF file cache
-└── README.md
-```
-
----
-
-## Processing pipeline
-
-```
-FITS file (e-CALLISTO)
-        │
-        ▼
-_load_callisto_data()       ← Read HDU, extract freq/time axes from
-                              BIN table, WCS header, or FREQMIN/FREQMAX
-        │
-        ▼
-_subtract_background()      ← Baseline subtraction: 25th percentile per row
-                              (robust against intense solar emission)
-        │
-        ▼  [if sahan_filter=true]
-_mitigate_rfi()             ← RFI v2 (ported from Burst_No_Burst by Sahan):
-                              1. Persistent narrowband RFI by channel occupancy
-                                 (fraction of samples with |z| > z_thresh)
-                              2. Impulsive RFI via connected components
-                                 (scipy.ndimage.label, min component size)
-                              3. Inpainting with the channel median
-        │
-        ▼
-_percentile_clip_global()   ← Compute vmin (p2) and vmax (p98) for contrast
-        │
-        ▼
-_times_to_utc()             ← ISO 8601 UTC from DATE-OBS + TIME-OBS + CDELT1
-        │
-        ▼
-JSON → Plotly heatmap (selectable colorscale, default: observatory)
-```
-
----
-
-## Credits and references
-
-- **RFI scientific engine (v2):** ported and adapted from *Burst_No_Burst* (preprocess/rfi.py) and the [e-CALLISTO FITS Analyzer](https://github.com/saandev/e-callisto_fits_analyzer) by Sahan S. Liyanage, Astronomical and Space Science Unit, University of Colombo, Sri Lanka. The stacked-panel comparison view follows the Analyzer's Multi-Station Comparison workspace; the drift ruler follows its Ruler measurements tool.
-- **e-CALLISTO network:** Christian Monstein, ETH Zürich / Institute for Astronomy, Eidgenössische Technische Hochschule.
-- **GOES/XRS data:** NOAA National Centers for Environmental Information (NCEI), downloaded via [SunPy](https://sunpy.org/).
-- **Stack:** [FastAPI](https://fastapi.tiangolo.com/) · [astropy](https://www.astropy.org/) · [SunPy](https://sunpy.org/) · [React](https://react.dev/) · [Vite](https://vitejs.dev/) · [Plotly.js](https://plotly.com/javascript/)
-
----
-
-## Licence
-
-Academic project. Code is freely reusable with attribution. FITS data belong to the e-CALLISTO network (CC BY 4.0).
+- Vercel Vite deployment docs: https://vercel.com/docs/frameworks/frontend/vite
+- Vercel monorepo docs: https://vercel.com/docs/monorepos
+- Vercel environment variables docs: https://vercel.com/docs/environment-variables
+- Vite env variable docs: https://vite.dev/guide/env-and-mode
+- Railway FastAPI deployment guide: https://docs.railway.com/guides/fastapi
+- Railway config-as-code reference: https://docs.railway.com/config-as-code/reference

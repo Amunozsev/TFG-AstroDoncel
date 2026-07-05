@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import glob
 import html
+import json
 import logging
 import os
 import re
@@ -31,9 +32,17 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AstroDoncel API", version="0.2.0")
 
+
+def _cors_origins() -> list[str]:
+    configured = os.environ.get("FRONTEND_ORIGINS", "")
+    if configured.strip():
+        return [origin.strip().rstrip("/") for origin in configured.split(",") if origin.strip()]
+    return ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -129,6 +138,249 @@ _STATIONS_FALLBACK: list[str] = [
 ]
 
 
+# Approximate geographic coordinates (latitude, longitude in degrees) for the
+# e-CALLISTO network. Values are best-effort from the public station catalogue
+# and are only used to place markers on the world map — precision to the city /
+# observatory level is sufficient. Stations reported by ETHZ but absent here are
+# still returned by /api/stations; they simply cannot be plotted.
+_STATIONS_GEO: dict[str, tuple[float, float]] = {
+    "ALASKA-ANCHORAGE": (61.218, -149.900),
+    "ALASKA-COHOE": (60.420, -151.260),
+    "ALASKA-HAARP": (62.390, -145.150),
+    "ALGERIA-CRAAG": (36.800, 3.050),
+    "ALMATY": (43.240, 76.910),
+    "AUSTRALIA-ASSA": (-34.960, 138.600),
+    "AUSTRIA-KRUMBACH": (47.510, 9.900),
+    "AUSTRIA-MICHELBACH": (48.050, 15.790),
+    "AUSTRIA-OE3FLB": (48.100, 15.800),
+    "AUSTRIA-UNIGRAZ": (47.070, 15.440),
+    "BIR": (53.090, -7.920),
+    "BRAZIL": (-23.200, -45.860),
+    "CROATIA-VISNJAN": (45.280, 13.720),
+    "DENMARK": (55.680, 12.570),
+    "EGYPT-ALEXANDRIA": (31.200, 29.920),
+    "EGYPT-SPACEAGENCY": (30.030, 31.210),
+    "ETHIOPIA": (9.030, 38.740),
+    "FINLAND-KEMPELE": (64.910, 25.500),
+    "FINLAND-RUISSALO": (60.430, 22.170),
+    "FINLAND-SIUNTIO": (60.140, 24.190),
+    "GERMANY-DLR": (50.850, 7.130),
+    "GERMANY-ESSEN": (51.460, 7.010),
+    "GLASGOW": (55.870, -4.290),
+    "GREENLAND": (64.180, -51.720),
+    "HUMAIN": (50.190, 5.250),
+    "HURBANOVO": (47.870, 18.190),
+    "INDIA-GAURI": (18.500, 73.850),
+    "INDIA-OOTY": (11.410, 76.690),
+    "INDIA-UDAIPUR": (24.580, 73.710),
+    "INDONESIA": (-6.900, 107.600),
+    "ITALY-STRASSOLT": (45.970, 13.320),
+    "JAPAN-IBARAKI": (36.340, 140.450),
+    "KASI": (36.400, 127.370),
+    "LEARMONTH": (-22.220, 114.100),
+    "MALAYSIA-BANTING": (2.820, 101.500),
+    "MAURITIUS": (-20.200, 57.500),
+    "MEXART": (20.360, -101.330),
+    "MEXICO-ENSENADA-UNAM": (31.870, -116.670),
+    "MEXICO-FCFM-UANL": (25.720, -100.310),
+    "MEXICO-FCFM-UNACH": (16.750, -93.110),
+    "MEXICO-LANCE": (19.700, -101.200),
+    "MEXICO-LANCE-A": (19.700, -101.200),
+    "MEXICO-LANCE-B": (19.700, -101.200),
+    "MEXICO-UANL-INFIERNILLO": (25.500, -100.000),
+    "MONGOLIA-UB": (47.920, 106.920),
+    "MRO": (-26.700, 116.600),
+    "MRT1": (-20.200, 57.600),
+    "NASA-GSFC": (38.990, -76.840),
+    "NORWAY-EGERSUND": (58.450, 5.990),
+    "NORWAY-NY-AALESUND": (78.920, 11.930),
+    "NORWAY-RANDABERG": (59.000, 5.600),
+    "NZ-WAIRAKEI-DLR": (-38.630, 176.100),
+    "PARAGUAY": (-25.300, -57.600),
+    "PERU-ICA": (-14.080, -75.730),
+    "PHOENIX": (47.340, 8.110),
+    "POLAND-BALDY": (53.600, 20.600),
+    "POLAND-GROTNIKI": (51.800, 19.300),
+    "ROMANIA": (44.400, 26.100),
+    "ROSWELL-NM": (33.390, -104.520),
+    "RWANDA": (-1.950, 30.060),
+    "SPAIN-PERALEJOS": (40.650, -1.860),
+    "SPAIN-SIGUENZA": (41.070, -2.640),
+    "SRI-LANKA": (6.900, 79.860),
+    "SSRT": (51.750, 102.220),
+    "SWISS-BLEN5M-E": (47.340, 8.110),
+    "SWISS-CALU": (47.000, 8.000),
+    "SWISS-FM": (47.300, 8.100),
+    "SWISS-HB9SCT": (47.300, 8.000),
+    "SWISS-HEITERSWIL": (47.350, 9.100),
+    "SWISS-IRSOL": (46.000, 8.960),
+    "SWISS-LANDSCHLACHT": (47.600, 9.200),
+    "SWISS-MUHEN": (47.300, 8.060),
+    "TAIWAN-NCU": (24.970, 121.190),
+    "TRIEST": (45.650, 13.780),
+    "TURKEY": (39.900, 32.800),
+    "UNAM": (19.330, -99.180),
+    "URUGUAY": (-34.900, -56.200),
+    "USA-ARIZONA-ERAU": (34.610, -112.450),
+    "USA-BOSTON": (42.360, -71.060),
+    "UZBEKISTAN": (41.330, 69.290),
+}
+
+
+# ── Station coordinate registry (authoritative: from FITS headers) ────────────
+# Each CALLISTO FITS file declares its own site: OBS_LAT / OBS_LAC (N|S) and
+# OBS_LON / OBS_LOC (E|W). That is the real source of truth, so we harvest
+# coordinates from the data itself and persist them. `_STATIONS_GEO` above is
+# only a fallback used until a station's real coordinates have been learned.
+_COORD_REGISTRY_PATH = os.path.join(DATA_DIR_LOCAL, "station_coords.json")
+_COORD_REGISTRY: dict[str, dict] = {}
+_COORD_REGISTRY_LOCK = threading.Lock()
+_COORD_REGISTRY_LOADED = False
+_LOCAL_HARVEST_DONE = False
+_COORD_ATTEMPTS: dict[str, float] = {}       # station -> last download-harvest ts
+_COORD_ATTEMPT_COOLDOWN = 6 * 3600.0         # don't re-download a failing station too often
+_COORD_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="coords")
+
+
+def _load_coord_registry() -> None:
+    global _COORD_REGISTRY, _COORD_REGISTRY_LOADED
+    with _COORD_REGISTRY_LOCK:
+        if _COORD_REGISTRY_LOADED:
+            return
+        try:
+            with open(_COORD_REGISTRY_PATH, "r", encoding="utf-8") as fh:
+                loaded = json.load(fh)
+            if isinstance(loaded, dict):
+                _COORD_REGISTRY = loaded
+        except Exception:
+            _COORD_REGISTRY = {}
+        _COORD_REGISTRY_LOADED = True
+
+
+def _save_coord_registry() -> None:
+    try:
+        os.makedirs(DATA_DIR_LOCAL, exist_ok=True)
+        with _COORD_REGISTRY_LOCK:
+            snapshot = dict(_COORD_REGISTRY)
+        tmp = _COORD_REGISTRY_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(snapshot, fh, indent=0, sort_keys=True)
+        os.replace(tmp, _COORD_REGISTRY_PATH)
+    except Exception as exc:
+        logger.debug("Could not persist coord registry: %s", exc)
+
+
+def _coords_from_header(header) -> tuple[float, float] | None:
+    """Extract (lat, lon) in signed degrees from CALLISTO OBS_* header keywords."""
+    try:
+        lat_raw = header.get("OBS_LAT")
+        lon_raw = header.get("OBS_LON")
+        if lat_raw is None or lon_raw is None:
+            return None
+        lat = abs(float(lat_raw))
+        lon = abs(float(lon_raw))
+        if str(header.get("OBS_LAC", "N")).strip().upper().startswith("S"):
+            lat = -lat
+        if str(header.get("OBS_LOC", "E")).strip().upper().startswith("W"):
+            lon = -lon
+        if not (np.isfinite(lat) and np.isfinite(lon)):
+            return None
+        if abs(lat) < 1e-6 and abs(lon) < 1e-6:
+            return None  # (0, 0) means the station left the field unset
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+            return None
+        return round(lat, 4), round(lon, 4)
+    except Exception:
+        return None
+
+
+def _record_station_coords(station: str, header) -> bool:
+    """Persist FITS-derived coordinates for a station. Returns True if updated."""
+    coords = _coords_from_header(header)
+    if not coords:
+        return False
+    name = station.upper()
+    entry = {"lat": coords[0], "lon": coords[1], "source": "fits"}
+    _load_coord_registry()
+    with _COORD_REGISTRY_LOCK:
+        if _COORD_REGISTRY.get(name) == entry:
+            return False
+        _COORD_REGISTRY[name] = entry
+    _save_coord_registry()
+    logger.info("Learned coordinates for %s from FITS: %.4f, %.4f", name, *coords)
+    return True
+
+
+def _station_from_filename(filename: str) -> str | None:
+    """Return the STATION prefix (upper-case) of a CALLISTO filename."""
+    m = re.match(r"([A-Za-z0-9][A-Za-z0-9_-]*?)_\d{8}_\d{6}", filename)
+    return m.group(1).upper() if m else None
+
+
+def _harvest_coords_from_local() -> int:
+    """Populate the registry from locally cached FITS files (one per station)."""
+    global _LOCAL_HARVEST_DONE
+    _load_coord_registry()
+    with _COORD_REGISTRY_LOCK:
+        if _LOCAL_HARVEST_DONE:
+            return 0
+        _LOCAL_HARVEST_DONE = True
+    if not os.path.isdir(DATA_DIR_LOCAL):
+        return 0
+
+    by_station: dict[str, str] = {}
+    for path in glob.glob(os.path.join(DATA_DIR_LOCAL, "*.fit*")):
+        st = _station_from_filename(os.path.basename(path))
+        if st:
+            by_station.setdefault(st, path)
+
+    added = 0
+    for st, path in by_station.items():
+        with _COORD_REGISTRY_LOCK:
+            cur = _COORD_REGISTRY.get(st)
+        if cur and cur.get("source") == "fits":
+            continue
+        try:
+            with fits.open(path, memmap=False) as hdul:
+                if _record_station_coords(st, hdul[0].header):
+                    added += 1
+        except Exception:
+            continue
+    if added:
+        logger.info("Harvested %d station coordinates from local FITS files", added)
+    return added
+
+
+def _harvest_coords_by_download(stations: list[str], date: str) -> None:
+    """Background task: fetch one FITS per station and learn its coordinates."""
+    for st in stations:
+        try:
+            path = (
+                _find_local_fits_file(st, date)
+                or _find_nas_fits_file(st, date)
+                or _download_from_ethz(st, date)
+            )
+            if not path:
+                continue
+            with fits.open(path, memmap=False) as hdul:
+                _record_station_coords(st, hdul[0].header)
+        except Exception as exc:
+            logger.debug("Coord harvest failed for %s: %s", st, exc)
+
+
+def _resolve_station_coords(name: str) -> tuple[float, float, str] | None:
+    """Return (lat, lon, source) — FITS registry first, hand fallback second."""
+    _load_coord_registry()
+    with _COORD_REGISTRY_LOCK:
+        reg = _COORD_REGISTRY.get(name)
+    if reg:
+        return float(reg["lat"]), float(reg["lon"]), "fits"
+    fb = _STATIONS_GEO.get(name)
+    if fb:
+        return fb[0], fb[1], "approx"
+    return None
+
+
 # ── Models ───────────────────────────────────────────────────────────────────
 
 class SpectrogramResponse(BaseModel):
@@ -182,6 +434,27 @@ class GoesResponse(BaseModel):
 class StationsResponse(BaseModel):
     stations: list[str]
     source: str
+
+
+class StationGeo(BaseModel):
+    station: str
+    lat: float
+    lon: float
+    operative: bool
+    burst_count: int = 0        # bursts recorded by this station in `burst_month`
+    coord_source: str = "approx"  # "fits" (from station data) | "approx" (fallback)
+
+
+class StationsGeoResponse(BaseModel):
+    stations: list[StationGeo]
+    source: str
+    operative_count: int
+    total_count: int
+    reference_date: str  # last ETHZ day scanned for "operative" status, or ""
+    burst_month: str = ""  # "YYYY-MM" of the burst list used, or "" if unavailable
+    burst_total: int = 0   # total burst-station detections counted that month
+    unmapped: list[str] = []   # live stations we have no coordinates for (yet)
+    fits_coord_count: int = 0  # how many plotted coords came from real FITS headers
 
 
 class FileEntry(BaseModel):
@@ -871,6 +1144,7 @@ def _build_spectrogram(
     logger.info("Processing %s", fits_path)
     try:
         data_raw, freqs, time_arr, header = _load_raw_cached(fits_path)
+        _record_station_coords(station, header)  # learn the real site from its data
         time_labels = _times_to_utc(time_arr, header)
 
         if max_time_bins is not None:
@@ -936,13 +1210,91 @@ def health():
     return {"status": "ok", "version": "0.2.0"}
 
 
-@app.get("/api/stations", response_model=StationsResponse)
-def get_stations():
-    """Return the live e-Callisto station list by scanning the ETHZ archive.
+# e-CALLISTO monthly burst lists (deARCE, UAH / ETHZ). One text file per month
+# lists every detected solar radio burst and the stations that recorded it.
+_BURSTLIST_BASE = f"{ETHZ_BASE_URL.rsplit('/', 1)[0]}/BurstLists/2010-yyyy_Monstein"
+_BURST_CACHE: dict[str, tuple[float, dict[str, int]]] = {}
+_BURST_CACHE_TTL = 1800.0  # seconds (monthly file changes at most a few times/day)
+_BURST_CACHE_LOCK = threading.Lock()
 
-    Tries the last 7 days to find a day with data. Falls back to the
-    static list if ETHZ is unreachable.
+
+def _burst_counts_for_month(year: int, month: int) -> dict[str, int]:
+    """Return {STATION_UPPER: burst_count} from the monthly e-CALLISTO burst list.
+
+    Counts, per station, the number of burst events it participated in during the
+    given month. Results are cached for `_BURST_CACHE_TTL` seconds. Returns an
+    empty dict when the list cannot be fetched or parsed.
     """
+    key = f"{year:04d}-{month:02d}"
+    now = datetime.now().timestamp()
+    with _BURST_CACHE_LOCK:
+        cached = _BURST_CACHE.get(key)
+        if cached and (now - cached[0]) < _BURST_CACHE_TTL:
+            return cached[1]
+
+    url = f"{_BURSTLIST_BASE}/{year:04d}/e-CALLISTO_{year:04d}_{month:02d}.txt"
+    counts: dict[str, int] = {}
+    try:
+        req = Request(url, headers={"User-Agent": "AstroDoncel/1.0"})
+        with urlopen(req, timeout=15) as resp:
+            text = resp.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        logger.debug("Burst list %s unavailable: %s", key, exc)
+        with _BURST_CACHE_LOCK:
+            _BURST_CACHE[key] = (now, {})
+        return {}
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith("Product"):
+            continue
+        # Columns are tab-separated: Date <tab> Time <tab> Type <tab> Stations
+        parts = re.split(r"\t+", line)
+        if len(parts) < 4:
+            parts = re.split(r"\s{2,}", line)  # fallback if tabs were lost
+        if len(parts) < 4:
+            continue
+        time_field = parts[1]
+        if "#" in time_field:  # "##:##-##:##" marks a day with no bursts
+            continue
+        stations_field = parts[-1]
+        for token in stations_field.split(","):
+            name = token.strip().upper()
+            # Drop any trailing quality annotation like "(good)" if present
+            name = re.sub(r"\s*\(.*?\)\s*$", "", name)
+            if name:
+                counts[name] = counts.get(name, 0) + 1
+
+    with _BURST_CACHE_LOCK:
+        _BURST_CACHE[key] = (now, counts)
+    logger.info("Burst list %s parsed: %d stations, %d detections",
+                key, len(counts), sum(counts.values()))
+    return counts
+
+
+# Cache for the "which stations reported recently" scan. Operative status has
+# daily granularity, so a few minutes of caching is accurate — and it means any
+# number of client refreshes are served from memory instead of hammering the
+# external ETHZ server (soleil.i4ds.ch).
+_STATION_SCAN_CACHE: tuple[float, list[str], str] | None = None
+_STATION_SCAN_TTL = 300.0  # seconds
+_STATION_SCAN_LOCK = threading.Lock()
+
+
+def _scan_recent_ethz_stations() -> tuple[list[str], str]:
+    """Scan the ETHZ archive for the most recent day that has data.
+
+    Returns (sorted unique station names, reference_date 'YYYY-MM-DD'). Results
+    are cached for `_STATION_SCAN_TTL` seconds. When ETHZ is unreachable, the
+    last good scan is served if available, otherwise ([], "").
+    """
+    global _STATION_SCAN_CACHE
+    now = datetime.now().timestamp()
+    with _STATION_SCAN_LOCK:
+        cached = _STATION_SCAN_CACHE
+    if cached and (now - cached[0]) < _STATION_SCAN_TTL:
+        return cached[1], cached[2]
+
     for days_back in range(1, 8):
         dt = datetime.now() - timedelta(days=days_back)
         dir_url = f"{ETHZ_BASE_URL}/{dt.strftime('%Y/%m/%d')}/"
@@ -958,18 +1310,120 @@ def get_stations():
             names = [m.upper() for m in pattern.findall(page)]
             if names:
                 unique = sorted(set(names))
-                logger.info(
-                    "Stations found in ETHZ: %d (date %s)",
-                    len(unique),
-                    dt.strftime("%Y-%m-%d"),
-                )
-                return StationsResponse(stations=unique, source="ethz")
+                ref = dt.strftime("%Y-%m-%d")
+                logger.info("Stations found in ETHZ: %d (date %s)", len(unique), ref)
+                with _STATION_SCAN_LOCK:
+                    _STATION_SCAN_CACHE = (now, unique, ref)
+                return unique, ref
         except Exception as exc:
             logger.debug("ETHZ stations failed for %s: %s", dt.strftime("%Y-%m-%d"), exc)
             continue
 
+    # ETHZ unreachable right now — fall back to the last good scan if we have one.
+    if cached:
+        logger.warning("ETHZ unreachable; serving cached station scan from %s", cached[2])
+        return cached[1], cached[2]
+    return [], ""
+
+
+@app.get("/api/stations", response_model=StationsResponse)
+def get_stations():
+    """Return the live e-Callisto station list by scanning the ETHZ archive.
+
+    Tries the last 7 days to find a day with data. Falls back to the
+    static list if ETHZ is unreachable.
+    """
+    stations, _ref = _scan_recent_ethz_stations()
+    if stations:
+        return StationsResponse(stations=stations, source="ethz")
+
     logger.warning("ETHZ unreachable for station list; using static fallback")
     return StationsResponse(stations=_STATIONS_FALLBACK, source="static")
+
+
+@app.get("/api/stations/geo", response_model=StationsGeoResponse)
+def get_stations_geo():
+    """Return mappable stations with coordinates and live operative status.
+
+    A station is flagged *operative* when it reported at least one file on the
+    most recent day scanned in the ETHZ archive. When ETHZ is unreachable the
+    catalogue is still returned, but every station is marked non-operative and
+    `reference_date` is empty so the frontend can indicate the status is stale.
+    """
+    reporting, ref_date = _scan_recent_ethz_stations()
+    reporting_set = set(reporting)
+
+    # Fill the coordinate registry from any FITS files we already have on disk.
+    _harvest_coords_from_local()
+
+    # Burst counts come from the current month's list (fall back to the ETHZ
+    # reference month if "now" has no list yet).
+    anchor = datetime.now()
+    burst_counts = _burst_counts_for_month(anchor.year, anchor.month)
+    if not burst_counts and ref_date:
+        ref_dt = datetime.strptime(ref_date, "%Y-%m-%d")
+        burst_counts = _burst_counts_for_month(ref_dt.year, ref_dt.month)
+        anchor = ref_dt
+    burst_month = f"{anchor.year:04d}-{anchor.month:02d}" if burst_counts else ""
+
+    # The catalogue is driven by real data: stations reporting now, plus every
+    # station we already know coordinates for. The hand-written list is never the
+    # source of truth for *which* stations exist — only a coordinate fallback.
+    _load_coord_registry()
+    with _COORD_REGISTRY_LOCK:
+        known = set(_COORD_REGISTRY.keys())
+    catalog = reporting_set | known | set(_STATIONS_GEO.keys())
+
+    entries: list[StationGeo] = []
+    unmapped: list[str] = []
+    fits_count = 0
+    for name in sorted(catalog):
+        operative = name in reporting_set
+        coords = _resolve_station_coords(name)
+        if coords is None:
+            if operative:  # surface only live stations we can't place yet
+                unmapped.append(name)
+            continue
+        if coords[2] == "fits":
+            fits_count += 1
+        entries.append(
+            StationGeo(
+                station=name,
+                lat=coords[0],
+                lon=coords[1],
+                operative=operative,
+                burst_count=burst_counts.get(name, 0),
+                coord_source=coords[2],
+            )
+        )
+
+    # Learn real coordinates in the background for live stations still on the
+    # fallback (or unmapped), a few per call, throttled to spare the archive.
+    now_ts = datetime.now().timestamp()
+    need = [
+        e.station for e in entries if e.coord_source == "approx" and e.operative
+    ] + unmapped
+    todo = [
+        st for st in need
+        if now_ts - _COORD_ATTEMPTS.get(st, 0) > _COORD_ATTEMPT_COOLDOWN
+    ][:6]
+    if todo and ref_date:
+        for st in todo:
+            _COORD_ATTEMPTS[st] = now_ts
+        _COORD_EXECUTOR.submit(_harvest_coords_by_download, todo, ref_date)
+
+    operative_count = sum(1 for e in entries if e.operative)
+    return StationsGeoResponse(
+        stations=entries,
+        source="ethz" if ref_date else "static",
+        operative_count=operative_count,
+        total_count=len(entries),
+        reference_date=ref_date,
+        burst_month=burst_month,
+        burst_total=sum(burst_counts.values()),
+        unmapped=sorted(unmapped),
+        fits_coord_count=fits_count,
+    )
 
 
 @app.get("/api/files", response_model=FilesResponse)

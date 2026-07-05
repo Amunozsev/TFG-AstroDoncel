@@ -1,28 +1,23 @@
-# AstroDoncel – Backend  (Python 3.12+)
-# Instalar con:  pip install -r requirements.txt
+# AstroDoncel backend dependencies
+# Used by Railway to install the FastAPI backend.
+# Vercel does not use this file; Vercel uses frontend/package.json.
 
-# --- Framework web ---
+# Web API
 fastapi==0.139.0
-uvicorn[standard]==0.49.0      # servidor ASGI con recarga automática
+uvicorn[standard]==0.49.0
+pydantic==2.13.4
 
-# --- Procesamiento científico / astronómico ---
+# Scientific processing
 astropy==8.0.0
 numpy==2.5.0
 scipy==1.18.0
-sunpy[net,timeseries]==8.0.0    # GOES/XRS overlay vía Fido (NOAA NGDC)
-mpl-animators==1.2.4            # requerido por sunpy.timeseries (import interno)
-pandas==3.0.3                   # requerido por sunpy.timeseries.to_dataframe()
 
-# --- Validación de datos (incluida en FastAPI, se especifica por claridad) ---
-pydantic==2.13.4
+# GOES/XRS overlay through SunPy/Fido
+sunpy[net,timeseries]==8.0.0
+mpl-animators==1.2.4
+pandas==3.0.3
 
-# --- Detección automática de bursts (opcional) ---
-# El endpoint /api/burst/detect usa el modelo CNN+MIL de Sahan (Burst_No_Burst).
-# Si torch no está instalado, el backend arranca igual y el endpoint responde
-# available=false. Instalar la variante CPU (ligera) con:
-#   pip install torch --index-url https://download.pytorch.org/whl/cpu
-
-# --- Futuras dependencias (se activarán en sprints posteriores) ---
-# sqlalchemy==2.0.40           # ORM para PostgreSQL
-# asyncpg==0.30.0              # driver async para PostgreSQL
-# psycopg2-binary==2.9.10      # driver síncrono (migrations con Alembic)
+# Optional ML burst detection:
+# The /api/burst/detect endpoint degrades gracefully if torch is missing.
+# Install torch only when the Railway plan has enough RAM/build time:
+# torch --index-url https://download.pytorch.org/whl/cpu
