@@ -98,11 +98,11 @@ are available from the browser.
   - measure time difference,
   - measure frequency difference,
   - calculate drift rate in MHz/s.
-- Optional automatic burst detection endpoint:
-  - uses a CNN+MIL model bundle when available,
+- Automatic burst detection endpoint:
+  - uses the bundled CNN+MIL model,
   - returns file-level probability,
   - returns candidate event intervals,
-  - degrades gracefully if `torch` or the model bundle is missing.
+  - degrades gracefully if a custom installation misses model files.
 
 ## Architecture
 
@@ -141,7 +141,9 @@ fetching.
 TFG-AstroDoncel/
   backend/
     main.py              FastAPI app, API endpoints and scientific pipeline
-    burst_detect.py      Optional CNN+MIL burst detector
+    burst_detect.py      CNN+MIL burst detector
+    model/
+      burst_detector/    Deployment bundle for ML inference
   frontend/
     public/
     src/
@@ -288,9 +290,8 @@ If this is not configured, the backend uses `data/` and the ETHZ archive.
 BURST_MODEL_DIR
 ```
 
-Optional path to the CNN+MIL burst detector model bundle. If the model bundle
-or `torch` is missing, the burst detection endpoint returns `available: false`
-instead of crashing the backend.
+Optional override path to the CNN+MIL burst detector model bundle. By default,
+the backend uses `backend/model/burst_detector/`.
 
 ## How the Processing Pipeline Works
 
@@ -426,7 +427,7 @@ Query parameters:
 
 ### `GET /api/burst/detect`
 
-Runs optional CNN+MIL burst detection on one FITS file.
+Runs CNN+MIL burst detection on one FITS file.
 
 Query parameters:
 
@@ -434,8 +435,8 @@ Query parameters:
 - `date`
 - `filename`
 
-If `torch` or the model bundle is missing, the endpoint returns an unavailable
-response rather than failing backend startup.
+If the model dependencies or bundle files are missing in a custom installation,
+the endpoint returns an unavailable response rather than failing backend startup.
 
 ## Useful Commands
 
@@ -477,7 +478,7 @@ npm run preview
 - The first request for a file may be slower if the backend needs to download it.
 - The first GOES request for a date may be slower because SunPy fetches external data.
 - Local cache files are runtime artefacts, not source code.
-- The automatic burst detector is optional and depends on `torch` plus a model bundle.
+- The automatic burst detector uses CPU inference and can be slower on small machines.
 - Some station coordinates are approximate until learned from real FITS headers.
 - Multi-station comparisons depend on matching 15-minute time blocks across stations.
 

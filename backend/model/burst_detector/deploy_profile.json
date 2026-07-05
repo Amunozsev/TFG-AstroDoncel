@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "bundle_name": "deploy_20260218T113917Z",
+  "created_utc": "2026-02-18T19:25:44.210205+00:00",
+  "model_version": "20260218T113917Z",
+  "checkpoint": {
+    "path": "/Users/saan/Desktop/Burst_No_Burst/deploy/deploy_v1/model.pt",
+    "sha256": "54e071b9cf9a0013409c81d5866462b73158a98ed505bca2e0f23086a6685bb8",
+    "size_bytes": 3566374
+  },
+  "threshold": 0.6,
+  "threshold_json": "/Users/saan/Desktop/Burst_No_Burst/deploy/deploy_v1/threshold.json",
+  "default_device": "mps",
+  "config_snapshot": {
+    "window": {
+      "height": 128,
+      "width": 128,
+      "stride_h": 128,
+      "stride_w": 128
+    },
+    "preprocess": {
+      "clip_min": -6.0,
+      "clip_max": 12.0,
+      "bg_quantile": 0.2,
+      "bg_window": 121,
+      "floor_zero": true,
+      "rfi_z_thresh": 6.0,
+      "rfi_occupancy_thresh": 0.15,
+      "rfi_min_component_size": 9
+    },
+    "inference": {
+      "threshold": 0.6,
+      "smooth_kernel": 5,
+      "min_event_windows": 3,
+      "batch_size": 64
+    }
+  },
+  "metrics": {
+    "threshold": 0.6,
+    "n_samples": 99,
+    "pr_auc": 0.7574579918705845,
+    "roc_auc": 0.7808163265306123,
+    "precision": 0.7037037037037037,
+    "recall": 0.76,
+    "f1": 0.7307692307692307,
+    "false_alerts_per_hour": 1.0217657389175667,
+    "event_recall_iou_0.1": null
+  }
+}
