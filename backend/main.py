@@ -163,8 +163,10 @@ class BurstDetectResponse(BaseModel):
     threshold: float | None = None
     file_score: float | None = None
     is_burst: bool | None = None
+    is_candidate: bool | None = None
     n_windows: int | None = None
     inference_ms: float | None = None
+    event_source: str | None = None
     events: list[dict] = []
 
 

@@ -542,7 +542,7 @@ export default function App() {
             {Object.entries(burstResults).map(([st, r]) => (
               <span
                 key={st}
-                className={`stat-chip${r.available && r.is_burst ? ' burst-hit' : ''}`}
+                className={`stat-chip${r.available && (r.is_burst || r.is_candidate) ? ' burst-hit' : ''}`}
                 title={
                   r.available
                     ? `Model ${r.model_version} · ${r.n_windows} windows · ${r.inference_ms} ms`
@@ -550,7 +550,7 @@ export default function App() {
                 }
               >
                 {r.available
-                  ? `${st}: p=${r.file_score.toFixed(2)}${r.is_burst ? ` ⚡ ${r.events.length} event${r.events.length === 1 ? '' : 's'}` : ' · no burst'}`
+                  ? `${st}: p=${r.file_score.toFixed(2)}${r.events?.length ? ` · ${r.is_burst ? 'event' : 'candidate'} ${r.events.length}` : ' · no burst'}`
                   : `${st}: unavailable`}
               </span>
             ))}
