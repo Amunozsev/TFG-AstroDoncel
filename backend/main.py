@@ -13,6 +13,8 @@ import logging
 import os
 import re
 import threading
+import time
+import uuid
 import warnings
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -23,14 +25,35 @@ from urllib.request import Request, urlopen
 import numpy as np
 from astropy.io import fits
 from fastapi import FastAPI, HTTPException, Query
+from fastapi import Request as FastAPIRequest
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.middleware.gzip import GZipMiddleware
+from pydantic import BaseModel, Field
 from scipy.ndimage import label as ndi_label
+from sqlalchemy import select
+
+from backend.api_features import router as feature_router
+from backend.db import FitsFile, GoesDay, Station, session_scope
+from backend.security import safe_join, validate_date, validate_filename_context, validate_station
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AstroDoncel API", version="0.2.0")
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
+app.include_router(feature_router)
+
+
+@app.middleware("http")
+async def request_observability(request: FastAPIRequest, call_next):
+    request_id = request.headers.get("x-request-id", str(uuid.uuid4()))[:64]
+    started = time.perf_counter()
+    response = await call_next(request)
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    response.headers["X-Request-ID"] = request_id
+    response.headers["Server-Timing"] = f"app;dur={elapsed_ms:.1f}"
+    logger.info("request id=%s method=%s path=%s status=%s duration_ms=%.1f", request_id, request.method, request.url.path, response.status_code, elapsed_ms)
+    return response
 
 
 def _cors_origins() -> list[str]:
@@ -307,6 +330,11 @@ def _record_station_coords(station: str, header) -> bool:
             return False
         _COORD_REGISTRY[name] = entry
     _save_coord_registry()
+    try:
+        with session_scope() as session:
+            session.merge(Station(name=name, lat=coords[0], lon=coords[1], coord_source="fits"))
+    except Exception as exc:
+        logger.debug("Could not persist station coordinates in database: %s", exc)
     logger.info("Learned coordinates for %s from FITS: %.4f, %.4f", name, *coords)
     return True
 
@@ -370,6 +398,13 @@ def _harvest_coords_by_download(stations: list[str], date: str) -> None:
 
 def _resolve_station_coords(name: str) -> tuple[float, float, str] | None:
     """Return (lat, lon, source) — FITS registry first, hand fallback second."""
+    try:
+        with session_scope() as session:
+            persisted = session.get(Station, name.upper())
+            if persisted and persisted.lat is not None and persisted.lon is not None:
+                return float(persisted.lat), float(persisted.lon), persisted.coord_source or "fits"
+    except Exception as exc:
+        logger.debug("Database coordinate lookup unavailable: %s", exc)
     _load_coord_registry()
     with _COORD_REGISTRY_LOCK:
         reg = _COORD_REGISTRY.get(name)
@@ -393,8 +428,10 @@ class SpectrogramResponse(BaseModel):
     vmin: float
     vmax: float
     fits_header: dict
-    rfi_masked_channels: list[int] = []
-    rfi_stats: dict = {}
+    rfi_masked_channels: list[int] = Field(default_factory=list)
+    rfi_stats: dict = Field(default_factory=dict)
+    unit: str = "relative digits"
+    scale_mode: str = "relative"
 
 
 class CombinedSpectrogramResponse(BaseModel):
@@ -419,7 +456,7 @@ class BurstDetectResponse(BaseModel):
     n_windows: int | None = None
     inference_ms: float | None = None
     event_source: str | None = None
-    events: list[dict] = []
+    events: list[dict] = Field(default_factory=list)
 
 
 class GoesResponse(BaseModel):
@@ -453,7 +490,7 @@ class StationsGeoResponse(BaseModel):
     reference_date: str  # last ETHZ day scanned for "operative" status, or ""
     burst_month: str = ""  # "YYYY-MM" of the burst list used, or "" if unavailable
     burst_total: int = 0   # total burst-station detections counted that month
-    unmapped: list[str] = []   # live stations we have no coordinates for (yet)
+    unmapped: list[str] = Field(default_factory=list)   # live stations we have no coordinates for (yet)
     fits_coord_count: int = 0  # how many plotted coords came from real FITS headers
 
 
@@ -461,6 +498,7 @@ class FileEntry(BaseModel):
     filename: str
     time: str    # "HH:MM:SS"
     label: str   # display label for the UI
+    focus_code: str | None = None
 
 
 class FilesResponse(BaseModel):
@@ -482,7 +520,7 @@ def _open_fits(path: str):
 
 
 def _find_local_fits_file(station: str, date: str) -> str | None:
-    """Search ../data/ first by (station + date), then by station only."""
+    """Search the local cache by exact station token and observation date."""
     if not os.path.isdir(DATA_DIR_LOCAL):
         return None
     # Match by station + specific date
@@ -490,18 +528,11 @@ def _find_local_fits_file(station: str, date: str) -> str | None:
         dt = datetime.strptime(date, "%Y-%m-%d")
         date_str = dt.strftime("%Y%m%d")
         for ext in (".fit.gz", ".fits.gz", ".fit", ".fits"):
-            matches = glob.glob(
-                os.path.join(DATA_DIR_LOCAL, f"*{station.upper()}*{date_str}*{ext}")
-            )
+            matches = glob.glob(os.path.join(DATA_DIR_LOCAL, f"{station.upper()}_{date_str}_*{ext}"))
             if matches:
                 return sorted(matches)[0]
     except ValueError:
         pass
-    # Match by station only (useful in development with sample files)
-    for ext in (".fit.gz", ".fits.gz", ".fit", ".fits"):
-        matches = glob.glob(os.path.join(DATA_DIR_LOCAL, f"*{station.upper()}*{ext}"))
-        if matches:
-            return sorted(matches)[0]
     return None
 
 
@@ -517,7 +548,7 @@ def _find_nas_fits_file(station: str, date: str) -> str | None:
     if not os.path.isdir(date_dir):
         return None
     for ext in (".fit.gz", ".fits.gz", ".fit", ".fits"):
-        matches = glob.glob(os.path.join(date_dir, f"*{station.upper()}*{ext}"))
+        matches = glob.glob(os.path.join(date_dir, f"{station.upper()}_*{ext}"))
         if matches:
             return sorted(matches)[0]
     return None
@@ -535,6 +566,11 @@ def _time_from_filename(filename: str) -> str:
     return "??:??:??"
 
 
+def _focus_code_from_filename(filename: str) -> str | None:
+    match = re.search(r"_([A-Za-z0-9-]+)\.fits?(?:\.gz)?$", filename, re.IGNORECASE)
+    return match.group(1) if match else None
+
+
 def _list_local_fits_files(station: str, date: str) -> list[str]:
     """Return locally cached filenames for the given station/date."""
     if not os.path.isdir(DATA_DIR_LOCAL):
@@ -547,7 +583,7 @@ def _list_local_fits_files(station: str, date: str) -> list[str]:
     found: list[str] = []
     for ext in (".fit.gz", ".fits.gz", ".fit", ".fits"):
         for path in glob.glob(
-            os.path.join(DATA_DIR_LOCAL, f"*{station.upper()}*{date_str}*{ext}")
+            os.path.join(DATA_DIR_LOCAL, f"{station.upper()}_{date_str}_*{ext}")
         ):
             found.append(os.path.basename(path))
     return sorted(set(found))
@@ -575,7 +611,7 @@ def _list_ethz_files(station: str, date: str) -> list[str]:
     matches = sorted(set(prefix_re.findall(page)))
     if not matches:
         all_files = re.findall(r'href="([^"]+\.fits?(?:\.gz)?)"', page, re.IGNORECASE)
-        matches = sorted(c for c in all_files if station.upper() in html.unescape(c).upper())
+        matches = sorted(c for c in all_files if html.unescape(c).upper().startswith(station.upper() + "_"))
     return matches
 
 
@@ -587,6 +623,10 @@ def _download_from_ethz(station: str, date: str, filename: str | None = None) ->
     Saves to DATA_DIR_LOCAL for reuse in future calls.
     """
     try:
+        station = validate_station(station)
+        validate_date(date)
+        if filename is not None:
+            filename = validate_filename_context(filename, station, date)
         dt = datetime.strptime(date, "%Y-%m-%d")
     except ValueError:
         return None
@@ -595,7 +635,7 @@ def _download_from_ethz(station: str, date: str, filename: str | None = None) ->
     os.makedirs(DATA_DIR_LOCAL, exist_ok=True)
 
     if filename:
-        local_path = os.path.join(DATA_DIR_LOCAL, filename)
+        local_path = safe_join(DATA_DIR_LOCAL, filename)
         if os.path.isfile(local_path):
             logger.info("File already cached: %s", local_path)
             return local_path
@@ -608,6 +648,8 @@ def _download_from_ethz(station: str, date: str, filename: str | None = None) ->
                     while chunk := resp.read(512 * 1024):
                         fh.write(chunk)
             logger.info("Download complete (%d bytes)", os.path.getsize(local_path))
+            with _FILES_CACHE_LOCK:
+                _FILES_CACHE.pop((station.upper(), date), None)
             return local_path
         except Exception as exc:
             logger.error("Failed to download %s: %s", file_url, exc)
@@ -636,7 +678,7 @@ def _download_from_ethz(station: str, date: str, filename: str | None = None) ->
     matches = sorted(set(prefix_re.findall(page)))
     if not matches:
         all_files = re.findall(r'href="([^"]+\.fits?(?:\.gz)?)"', page, re.IGNORECASE)
-        matches = sorted(c for c in all_files if station.upper() in html.unescape(c).upper())
+        matches = sorted(c for c in all_files if html.unescape(c).upper().startswith(station.upper() + "_"))
     if not matches:
         logger.warning("No files for '%s' in ETHZ on %s", station, date)
         return None
@@ -1020,6 +1062,27 @@ def _header_to_dict(header) -> dict:
     return result
 
 
+def _record_fits_metadata(station: str, path: str, header) -> None:
+    """Persist searchable FITS metadata without making processing depend on the DB."""
+    filename = os.path.basename(path)
+    match = re.search(r"_(\d{8})_(\d{6})", filename)
+    if not match:
+        return
+    observed = datetime.strptime("".join(match.groups()), "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+    try:
+        with session_scope() as session:
+            row = session.scalar(select(FitsFile).where(FitsFile.filename == filename))
+            if row is None:
+                row = FitsFile(filename=filename, station=station.upper(), observed_at=observed)
+                session.add(row)
+            row.path = path
+            row.origin = "nas" if os.path.realpath(path).startswith(os.path.realpath(ECALLISTO_DATA_DIR)) else "cache"
+            row.focus_code = _focus_code_from_filename(filename)
+            row.fits_header = _header_to_dict(header)
+    except Exception as exc:
+        logger.debug("Could not persist FITS metadata: %s", exc)
+
+
 # ── Raw FITS cache (avoids re-parsing the same file on every zoom) ────────────
 
 _RAW_CACHE: OrderedDict[str, tuple] = OrderedDict()
@@ -1096,13 +1159,13 @@ def _build_spectrogram(
     station: str,
     date: str,
     filename: str | None = None,
-    file_path: str | None = None,
     sahan_filter: bool = False,
     max_time_bins: int | None = None,
     rfi_z_thresh: float = 6.0,
     rfi_occupancy: float = 0.15,
     rfi_min_component: int = 9,
     rfi_impulsive: bool = True,
+    scale_mode: str = "relative",
 ) -> SpectrogramResponse:
     """Resolve a FITS file and run the full processing pipeline for one station.
 
@@ -1113,13 +1176,11 @@ def _build_spectrogram(
     background subtraction, so the processing pipeline operates on the lighter
     decimated matrix. This is the intended path for overview loads.
     """
-    if file_path:
-        if not os.path.isfile(file_path):
-            raise FileNotFoundError(f"File not found: {file_path}")
-        fits_path = file_path
-        logger.info("Using explicit file_path: %s", fits_path)
-    elif filename:
-        local_path = os.path.join(DATA_DIR_LOCAL, filename)
+    station = validate_station(station)
+    validate_date(date)
+    if filename:
+        filename = validate_filename_context(filename, station, date)
+        local_path = safe_join(DATA_DIR_LOCAL, filename)
         if os.path.isfile(local_path):
             fits_path = local_path
             logger.info("Using locally cached file: %s", fits_path)
@@ -1144,7 +1205,12 @@ def _build_spectrogram(
     logger.info("Processing %s", fits_path)
     try:
         data_raw, freqs, time_arr, header = _load_raw_cached(fits_path)
+        if scale_mode not in {"relative", "median_db"}:
+            raise ValueError("scale_mode must be relative or median_db")
+        if scale_mode == "median_db":
+            data_raw = data_raw * (2500.0 / 255.0 / 25.4)
         _record_station_coords(station, header)  # learn the real site from its data
+        _record_fits_metadata(station, fits_path, header)
         time_labels = _times_to_utc(time_arr, header)
 
         if max_time_bins is not None:
@@ -1187,13 +1253,15 @@ def _build_spectrogram(
             date=date,
             filename=os.path.basename(fits_path),
             time_axis=time_labels,
-            freq_axis=[round(float(f), 3) for f in freqs],
-            z=[[round(float(v), 4) for v in row] for row in data_out.tolist()],
+            freq_axis=np.round(np.asarray(freqs, dtype=float), 3).tolist(),
+            z=np.round(data_out, 4).tolist(),
             vmin=round(vmin, 4),
             vmax=round(vmax, 4),
             fits_header=_header_to_dict(header),
             rfi_masked_channels=rfi_masked,
             rfi_stats=rfi_stats,
+            unit="dB" if scale_mode == "median_db" else "relative digits",
+            scale_mode=scale_mode,
         )
     except Exception as exc:
         raise RuntimeError(f"Error processing FITS '{fits_path}': {exc}") from exc
@@ -1210,9 +1278,30 @@ def health():
     return {"status": "ok", "version": "0.2.0"}
 
 
+@app.get("/ready")
+def readiness():
+    from sqlalchemy import text
+
+    database = "ok"
+    try:
+        with session_scope() as session:
+            session.execute(text("SELECT 1"))
+    except Exception:
+        database = "degraded"
+    from backend import burst_detect
+
+    model_ok, model_reason = burst_detect.is_available()
+    return {
+        "status": "ok" if database == "ok" else "degraded",
+        "database": database,
+        "burst_model": "ok" if model_ok else "unavailable",
+        "burst_model_reason": model_reason,
+    }
+
+
 # e-CALLISTO monthly burst lists (deARCE, UAH / ETHZ). One text file per month
 # lists every detected solar radio burst and the stations that recorded it.
-_BURSTLIST_BASE = f"{ETHZ_BASE_URL.rsplit('/', 1)[0]}/BurstLists/2010-yyyy_Monstein"
+_BURSTLIST_BASE = "http://soleil.i4ds.ch/solarradio/data/BurstLists/2010-yyyy_Monstein"
 _BURST_CACHE: dict[str, tuple[float, dict[str, int]]] = {}
 _BURST_CACHE_TTL = 1800.0  # seconds (monthly file changes at most a few times/day)
 _BURST_CACHE_LOCK = threading.Lock()
@@ -1226,7 +1315,7 @@ def _burst_counts_for_month(year: int, month: int) -> dict[str, int]:
     empty dict when the list cannot be fetched or parsed.
     """
     key = f"{year:04d}-{month:02d}"
-    now = datetime.now().timestamp()
+    now = datetime.now(timezone.utc).timestamp()
     with _BURST_CACHE_LOCK:
         cached = _BURST_CACHE.get(key)
         if cached and (now - cached[0]) < _BURST_CACHE_TTL:
@@ -1289,14 +1378,14 @@ def _scan_recent_ethz_stations() -> tuple[list[str], str]:
     last good scan is served if available, otherwise ([], "").
     """
     global _STATION_SCAN_CACHE
-    now = datetime.now().timestamp()
+    now = datetime.now(timezone.utc).timestamp()
     with _STATION_SCAN_LOCK:
         cached = _STATION_SCAN_CACHE
     if cached and (now - cached[0]) < _STATION_SCAN_TTL:
         return cached[1], cached[2]
 
-    for days_back in range(1, 8):
-        dt = datetime.now() - timedelta(days=days_back)
+    for days_back in range(0, 8):
+        dt = datetime.now(timezone.utc) - timedelta(days=days_back)
         dir_url = f"{ETHZ_BASE_URL}/{dt.strftime('%Y/%m/%d')}/"
         try:
             req = Request(dir_url, headers={"User-Agent": "AstroDoncel/1.0"})
@@ -1358,7 +1447,7 @@ def get_stations_geo():
 
     # Burst counts come from the current month's list (fall back to the ETHZ
     # reference month if "now" has no list yet).
-    anchor = datetime.now()
+    anchor = datetime.now(timezone.utc)
     burst_counts = _burst_counts_for_month(anchor.year, anchor.month)
     if not burst_counts and ref_date:
         ref_dt = datetime.strptime(ref_date, "%Y-%m-%d")
@@ -1399,7 +1488,7 @@ def get_stations_geo():
 
     # Learn real coordinates in the background for live stations still on the
     # fallback (or unmapped), a few per call, throttled to spare the archive.
-    now_ts = datetime.now().timestamp()
+    now_ts = datetime.now(timezone.utc).timestamp()
     need = [
         e.station for e in entries if e.coord_source == "approx" and e.operative
     ] + unmapped
@@ -1426,6 +1515,11 @@ def get_stations_geo():
     )
 
 
+_FILES_CACHE: dict[tuple[str, str], tuple[float, FilesResponse]] = {}
+_FILES_CACHE_LOCK = threading.Lock()
+_FILES_CACHE_TTL = 120.0
+
+
 @app.get("/api/files", response_model=FilesResponse)
 def get_files(
     station: str = Query(..., description="e-Callisto station name"),
@@ -1437,9 +1531,17 @@ def get_files(
     Each entry includes the filename and the start time extracted from its name.
     """
     try:
-        datetime.strptime(date, "%Y-%m-%d")
-    except ValueError:
-        raise HTTPException(status_code=422, detail=f"Invalid date format: '{date}'")
+        station = validate_station(station)
+        validate_date(date)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    cache_key = (station.upper(), date)
+    now = datetime.now(timezone.utc).timestamp()
+    with _FILES_CACHE_LOCK:
+        cached_response = _FILES_CACHE.get(cache_key)
+    if cached_response and now - cached_response[0] < _FILES_CACHE_TTL:
+        return cached_response[1]
 
     local = set(_list_local_fits_files(station, date))
     ethz = set(_list_ethz_files(station, date))
@@ -1453,9 +1555,15 @@ def get_files(
     for fn in all_files:
         t = _time_from_filename(fn)
         cached = "★ " if fn in local else ""
-        entries.append(FileEntry(filename=fn, time=t, label=f"{cached}{t}"))
+        entries.append(FileEntry(
+            filename=fn, time=t, label=f"{cached}{t}",
+            focus_code=_focus_code_from_filename(fn),
+        ))
 
-    return FilesResponse(station=station, date=date, files=entries, source=source)
+    response = FilesResponse(station=station, date=date, files=entries, source=source)
+    with _FILES_CACHE_LOCK:
+        _FILES_CACHE[cache_key] = (now, response)
+    return response
 
 
 @app.get("/api/spectrogram", response_model=SpectrogramResponse)
@@ -1463,18 +1571,18 @@ def get_spectrogram(
     station: str = Query(..., description="e-Callisto station, e.g. SPAIN-SIGUENZA"),
     date: str = Query(..., description="Observation date, format YYYY-MM-DD"),
     filename: str = Query(default=None, description="Specific FITS filename"),
-    file_path: str = Query(default=None, description="Absolute path (manual override)"),
+    file_path: str | None = Query(default=None, deprecated=True, include_in_schema=False),
     sahan_filter: bool = Query(default=False, description="Apply full RFI cleaning"),
     max_time_bins: int = Query(default=None, description="Decimate time axis to at most N columns (overview mode)"),
     rfi_z_thresh: float = Query(default=6.0, ge=0.5, le=20.0, description="RFI robust z-score threshold"),
     rfi_occupancy: float = Query(default=0.15, ge=0.01, le=1.0, description="RFI channel occupancy threshold"),
     rfi_min_component: int = Query(default=9, ge=1, le=500, description="Min connected-component size for impulsive RFI"),
     rfi_impulsive: bool = Query(default=True, description="Enable impulsive (connected-component) RFI stage"),
+    scale_mode: str = Query(default="relative", pattern="^(relative|median_db)$"),
 ):
     """Return the spectrogram for an e-Callisto station.
 
-    Resolution order:
-    1) explicit file_path
+    Resolution order (the API never accepts arbitrary filesystem paths):
     2) filename → local cache → ETHZ download
     3) first local match → NAS → ETHZ download
 
@@ -1484,27 +1592,33 @@ def get_spectrogram(
       connected components + channel-median inpainting, from Burst_No_Burst).
     - vmin/vmax are always recomputed on the processed data.
     """
+    if file_path is not None:
+        raise HTTPException(status_code=410, detail="file_path was removed for security; use station/date/filename")
     try:
-        datetime.strptime(date, "%Y-%m-%d")
-    except ValueError:
-        raise HTTPException(status_code=422, detail=f"Invalid date format: '{date}'")
+        station = validate_station(station)
+        validate_date(date)
+        if filename:
+            filename = validate_filename_context(filename, station, date)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     try:
         return _build_spectrogram(
             station, date,
-            filename=filename, file_path=file_path,
+            filename=filename,
             sahan_filter=sahan_filter,
             max_time_bins=max_time_bins,
             rfi_z_thresh=rfi_z_thresh,
             rfi_occupancy=rfi_occupancy,
             rfi_min_component=rfi_min_component,
             rfi_impulsive=rfi_impulsive,
+            scale_mode=scale_mode,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception as exc:
         logger.exception("Unexpected error processing spectrogram for %s %s", station, date)
-        raise HTTPException(status_code=500, detail=f"Error processing FITS: {exc}")
+        raise HTTPException(status_code=500, detail="Spectrogram processing failed; use the request id to inspect server logs") from exc
 
 
 @app.get("/api/spectrogram/combine", response_model=CombinedSpectrogramResponse)
@@ -1518,6 +1632,7 @@ async def get_spectrogram_combine(
     rfi_occupancy: float = Query(default=0.15, ge=0.01, le=1.0),
     rfi_min_component: int = Query(default=9, ge=1, le=500),
     rfi_impulsive: bool = Query(default=True),
+    scale_mode: str = Query(default="relative", pattern="^(relative|median_db)$"),
 ):
     """Return per-station spectrograms for multiple stations, processed concurrently.
 
@@ -1526,13 +1641,16 @@ async def get_spectrogram_combine(
     by scanning for a file whose HHMM matches the primary's. Stations with no matching
     file for that block are reported in `failed`.
     """
-    try:
-        datetime.strptime(date, "%Y-%m-%d")
-    except ValueError:
-        raise HTTPException(status_code=422, detail=f"Invalid date format: '{date}'")
-
     if not stations:
         raise HTTPException(status_code=422, detail="At least one station is required.")
+    try:
+        validate_date(date)
+        stations = [validate_station(station) for station in stations]
+        if filename:
+            filename = validate_filename_context(filename, stations[0], date)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     if len(stations) > _MAX_COMBINE_STATIONS:
         raise HTTPException(
             status_code=422,
@@ -1551,6 +1669,7 @@ async def get_spectrogram_combine(
         rfi_occupancy=rfi_occupancy,
         rfi_min_component=rfi_min_component,
         rfi_impulsive=rfi_impulsive,
+        scale_mode=scale_mode,
     )
 
     def _process_one(
@@ -1652,6 +1771,7 @@ def get_spectrogram_zoom(
     rfi_occupancy: float = Query(default=0.15, ge=0.01, le=1.0),
     rfi_min_component: int = Query(default=9, ge=1, le=500),
     rfi_impulsive: bool = Query(default=True),
+    scale_mode: str = Query(default="relative", pattern="^(relative|median_db)$"),
 ):
     """Return a maximum-resolution patch for a time+frequency bounding box.
 
@@ -1666,7 +1786,12 @@ def get_spectrogram_zoom(
         raise HTTPException(status_code=422, detail=f"Invalid date format: '{date}'")
 
     # Resolve the FITS file (must already be local — overview guarantees this)
-    local_path = os.path.join(DATA_DIR_LOCAL, filename)
+    try:
+        station = validate_station(station)
+        filename = validate_filename_context(filename, station, date)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    local_path = safe_join(DATA_DIR_LOCAL, filename)
     if os.path.isfile(local_path):
         fits_path = local_path
     else:
@@ -1725,6 +1850,8 @@ def get_spectrogram_zoom(
 
         # ── Slice ─────────────────────────────────────────────────────────────
         data_slice = data_raw[row0:row1, col0:col1]
+        if scale_mode == "median_db":
+            data_slice = data_slice * (2500.0 / 255.0 / 25.4)
         freqs_slice = freqs_arr[row0:row1]
         time_slice: list[str] = time_labels[col0:col1]
 
@@ -1763,20 +1890,22 @@ def get_spectrogram_zoom(
             date=date,
             filename=filename,
             time_axis=time_slice,
-            freq_axis=[round(float(f), 3) for f in freqs_slice],
-            z=[[round(float(v), 4) for v in row] for row in data_out.tolist()],
+            freq_axis=np.round(np.asarray(freqs_slice, dtype=float), 3).tolist(),
+            z=np.round(data_out, 4).tolist(),
             vmin=round(vmin, 4),
             vmax=round(vmax, 4),
             fits_header=_header_to_dict(header),
             rfi_masked_channels=rfi_masked,
             rfi_stats=rfi_stats,
+            unit="dB" if scale_mode == "median_db" else "relative digits",
+            scale_mode=scale_mode,
         )
 
     except HTTPException:
         raise
     except Exception as exc:
         logger.exception("Zoom failed for %s %s: %s", station, filename, exc)
-        raise HTTPException(status_code=500, detail=f"Zoom processing failed: {exc}")
+        raise HTTPException(status_code=500, detail="Zoom processing failed; use the request id to inspect server logs") from exc
 
 
 # ── Automatic burst detection (CNN+MIL from Burst_No_Burst by Sahan) ─────────
@@ -1804,11 +1933,13 @@ async def detect_burst(
     available=false and a reason instead of failing.
     """
     try:
-        datetime.strptime(date, "%Y-%m-%d")
-    except ValueError:
-        raise HTTPException(status_code=422, detail=f"Invalid date format: '{date}'")
+        station = validate_station(station)
+        validate_date(date)
+        filename = validate_filename_context(filename, station, date)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    from backend import burst_detect  # deferred: torch import stays optional
+    from backend import burst_detect  # deferred: inference runtime stays optional
 
     ok, reason = burst_detect.is_available()
     if not ok:
@@ -1818,7 +1949,7 @@ async def detect_burst(
         )
 
     # Resolve the FITS file (usually already local — the overview loaded it)
-    local_path = os.path.join(DATA_DIR_LOCAL, filename)
+    local_path = safe_join(DATA_DIR_LOCAL, filename)
     if os.path.isfile(local_path):
         fits_path = local_path
     else:
@@ -1840,7 +1971,7 @@ async def detect_burst(
         result = await loop.run_in_executor(_BURST_EXECUTOR, _run)
     except Exception as exc:
         logger.exception("Burst detection failed for %s: %s", filename, exc)
-        raise HTTPException(status_code=500, detail=f"Burst detection failed: {exc}")
+        raise HTTPException(status_code=500, detail="Burst detection failed; use the request id to inspect server logs") from exc
 
     logger.info(
         "Burst detection %s: score=%.3f (threshold %.2f), %d event(s), %.0f ms",
@@ -1913,8 +2044,9 @@ def _fetch_goes_xrsb_sync(date_str: str) -> dict:
     Returns {"times": [...iso8601], "xrsb": [...W/m²], "satellite": int}.
     """
     try:
-        from sunpy.net import Fido, attrs as a
         from sunpy import timeseries as ts
+        from sunpy.net import Fido
+        from sunpy.net import attrs as a
     except ImportError as exc:
         raise RuntimeError(
             f"sunpy is not installed in the backend ({exc}). "
@@ -1966,7 +2098,7 @@ def _fetch_goes_xrsb_sync(date_str: str) -> dict:
 
             out_times: list[str] = []
             out_flux: list[float] = []
-            for t, f in zip(times_py, flux):
+            for t, f in zip(times_py, flux, strict=False):
                 if not np.isfinite(f) or f <= 0.0:
                     continue
                 if hasattr(t, "tzinfo") and t.tzinfo is None:
@@ -2003,6 +2135,14 @@ async def get_goes(date: str = Query(..., description="Date YYYY-MM-DD")):
     except ValueError:
         raise HTTPException(status_code=422, detail=f"Invalid date format: '{date}'")
 
+    try:
+        with session_scope() as session:
+            cached_day = session.get(GoesDay, date)
+            if cached_day:
+                return GoesResponse(**cached_day.payload)
+    except Exception as exc:
+        logger.debug("Database GOES cache unavailable: %s", exc)
+
     loop = asyncio.get_event_loop()
     try:
         result = await loop.run_in_executor(_GOES_EXECUTOR, _fetch_goes_xrsb_sync, date)
@@ -2017,7 +2157,7 @@ async def get_goes(date: str = Query(..., description="Date YYYY-MM-DD")):
             satellite=None,
         )
 
-    return GoesResponse(
+    response = GoesResponse(
         date=date,
         available=True,
         reason="",
@@ -2025,6 +2165,12 @@ async def get_goes(date: str = Query(..., description="Date YYYY-MM-DD")):
         xrsb=result["xrsb"],
         satellite=result.get("satellite"),
     )
+    try:
+        with session_scope() as session:
+            session.merge(GoesDay(date=date, payload=response.model_dump()))
+    except Exception as exc:
+        logger.debug("Could not persist GOES cache: %s", exc)
+    return response
 
 
 # uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000

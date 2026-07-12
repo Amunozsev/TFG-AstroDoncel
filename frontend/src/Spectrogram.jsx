@@ -245,6 +245,7 @@ export default function Spectrogram({
             rfi_occupancy: String(rfiParams?.occupancy ?? 0.15),
             rfi_min_component: String(rfiParams?.minComponent ?? 9),
             rfi_impulsive: String(rfiParams?.impulsive ?? true),
+            scale_mode: layer.scale_mode ?? 'relative',
           });
           try {
             const res = await apiFetch(
@@ -500,7 +501,7 @@ export default function Spectrogram({
           bgcolor: 'rgba(0,0,0,0)',
           outlinewidth: 0,
         },
-        hovertemplate: `<b>${layer.station}</b><br>%{x}<br>%{y} MHz<br>%{z:.2f} dB<extra></extra>`,
+        hovertemplate: `<b>${layer.station}</b><br>%{x}<br>%{y} MHz<br>%{z:.2f} ${layer.unit ?? 'relative digits'}<extra></extra>`,
         yaxis: axisId,
         xaxis: 'x',
       });
@@ -551,7 +552,7 @@ export default function Spectrogram({
         name: layer.station,
         showscale: isBase,
         colorbar: isBase ? {
-          title: { text: 'dB', side: 'right' },
+          title: { text: layer.unit ?? 'relative', side: 'right' },
           tickfont: { color: '#aaaaaa', size: 10 },
           titlefont: { color: '#aaaaaa', size: 11 },
           x: 1.02,
@@ -559,7 +560,7 @@ export default function Spectrogram({
           bgcolor: 'rgba(0,0,0,0)',
           outlinewidth: 0,
         } : undefined,
-        hovertemplate: `<b>${layer.station}</b><br>%{x}<br>%{y} MHz<br>%{z:.2f} dB<extra></extra>`,
+        hovertemplate: `<b>${layer.station}</b><br>%{x}<br>%{y} MHz<br>%{z:.2f} ${layer.unit ?? 'relative digits'}<extra></extra>`,
         yaxis: 'y',
         xaxis: 'x',
       });

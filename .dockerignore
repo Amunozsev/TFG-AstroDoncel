@@ -1,0 +1,12 @@
+.git
+.github
+.venv
+Sahan
+Anteproyecto
+data
+frontend/node_modules
+frontend/dist
+backend/model/burst_detector/model.pt
+**/__pycache__
+**/*.pyc
+*.md
