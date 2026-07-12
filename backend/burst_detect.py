@@ -3,9 +3,9 @@ Automatic solar radio burst detection (CNN + MIL).
 Ported from Burst_No_Burst by Sahan S Liyanage (models/window_cnn.py,
 models/mil_head.py, data/windowing.py, preprocess/*, infer/*).
 
-torch is an OPTIONAL dependency: if it is not installed the module still
-imports fine and `is_available()` reports why detection is disabled, so the
-backend never fails to start because of it.
+Production inference uses ONNX Runtime; PyTorch is only required by the
+one-shot export tool. If the runtime or bundle is absent, `is_available()`
+reports why detection is disabled and the backend still starts.
 """
 
 from __future__ import annotations
@@ -23,13 +23,15 @@ from scipy.ndimage import median_filter, percentile_filter
 logger = logging.getLogger(__name__)
 
 try:
-    import torch
-    from torch import nn
-    _TORCH_ERROR: str | None = None
+    import onnxruntime as ort
+    _RUNTIME_ERROR: str | None = None
 except ImportError as exc:  # torch is optional — degrade gracefully
-    torch = None
-    nn = None
-    _TORCH_ERROR = str(exc)
+    ort = None
+    _RUNTIME_ERROR = str(exc)
+
+# PyTorch is intentionally development-only; tools/export_onnx.py owns export.
+torch = None
+nn = None
 
 # Deployment bundle shipped with Sahan's Burst_No_Burst (trained CNN+MIL).
 _DEFAULT_BUNDLE_DIR = os.path.normpath(
@@ -39,14 +41,16 @@ BUNDLE_DIR = os.environ.get("BURST_MODEL_DIR", _DEFAULT_BUNDLE_DIR)
 
 
 def is_available() -> tuple[bool, str]:
-    """Return (available, reason). Detection needs torch AND the model bundle."""
-    if torch is None:
+    """Return (available, reason). Detection needs ONNX Runtime and its bundle."""
+    if ort is None:
         return False, (
-            f"torch is not installed ({_TORCH_ERROR}). "
-            "Install with: pip install torch --index-url https://download.pytorch.org/whl/cpu"
+            f"onnxruntime is not installed ({_RUNTIME_ERROR}). "
+            "Install the production requirements."
         )
-    if not os.path.isfile(os.path.join(BUNDLE_DIR, "model.pt")):
+    if not os.path.isfile(os.path.join(BUNDLE_DIR, "model.onnx")):
         return False, f"Model bundle not found in {BUNDLE_DIR}"
+    if not os.path.isfile(os.path.join(BUNDLE_DIR, "runtime_config.json")):
+        return False, f"Model runtime configuration not found in {BUNDLE_DIR}"
     return True, ""
 
 
@@ -320,6 +324,73 @@ def _score_windows(model, mil_head, windows_np: np.ndarray, batch_size: int = 64
     return float(bag_prob.item()), win_probs.detach().cpu().numpy().astype(np.float32)
 
 
+# Production ONNX implementations override the legacy exporter-compatible
+# definitions above. Keeping the old definitions makes checkpoint archaeology
+# possible without importing PyTorch in the web process.
+def _load_bundle() -> dict:
+    """Load and cache the ONNX session plus the preprocessing contract."""
+    global _MODEL_CACHE
+    with _MODEL_LOCK:
+        if _MODEL_CACHE is not None:
+            return _MODEL_CACHE
+        if ort is None:
+            raise RuntimeError(f"onnxruntime unavailable: {_RUNTIME_ERROR}")
+
+        runtime_path = os.path.join(BUNDLE_DIR, "runtime_config.json")
+        profile_path = os.path.join(BUNDLE_DIR, "deploy_profile.json")
+        with open(runtime_path, "r", encoding="utf-8") as fh:
+            runtime = json.load(fh)
+        profile: dict = {}
+        if os.path.isfile(profile_path):
+            with open(profile_path, "r", encoding="utf-8") as fh:
+                profile = json.load(fh)
+
+        threshold = float(profile.get("threshold", 0.6))
+        threshold_path = os.path.join(BUNDLE_DIR, "threshold.json")
+        if os.path.isfile(threshold_path):
+            with open(threshold_path, "r", encoding="utf-8") as fh:
+                threshold = float(json.load(fh).get("threshold", threshold))
+
+        session_options = ort.SessionOptions()
+        session_options.intra_op_num_threads = max(1, int(os.environ.get("BURST_INTRA_OP_THREADS", "1")))
+        session_options.inter_op_num_threads = 1
+        session = ort.InferenceSession(
+            os.path.join(BUNDLE_DIR, "model.onnx"),
+            sess_options=session_options,
+            providers=["CPUExecutionProvider"],
+        )
+        _MODEL_CACHE = {
+            "session": session,
+            "cfg": runtime,
+            "threshold": threshold,
+            "model_version": str(runtime.get("model_version", profile.get("model_version", "unknown"))),
+            "bundle_name": profile.get("bundle_name"),
+            "pooling": str(runtime.get("model", {}).get("mil_pooling", "topk_mean")),
+            "topk": int(runtime.get("model", {}).get("mil_topk", 8)),
+        }
+        return _MODEL_CACHE
+
+
+def _score_windows(session, pooling: str, topk: int, windows_np: np.ndarray, batch_size: int = 64) -> tuple[float, np.ndarray]:
+    """Score windows with ONNX and reproduce the trained MIL pooling in NumPy."""
+    all_logits: list[np.ndarray] = []
+    for start in range(0, windows_np.shape[0], batch_size):
+        logits, _embeddings = session.run(None, {"windows": windows_np[start:start + batch_size]})
+        all_logits.append(np.asarray(logits, dtype=np.float32).reshape(-1))
+    logits = np.concatenate(all_logits)
+    probs = 1.0 / (1.0 + np.exp(-np.clip(logits, -80.0, 80.0)))
+    if pooling == "noisy_or":
+        bag_prob = 1.0 - float(np.prod(1.0 - np.clip(probs, 1e-6, 1.0 - 1e-6)))
+    elif pooling == "max":
+        bag_prob = float(np.max(probs))
+    elif pooling == "topk_mean":
+        k = max(1, min(int(topk), probs.size))
+        bag_prob = float(np.mean(np.partition(probs, probs.size - k)[-k:]))
+    else:
+        raise RuntimeError(f"Unsupported ONNX MIL pooling: {pooling}")
+    return bag_prob, probs.astype(np.float32)
+
+
 # ── Event extraction (ported from infer/event_postprocess.py) ────────────────
 
 def _collapse_scores_by_time_start(window_scores: np.ndarray, coords: np.ndarray):
@@ -563,7 +634,7 @@ def detect_bursts(
     x_proc = _preprocess_for_model(data_raw, cfg.get("preprocess", {}))
     windows_np, coords = _extract_windows(x_proc, cfg.get("window", {}))
     file_score, win_scores = _score_windows(
-        bundle["model"], bundle["mil_head"], windows_np,
+        bundle["session"], bundle["pooling"], bundle["topk"], windows_np,
         batch_size=int(inf_cfg.get("batch_size", 64)),
     )
 

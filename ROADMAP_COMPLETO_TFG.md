@@ -6,6 +6,18 @@ Fecha del análisis: 2026-07-11
 
 > **Convención de este documento**: cada afirmación se etiqueta como **[HECHO]** (verificado en código/web), **[PROBLEMA]** (defecto confirmado), **[HIPÓTESIS]** (probable, no verificado) o **[RECOMENDACIÓN]**.
 
+## Estado de ejecución del roadmap — 2026-07-12
+
+El roadmap se ha llevado a código en una primera implementación integral. Estado verificado:
+
+- **F0 completada**: `file_path` devuelve 410, identificadores y contexto estación/fecha/fichero están validados en `backend/security.py`; GZip y serialización NumPy están activos; el CNN se exportó a `model.onnx` (1,18 MB), el runtime usa ONNX Runtime y PyTorch quedó en `requirements-dev.txt`. La paridad medida fue `<3e-14` por ventana y el proceso ONNX ocupó 91,9 MB RSS tras cargar el modelo.
+- **F1 implementada en repositorio**: `Dockerfile.api`, `Dockerfile.worker`, `Dockerfile.web`, `docker-compose.yml`, Nginx con rate limit/cabeceras/caché, `.env.example` y `railway.toml`. **Pendiente externo**: ejecutar el piloto en el NAS requiere acceso, permisos y conocer su arquitectura/puertos; no puede validarse desde este checkout.
+- **F2 implementada**: esquema SQLAlchemy PostgreSQL/SQLite y migración Alembic; ingesta del catálogo oficial (se corrigió además la URL histórica, que carecía de `/data`); páginas Burst Reports y Statistics; endpoints timeline/xmatch; 36 tests, Ruff, ESLint, build y CI. El monolito heredado conserva el pipeline científico, pero seguridad, persistencia, catálogo, tareas y cálculos Tipo II ya están modularizados; mover las ~2.000 líneas restantes sin cambiar comportamiento queda como refactor posterior de bajo valor funcional.
+- **F3 implementada**: worker persistente con estados, progreso, reintentos y bloqueo de cola; detección de día; overview de seis paneles con baseline mediano diario y downsample que preserva picos; light curves; focus code; descarga FITS; export FITS procesado; presets; `median_dB`; combine-time; About y mejoras WCAG/responsive.
+- **F4 parcialmente implementada**: xmatch ML↔catálogo oficial, transferencia del tipo oficial a detecciones coincidentes y endpoint experimental de band-splitting Tipo II. **No se presenta como completado** el clasificador neuronal multiclase II–V ni el reentrenamiento: requieren un dataset etiquetado, validación científica y nuevos pesos, no solo cambios de software. Tampoco se activan alertas operativas ni el piloto NAS sin autorización externa.
+
+La checklist original se conserva debajo como trazabilidad de la auditoría inicial; este bloque es la fuente de verdad sobre la implementación realizada.
+
 ---
 
 ## Índice

@@ -1,0 +1,32 @@
+{
+  "inference": {
+    "batch_size": 64,
+    "min_event_windows": 3,
+    "smooth_kernel": 5,
+    "threshold": 0.35
+  },
+  "model": {
+    "base_channels": 16,
+    "dropout": 0.35,
+    "mil_pooling": "topk_mean",
+    "mil_topk": 8
+  },
+  "model_version": "20260218T113917Z",
+  "preprocess": {
+    "bg_quantile": 0.2,
+    "bg_window": 121,
+    "clip_max": 12.0,
+    "clip_min": -6.0,
+    "floor_zero": true,
+    "rfi_min_component_size": 9,
+    "rfi_occupancy_thresh": 0.15,
+    "rfi_z_thresh": 6.0
+  },
+  "schema_version": 1,
+  "window": {
+    "height": 128,
+    "stride_h": 128,
+    "stride_w": 128,
+    "width": 128
+  }
+}

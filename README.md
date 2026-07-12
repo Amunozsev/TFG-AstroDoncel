@@ -438,6 +438,64 @@ Query parameters:
 If the model dependencies or bundle files are missing in a custom installation,
 the endpoint returns an unavailable response rather than failing backend startup.
 
+Inference uses the bundled ONNX model through ONNX Runtime. PyTorch is only a
+development dependency for re-exporting or retraining the model.
+
+### Catalogue, statistics and analysis
+
+- `GET /api/bursts?start=YYYY-MM-DD&end=YYYY-MM-DD` ingests and queries official burst reports.
+- `GET /api/stats/stations` and `GET /api/stats/timeline` return network activity statistics.
+- `GET /api/xmatch` cross-matches stored ML candidates with official radio-burst reports.
+- `GET /api/lightcurve` extracts light curves at up to eight selected frequencies.
+- `GET /api/files/download` downloads the original FITS file.
+- `GET /api/spectrogram/export` exports the processed matrix as FITS.
+- `POST /api/analysis/type-ii-band-split` exposes the experimental Type-II calculation.
+
+### Background tasks
+
+`POST /api/tasks` accepts `burst_detect_day`, `spectral_overview` and
+`combine_time`. `GET /api/tasks/{id}` reports queued/running/succeeded/failed
+state and progress. Heavy jobs are run by the dedicated worker, never by the
+browser or the API request process.
+
+```powershell
+python -m backend.worker
+```
+
+## Reproducible deployment
+
+Copy `.env.example` to `.env`, replace all placeholder passwords and set
+`ECALLISTO_HOST_DIR` to the NAS archive directory. Then run:
+
+```text
+docker compose up --build -d
+```
+
+The stack contains PostgreSQL, a single-worker FastAPI service, a dedicated
+scientific worker and an Nginx-served React frontend. Open
+`http://localhost:8080`. Nginx applies request limits, security headers and
+immutable caching for hashed assets. `railway.toml` remains the documented
+provisional API-only deployment path; the NAS Compose stack is the target
+production architecture.
+
+The API can run without PostgreSQL using its SQLite development fallback. Use
+`alembic upgrade head` when managing the persistent schema explicitly.
+
+## Testing and quality
+
+```powershell
+pip install -r requirements-dev.txt
+ruff check backend tests tools
+pytest
+cd frontend
+npm run lint
+npm run build
+```
+
+GitHub Actions runs the same backend and frontend checks. The current suite
+covers identifier/path security, the official catalogue parser, scientific
+helpers, RFI behaviour, API contracts and Type-II calculations.
+
 ## Useful Commands
 
 Backend syntax/import check:

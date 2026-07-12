@@ -1,5 +1,5 @@
 export const API_BASE_URL = (
-  import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+  import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:8000' : window.location.origin)
 ).replace(/\/$/, '');
 
 export async function apiFetch(path, options = {}) {
@@ -9,8 +9,15 @@ export async function apiFetch(path, options = {}) {
     ...(options.headers ?? {}),
   };
 
-  return fetch(url, {
-    ...options,
-    headers,
-  });
+  const timeoutMs = options.timeoutMs ?? 45_000;
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(new Error('Request timed out')), timeoutMs);
+  const abortFromCaller = () => controller.abort(options.signal?.reason);
+  options.signal?.addEventListener('abort', abortFromCaller, { once: true });
+  try {
+    return await fetch(url, { ...options, headers, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeoutId);
+    options.signal?.removeEventListener('abort', abortFromCaller);
+  }
 }

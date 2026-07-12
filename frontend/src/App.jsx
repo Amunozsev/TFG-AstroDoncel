@@ -1,8 +1,14 @@
-import { useState, useEffect, useCallback } from 'react';
-import Spectrogram from './Spectrogram';
-import StationsMap from './StationsMap';
-import { apiFetch } from './api';
+import { lazy, Suspense, useState, useEffect, useCallback } from 'react';
+import { API_BASE_URL, apiFetch } from './api';
 import './App.css';
+
+const Spectrogram = lazy(() => import('./Spectrogram'));
+const StationsMap = lazy(() => import('./StationsMap'));
+const BurstCatalog = lazy(() => import('./BurstCatalog'));
+const Statistics = lazy(() => import('./Statistics'));
+const About = lazy(() => import('./About'));
+const LightCurvePanel = lazy(() => import('./LightCurvePanel'));
+const DailyOverview = lazy(() => import('./DailyOverview'));
 
 const FALLBACK_STATIONS = [
   'ALASKA-HAARP', 'AUSTRIA-UNIGRAZ', 'BIR', 'HUMAIN', 'LEARMONTH',
@@ -20,7 +26,7 @@ const TABS = [
 
 export default function App() {
   // Top-level view: the spectrogram portal or the world stations map.
-  const [view, setView]                     = useState('portal'); // 'portal' | 'map'
+  const [view, setView]                     = useState('portal');
   const [stations, setStations]             = useState(FALLBACK_STATIONS);
   const [stationsSource, setStationsSource] = useState('');
   const [stationFilter, setStationFilter]   = useState('');
@@ -35,9 +41,12 @@ export default function App() {
   const [files, setFiles]                   = useState([]);
   const [filesLoading, setFilesLoading]     = useState(false);
   const [selectedFile, setSelectedFile]     = useState(null);
+  const [focusCode, setFocusCode]           = useState('all');
+  const [pendingEventTime, setPendingEventTime] = useState(null);
   const [collapsedHours, setCollapsedHours] = useState({});
 
   const [useSahanFilter, setSahan]          = useState(false);
+  const [scaleMode, setScaleMode]           = useState('relative');
   const [rfiParams, setRfiParams]           = useState({
     zThresh: 6.0, occupancy: 0.15, minComponent: 9, impulsive: true,
   });
@@ -46,6 +55,10 @@ export default function App() {
   const [zmin, setZmin]                     = useState(-5);
   const [zmax, setZmax]                     = useState(30);
   const [useCustomZ, setUseCustomZ]         = useState(false);
+  const [contrastPresets, setContrastPresets] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('astrodoncel.contrastPresets') ?? '[]'); }
+    catch { return []; }
+  });
   const [compareMode, setCompareMode]       = useState('panels'); // 'panels' | 'overlay'
   const [autoContrastZoom, setAutoContrastZoom] = useState(false);
   const [triggerLoad, setTriggerLoad]       = useState(0);
@@ -69,6 +82,14 @@ export default function App() {
   // Automatic burst detection (CNN+MIL): { [station]: BurstDetectResponse }
   const [burstResults, setBurstResults]     = useState({});
   const [burstDetecting, setBurstDetecting] = useState(false);
+  const [taskStatus, setTaskStatus]         = useState(null);
+
+  useEffect(() => {
+    if (!showHeaderViewer) return undefined;
+    const closeOnEscape = (event) => { if (event.key === 'Escape') setShowHeaderViewer(false); };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [showHeaderViewer]);
 
   // ── Load station list ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -121,6 +142,22 @@ export default function App() {
     queueMicrotask(() => loadFiles(station, date));
   }, [station, date, loadFiles]);
 
+  useEffect(() => {
+    if (!pendingEventTime || files.length === 0) return;
+    const target = new Date(pendingEventTime);
+    const targetSeconds = target.getUTCHours() * 3600 + target.getUTCMinutes() * 60 + target.getUTCSeconds();
+    const nearest = [...files].sort((a, b) => {
+      const seconds = (value) => value.time.split(':').reduce((sum, part, index) => sum + Number(part) * [3600, 60, 1][index], 0);
+      return Math.abs(seconds(a) - targetSeconds) - Math.abs(seconds(b) - targetSeconds);
+    })[0];
+    queueMicrotask(() => {
+      setSelectedFile(nearest.filename);
+      setPendingEventTime(null);
+      setHasLoaded(true);
+      setTriggerLoad((value) => value + 1);
+    });
+  }, [files, pendingEventTime]);
+
   // ── Fetch spectrogram layers on explicit Load ─────────────────────────────
   useEffect(() => {
     if (!hasLoaded || triggerLoad === 0) return;
@@ -144,6 +181,7 @@ export default function App() {
           const params = new URLSearchParams({
             date,
             sahan_filter: String(useSahanFilter),
+            scale_mode: scaleMode,
             max_time_bins: '1500',
             ...rfiQS,
           });
@@ -165,6 +203,7 @@ export default function App() {
             station: selectedStations[0],
             date,
             sahan_filter: String(useSahanFilter),
+            scale_mode: scaleMode,
             max_time_bins: '1500',
             ...rfiQS,
           });
@@ -224,6 +263,16 @@ export default function App() {
     setTriggerLoad((n) => n + 1);
   }
 
+  function handleOpenEvent(event) {
+    const targetStation = event.stations?.[0];
+    if (!targetStation) return;
+    setDate(event.started_at.slice(0, 10));
+    setSelectedStations([targetStation]);
+    setStation(targetStation);
+    setPendingEventTime(event.started_at);
+    setView('portal');
+  }
+
   // ── Automatic burst detection on every loaded layer ───────────────────────
   async function handleDetectBursts() {
     if (layers.length === 0 || burstDetecting) return;
@@ -251,6 +300,27 @@ export default function App() {
       setBurstResults(Object.fromEntries(results));
     } finally {
       setBurstDetecting(false);
+    }
+  }
+
+  async function startTask(type, options = {}) {
+    if (!station) return;
+    setTaskStatus({ status: 'submitting', progress: 0, type });
+    try {
+      const response = await apiFetch('/api/tasks', {
+        method: 'POST', body: JSON.stringify({ type, station, date, options }),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const created = await response.json();
+      let current = created;
+      while (['queued', 'running'].includes(current.status)) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1500));
+        const poll = await apiFetch(`/api/tasks/${created.id}`);
+        if (!poll.ok) throw new Error(`HTTP ${poll.status}`);
+        current = await poll.json(); setTaskStatus(current);
+      }
+    } catch (cause) {
+      setTaskStatus({ status: 'failed', error: cause.message, type });
     }
   }
 
@@ -302,6 +372,18 @@ export default function App() {
     setRfiParams((prev) => ({ ...prev, [key]: value }));
   }
 
+  function saveContrastPreset() {
+    const next = [...contrastPresets, { name: `Preset ${contrastPresets.length + 1}`, zmin, zmax, colormap }].slice(-8);
+    setContrastPresets(next);
+    localStorage.setItem('astrodoncel.contrastPresets', JSON.stringify(next));
+  }
+
+  function applyContrastPreset(index) {
+    const preset = contrastPresets[index];
+    if (!preset) return;
+    setZmin(preset.zmin); setZmax(preset.zmax); setColormap(preset.colormap); setUseCustomZ(true);
+  }
+
   const loadDisabled =
     !date ||
     selectedStations.length === 0 ||
@@ -338,6 +420,13 @@ export default function App() {
                 Impulsive stage
               </label>
             </div>
+            <label className="tab-field">
+              Intensity scale
+              <select className="control-input" value={scaleMode} onChange={(event) => setScaleMode(event.target.value)}>
+                <option value="relative">Relative detector digits</option>
+                <option value="median_db">median_dB calibration</option>
+              </select>
+            </label>
             <label className="tab-field">
               Z threshold
               <input
@@ -473,6 +562,10 @@ export default function App() {
                 onChange={(e) => { setUseCustomZ(true); setZmax(parseFloat(e.target.value)); }}
               />
             </label>
+            <div className="tab-group">
+              <button className="btn-apply" onClick={saveContrastPreset}>Save contrast preset</button>
+              {contrastPresets.length > 0 && <label className="tab-field">Saved preset<select className="control-input" defaultValue="" onChange={(event) => applyContrastPreset(Number(event.target.value))}><option value="" disabled>Select…</option>{contrastPresets.map((preset, index) => <option key={`${preset.name}-${index}`} value={index}>{preset.name}</option>)}</select></label>}
+            </div>
           </div>
         );
       case 'context':
@@ -535,7 +628,7 @@ export default function App() {
               onClick={() => setRulerMode((r) => !r)}
               title="Click two points on the spectrogram to measure Δt, Δf and drift rate (MHz/s)"
             >
-              📐 Drift ruler {rulerMode ? 'ON' : ''}
+              Drift ruler {rulerMode ? 'ON' : ''}
             </button>
             <button
               className="btn-tool"
@@ -543,7 +636,7 @@ export default function App() {
               disabled={layers.length === 0}
               title="Inspect the FITS header of a loaded layer"
             >
-              🗎 FITS header
+              FITS header
             </button>
             <button
               className="btn-tool"
@@ -551,8 +644,19 @@ export default function App() {
               disabled={layers.length === 0 || burstDetecting}
               title="Run the trained CNN+MIL classifier (Sahan's Burst_No_Burst) on every loaded layer"
             >
-              {burstDetecting ? '⟳ Detecting…' : '☀ Detect bursts (ML)'}
+              {burstDetecting ? 'Detecting…' : 'Detect current file (ML)'}
             </button>
+            <button className="btn-tool" onClick={() => startTask('burst_detect_day')} disabled={!station || ['submitting', 'queued', 'running'].includes(taskStatus?.status)}>Detect full day</button>
+            <button className="btn-tool" onClick={() => startTask('spectral_overview')} disabled={!station || ['submitting', 'queued', 'running'].includes(taskStatus?.status)}>Build daily overview</button>
+            <button className="btn-tool" onClick={() => {
+              const current = Math.max(0, files.findIndex((file) => file.filename === selectedFile));
+              startTask('combine_time', { filenames: files.slice(current, current + 4).map((file) => file.filename) });
+            }} disabled={!station || files.length < 2 || ['submitting', 'queued', 'running'].includes(taskStatus?.status)}>Combine next blocks</button>
+            {layers[0] && <>
+              <a className="btn-tool" href={`${API_BASE_URL}/api/files/download?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename })}`}>Download FITS</a>
+              <a className="btn-tool" href={`${API_BASE_URL}/api/spectrogram/export?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename, rfi: useSahanFilter })}`}>Export processed FITS</a>
+            </>}
+            {taskStatus && <span className={`task-status ${taskStatus.status}`} role="status">Job: {taskStatus.status}{Number.isFinite(taskStatus.progress) ? ` · ${Math.round(taskStatus.progress * 100)}%` : ''}{taskStatus.error ? ` · ${taskStatus.error}` : ''}{taskStatus.result?.artifact_url ? <a href={`${API_BASE_URL}${taskStatus.result.artifact_url}`}>Open result</a> : null}</span>}
             {Object.entries(burstResults).map(([st, r]) => (
               <span
                 key={st}
@@ -582,7 +686,8 @@ export default function App() {
 
   return (
     <div className="app-root">
-      <nav className="app-nav">
+      <a className="skip-link" href="#main-content">Skip to main content</a>
+      <nav className="app-nav" aria-label="Primary navigation">
         <span className="app-brand">e-CALLISTO<b>Spain</b></span>
         <div className="app-nav-tabs">
           <button
@@ -597,11 +702,21 @@ export default function App() {
           >
             Stations Map
           </button>
+          <button className={view === 'catalog' ? 'active' : ''} onClick={() => setView('catalog')}>Burst Reports</button>
+          <button className={view === 'statistics' ? 'active' : ''} onClick={() => setView('statistics')}>Statistics</button>
+          <button className={view === 'about' ? 'active' : ''} onClick={() => setView('about')}>About</button>
         </div>
         <span className="app-nav-spacer" />
       </nav>
 
-      {view === 'map' ? (
+      <Suspense fallback={<div className="page-shell" role="status">Loading view…</div>}>
+      {view === 'catalog' ? (
+        <BurstCatalog onOpenEvent={handleOpenEvent} />
+      ) : view === 'statistics' ? (
+        <Statistics onOpenStation={handleOpenStation} />
+      ) : view === 'about' ? (
+        <About />
+      ) : view === 'map' ? (
         <StationsMap onOpenStation={handleOpenStation} />
       ) : (
         <div className="dashboard">
@@ -702,10 +817,22 @@ export default function App() {
             {station && filesLoading && <p className="files-hint">Querying ETHZ…</p>}
             {station && !filesLoading && files.length === 0 && <p className="files-hint">No files available.</p>}
 
+            {files.length > 0 && (
+              <label className="control-label focus-filter">
+                Focus code
+                <select className="control-input" value={focusCode} onChange={(event) => setFocusCode(event.target.value)}>
+                  <option value="all">All receivers</option>
+                  {[...new Set(files.map((file) => file.focus_code).filter(Boolean))].sort().map((code) => (
+                    <option key={code} value={code}>{code}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+
             {!filesLoading && files.length > 0 && (
               <div className="burst-list">
                 {Object.entries(
-                  files.reduce((acc, f) => {
+                  files.filter((file) => focusCode === 'all' || file.focus_code === focusCode).reduce((acc, f) => {
                     const h = f.time.slice(0, 2);
                     if (!acc[h]) acc[h] = [];
                     acc[h].push(f);
@@ -773,7 +900,7 @@ export default function App() {
       </aside>
 
       {/* ── Main area ── */}
-      <main className="main-content">
+      <main className="main-content" id="main-content" tabIndex="-1">
         {/* Toolbar tabs (replaces the old crowded sidebar sections) */}
         <div className="top-tabs">
           {TABS.map((t) => (
@@ -811,15 +938,17 @@ export default function App() {
           rulerMode={rulerMode}
           burstResults={burstResults}
         />
+        <LightCurvePanel layer={layers[0]} />
+        {taskStatus?.status === 'succeeded' && taskStatus.type === 'spectral_overview' && taskStatus.result?.artifact_url && <DailyOverview artifactUrl={taskStatus.result.artifact_url} />}
       </main>
 
       {/* ── FITS header viewer modal ── */}
       {showHeaderViewer && layers.length > 0 && (
         <div className="modal-overlay" onClick={() => setShowHeaderViewer(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+          <div className="modal" role="dialog" aria-modal="true" aria-labelledby="fits-header-title" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h3>FITS header — {layers[headerLayerIdx]?.station}</h3>
-              <button className="modal-close" onClick={() => setShowHeaderViewer(false)}>✕</button>
+              <h3 id="fits-header-title">FITS header — {layers[headerLayerIdx]?.station}</h3>
+              <button className="modal-close" aria-label="Close FITS header" autoFocus onClick={() => setShowHeaderViewer(false)}>Close</button>
             </div>
             {layers.length > 1 && (
               <select
@@ -851,6 +980,7 @@ export default function App() {
 
         </div>
       )}
+      </Suspense>
     </div>
   );
 }
