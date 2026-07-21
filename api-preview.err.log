@@ -1,0 +1,20 @@
+INFO:     Started server process [9044]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:backend.main:Stations found in ETHZ: 51 (date 2026-07-18)
+INFO:backend.main:request id=0dfb4cea-600f-46a6-8288-9907edef4a06 method=GET path=/api/stations status=200 duration_ms=20194.5
+INFO:backend.main:Stations found in ETHZ: 49 (date 2026-07-19)
+INFO:backend.main:request id=a5a7f026-3a28-4ce8-9b4c-446888fd2d6c method=GET path=/api/stations status=200 duration_ms=552.0
+INFO:backend.main:request id=48122430-8436-4bc5-9f2f-838b92eca272 method=GET path=/api/files status=200 duration_ms=22725.4
+INFO:backend.main:request id=83cb3b4a-9461-4bff-bbfc-427219db06ad method=GET path=/api/bursts status=200 duration_ms=167.6
+INFO:backend.main:request id=552e661e-6948-4f43-bb4f-db28d059a6b3 method=GET path=/api/bursts status=200 duration_ms=20017.2
+INFO:backend.main:request id=be725d09-c56f-46a3-8cdf-9a98af3fbaf6 method=GET path=/api/files status=200 duration_ms=7513.4
+INFO:backend.main:Downloading http://soleil.i4ds.ch/solarradio/data/2002-20yy_Callisto/2026/07/19/INDIA-OOTY_20260719_031505_01.fit.gz \u2192 C:\Users\alfon\Desktop\TFG-AstroDoncel\data\INDIA-OOTY_20260719_031505_01.fit.gz
+INFO:backend.main:Download complete (265501 bytes)
+INFO:backend.main:Processing C:\Users\alfon\Desktop\TFG-AstroDoncel\data\INDIA-OOTY_20260719_031505_01.fit.gz
+INFO:backend.main:request id=16f93e80-3ff0-4ab5-8060-18a85908057e method=GET path=/api/spectrogram status=200 duration_ms=392.8
+INFO:backend.main:Using locally cached file: C:\Users\alfon\Desktop\TFG-AstroDoncel\data\INDIA-OOTY_20260719_031505_01.fit.gz
+INFO:backend.main:Processing C:\Users\alfon\Desktop\TFG-AstroDoncel\data\INDIA-OOTY_20260719_031505_01.fit.gz
+INFO:backend.main:RFI v2 applied: 10 persistent channels, 21.52% samples masked
+INFO:backend.main:request id=2a1e5704-ab35-493a-854a-fac06487b493 method=GET path=/api/spectrogram status=200 duration_ms=130.6

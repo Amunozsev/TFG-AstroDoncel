@@ -1,0 +1,8 @@
+INFO:     127.0.0.1:62757 - "GET /api/stations HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54688 - "GET /api/stations HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49754 - "GET /api/files?station=AUSTRALIA-ASSA&date=2026-07-19 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63252 - "GET /api/bursts?start=2026-07-19 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63414 - "GET /api/bursts?start=2026-07-19 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65480 - "GET /api/files?station=INDIA-OOTY&date=2026-07-19 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65480 - "GET /api/spectrogram?station=INDIA-OOTY&date=2026-07-19&sahan_filter=false&scale_mode=relative&max_time_bins=1500&rfi_z_thresh=6&rfi_occupancy=0.15&rfi_min_component=9&rfi_impulsive=true&filename=INDIA-OOTY_20260719_031505_01.fit.gz HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59254 - "GET /api/spectrogram?station=INDIA-OOTY&date=2026-07-19&sahan_filter=true&scale_mode=relative&max_time_bins=1500&rfi_z_thresh=6&rfi_occupancy=0.15&rfi_min_component=9&rfi_impulsive=true&filename=INDIA-OOTY_20260719_031505_01.fit.gz HTTP/1.1" 200 OK
