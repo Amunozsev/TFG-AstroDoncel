@@ -10,6 +10,7 @@ reports why detection is disabled and the backend still starts.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -354,11 +355,14 @@ def _load_bundle() -> dict:
         session_options = ort.SessionOptions()
         session_options.intra_op_num_threads = max(1, int(os.environ.get("BURST_INTRA_OP_THREADS", "1")))
         session_options.inter_op_num_threads = 1
+        model_path = os.path.join(BUNDLE_DIR, "model.onnx")
         session = ort.InferenceSession(
-            os.path.join(BUNDLE_DIR, "model.onnx"),
+            model_path,
             sess_options=session_options,
             providers=["CPUExecutionProvider"],
         )
+        with open(model_path, "rb") as model_file:
+            model_sha256 = hashlib.file_digest(model_file, "sha256").hexdigest()
         _MODEL_CACHE = {
             "session": session,
             "cfg": runtime,
@@ -367,6 +371,7 @@ def _load_bundle() -> dict:
             "bundle_name": profile.get("bundle_name"),
             "pooling": str(runtime.get("model", {}).get("mil_pooling", "topk_mean")),
             "topk": int(runtime.get("model", {}).get("mil_topk", 8)),
+            "model_sha256": model_sha256,
         }
         return _MODEL_CACHE
 
@@ -650,7 +655,7 @@ def detect_bursts(
     )
     event_source = "sahan_window_postprocess"
     threshold = float(bundle["threshold"])
-    candidate_floor = 0.40
+    candidate_floor = float(inf_cfg.get("candidate_threshold", 0.40))
     if not events:
         visual_events = _extract_visual_fallback_events(
             data_raw=data_raw,
@@ -687,6 +692,10 @@ def detect_bursts(
         "model_version": bundle["model_version"],
         "bundle_name": bundle["bundle_name"],
         "threshold": threshold,
+        "candidate_threshold": candidate_floor,
+        "model_sha256": bundle["model_sha256"],
+        "inference_method": "cnn_mil_onnx",
+        "localization_method": event_source,
         "file_score": round(float(file_score), 4),
         "is_burst": bool(file_score >= threshold),
         "is_candidate": bool(len(events) > 0 and (file_score >= candidate_floor or event_source == "visual_candidate")),

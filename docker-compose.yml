@@ -20,6 +20,9 @@ services:
       dockerfile: Dockerfile.api
     restart: unless-stopped
     env_file: .env
+    environment:
+      DATA_DIR_LOCAL: /data
+      TASK_RESULT_DIR: /data/task_results
     depends_on:
       db:
         condition: service_healthy
@@ -30,7 +33,7 @@ services:
     tmpfs: [/tmp]
     security_opt: [no-new-privileges:true]
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=2)"]
       interval: 10s
       timeout: 3s
       retries: 6
@@ -41,6 +44,9 @@ services:
       dockerfile: Dockerfile.worker
     restart: unless-stopped
     env_file: .env
+    environment:
+      DATA_DIR_LOCAL: /data
+      TASK_RESULT_DIR: /data/task_results
     depends_on:
       db:
         condition: service_healthy

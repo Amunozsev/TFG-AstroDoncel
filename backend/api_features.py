@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import os
 import re
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -16,10 +17,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from backend.catalog import ingest_month, list_events, station_statistics
-from backend.db import TaskRecord, init_db, session_scope
+from backend.db import TaskRecord, session_scope
 from backend.security import safe_join, validate_date, validate_filename_context, validate_station
 
 router = APIRouter(prefix="/api", tags=["analysis"])
+_TASK_CREATE_LOCK = threading.Lock()
 
 
 class TaskCreate(BaseModel):
@@ -104,8 +106,8 @@ def cross_match_events(start: str, end: str | None = None, tolerance_minutes: in
     """Cross-match ML candidates against official radio-burst reports."""
     start_dt, end_dt = _range(start, end)
     events = list_events(start_dt, end_dt)
-    ml = [event for event in events if event["source"] == "ml"]
-    official = [event for event in events if event["source"] != "ml"]
+    ml = [event for event in events if event["source"] == "ml_cnn"]
+    official = [event for event in events if event["source"].startswith("official")]
     tolerance = timedelta(minutes=tolerance_minutes)
     matches = []
     for candidate in ml:
@@ -182,7 +184,16 @@ def get_lightcurve(station: str, date: str, filename: str, freq_mhz: list[float]
 
 
 @router.get("/spectrogram/export")
-def export_processed_fits(station: str, date: str, filename: str, rfi: bool = False):
+def export_processed_fits(
+    station: str,
+    date: str,
+    filename: str,
+    rfi: bool = False,
+    rfi_z_thresh: float = Query(default=6.0, ge=0.5, le=20.0),
+    rfi_occupancy: float = Query(default=0.15, ge=0.01, le=1.0),
+    rfi_min_component: int = Query(default=9, ge=1, le=500),
+    rfi_impulsive: bool = True,
+):
     from backend import main as core
 
     try:
@@ -192,13 +203,35 @@ def export_processed_fits(station: str, date: str, filename: str, rfi: bool = Fa
     data, frequencies, time_axis, header = core._load_raw_cached(path)
     processed = core._subtract_background(data)
     if rfi:
-        processed, _channels, _stats = core._mitigate_rfi(processed)
-    primary = fits.PrimaryHDU(np.asarray(processed, dtype=np.float32), header=header)
-    axes = fits.BinTableHDU.from_columns([
+        processed, _channels, _stats = core._mitigate_rfi(
+            processed,
+            z_thresh=rfi_z_thresh,
+            occupancy_thresh=rfi_occupancy,
+            min_component_size=rfi_min_component,
+            impulsive=rfi_impulsive,
+        )
+    export_header = header.copy()
+    export_header["BUNIT"] = ("relative detector digits", "Background-subtracted intensity")
+    export_header["PROCVER"] = ("AstroDoncel 0.3.0", "Processing software")
+    export_header.add_history("AstroDoncel: per-frequency background subtraction applied")
+    export_header.add_history(f"AstroDoncel: RFI mitigation applied={rfi}")
+    if rfi:
+        export_header.add_history(
+            f"AstroDoncel: RFI z={rfi_z_thresh}, occupancy={rfi_occupancy}, "
+            f"min_component={rfi_min_component}, impulsive={rfi_impulsive}"
+        )
+    primary = fits.PrimaryHDU(np.asarray(processed, dtype=np.float32), header=export_header)
+    frequency_axis = fits.BinTableHDU.from_columns([
         fits.Column(name="FREQUENCY_MHZ", format="D", array=np.asarray(frequencies, dtype=float)),
     ], name="FREQUENCY_AXIS")
+    offsets = core._time_offsets_seconds(time_axis, header)
+    utc_times = core._times_to_utc(time_axis, header)
+    time_axis_hdu = fits.BinTableHDU.from_columns([
+        fits.Column(name="TIME_OFFSET_S", format="D", unit="s", array=offsets),
+        fits.Column(name="TIME_UTC", format="26A", array=np.asarray(utc_times, dtype="S26")),
+    ], name="TIME_AXIS")
     buffer = io.BytesIO()
-    fits.HDUList([primary, axes]).writeto(buffer)
+    fits.HDUList([primary, frequency_axis, time_axis_hdu]).writeto(buffer, checksum=True)
     output = re.sub(r"\.fits?(?:\.gz)?$", "_processed.fits", os.path.basename(filename), flags=re.IGNORECASE)
     return Response(
         buffer.getvalue(), media_type="application/fits",
@@ -216,13 +249,60 @@ def create_task(task: TaskCreate):
         date = validate_date(task.date)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    options = dict(task.options)
+    if task.type == "combine_time":
+        filenames = options.get("filenames")
+        if not isinstance(filenames, list) or not 2 <= len(filenames) <= 16:
+            raise HTTPException(status_code=422, detail="combine_time needs 2 to 16 filenames")
+        try:
+            validated = [validate_filename_context(item, station, date) for item in filenames]
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if len(set(validated)) != len(validated):
+            raise HTTPException(status_code=422, detail="combine_time filenames must be unique")
+        options["filenames"] = validated
+    payload = {"station": station, "date": date, "options": options}
     task_id = str(uuid.uuid4())
+    with _TASK_CREATE_LOCK:
+        with session_scope() as session:
+            active = session.scalars(
+                select(TaskRecord).where(
+                    TaskRecord.task_type == task.type,
+                    TaskRecord.status.in_(["queued", "running", "cancel_requested"]),
+                )
+            ).all()
+            duplicate = next((item for item in active if item.payload == payload), None)
+            if duplicate:
+                return {"id": duplicate.id, "status": duplicate.status, "deduplicated": True}
+            queued_count = len(session.scalars(
+                select(TaskRecord.id).where(TaskRecord.status.in_(["queued", "running", "cancel_requested"]))
+            ).all())
+            if queued_count >= int(os.environ.get("MAX_ACTIVE_TASKS", "100")):
+                raise HTTPException(status_code=429, detail="Task queue is full; retry later")
+            session.add(TaskRecord(
+                id=task_id, task_type=task.type, status="queued", progress=0.0,
+                payload=payload,
+            ))
+    return {"id": task_id, "status": "queued", "deduplicated": False}
+
+
+@router.post("/tasks/{task_id}/cancel", status_code=202)
+def cancel_task(task_id: str):
+    try:
+        uuid.UUID(task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid task id") from exc
     with session_scope() as session:
-        session.add(TaskRecord(
-            id=task_id, task_type=task.type, status="queued", progress=0.0,
-            payload={"station": station, "date": date, "options": task.options},
-        ))
-    return {"id": task_id, "status": "queued"}
+        task = session.get(TaskRecord, task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        if task.status == "queued":
+            task.status = "cancelled"
+            task.error = "Cancelled before execution"
+        elif task.status == "running":
+            task.status = "cancel_requested"
+        task.updated_at = datetime.now(timezone.utc)
+        return {"id": task.id, "status": task.status}
 
 
 @router.get("/tasks/{task_id}")
@@ -258,10 +338,3 @@ def get_task_artifact(task_id: str):
     with open(path, "rb") as handle:
         content = handle.read()
     return Response(content, media_type="application/json", headers={"Content-Encoding": "gzip"})
-
-
-try:
-    init_db()
-except Exception:
-    # Core FITS endpoints remain available if PostgreSQL is temporarily down.
-    pass

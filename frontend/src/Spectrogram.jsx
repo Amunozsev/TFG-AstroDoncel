@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import Plotly from 'plotly.js-dist';
+import Plotly from './plotly';
 import _factory from 'react-plotly.js/factory';
 import { apiFetch } from './api';
 

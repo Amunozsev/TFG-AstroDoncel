@@ -5,13 +5,18 @@ from __future__ import annotations
 import os
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 
 from sqlalchemy import JSON, DateTime, Float, Integer, String, Text, UniqueConstraint, create_engine
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 DEFAULT_SQLITE = "sqlite:///./data/astrodoncel.db"
 DATABASE_URL = os.environ.get("DATABASE_URL", DEFAULT_SQLITE).replace("postgres://", "postgresql+psycopg://", 1)
+_database_url = make_url(DATABASE_URL)
+if _database_url.get_backend_name() == "sqlite" and _database_url.database not in {None, "", ":memory:"}:
+    Path(_database_url.database).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
 ENGINE_KWARGS = {"pool_pre_ping": True}
 if DATABASE_URL.startswith("sqlite"):
     ENGINE_KWARGS["connect_args"] = {"check_same_thread": False}
@@ -80,6 +85,15 @@ class GoesDay(Base):
     date: Mapped[str] = mapped_column(String(10), primary_key=True)
     payload: Mapped[dict] = mapped_column(JSON_TYPE)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class CatalogMonth(Base):
+    __tablename__ = "catalog_months"
+    key: Mapped[str] = mapped_column(String(50), primary_key=True)
+    source: Mapped[str] = mapped_column(String(30), index=True)
+    year_month: Mapped[str] = mapped_column(String(7), index=True)
+    event_count: Mapped[int] = mapped_column(Integer, default=0)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 def init_db() -> None:

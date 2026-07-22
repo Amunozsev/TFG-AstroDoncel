@@ -1,4 +1,4 @@
 {
   "threshold": 0.6,
-  "source": "/Users/saan/Desktop/Burst_No_Burst/artifacts_clean_run_v2/threshold_val_deploy_v2_f1.json"
+  "source": "upstream validation artifact threshold_val_deploy_v2_f1.json"
 }

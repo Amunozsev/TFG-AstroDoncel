@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import logging
 import os
 import time
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 from sqlalchemy import select
@@ -15,6 +17,11 @@ from sqlalchemy import select
 from backend.db import BurstEvent, TaskRecord, init_db, session_scope
 
 RESULT_DIR = os.environ.get("TASK_RESULT_DIR", os.path.join("data", "task_results"))
+logger = logging.getLogger(__name__)
+
+
+class TaskCancelled(Exception):
+    """Raised at cooperative cancellation checkpoints."""
 
 
 def _update(task_id: str, **values) -> None:
@@ -25,12 +32,76 @@ def _update(task_id: str, **values) -> None:
         task.updated_at = datetime.now(timezone.utc)
 
 
+def _check_cancelled(task_id: str) -> None:
+    with session_scope() as session:
+        task = session.get(TaskRecord, task_id)
+        if task and task.status == "cancel_requested":
+            raise TaskCancelled("Cancelled by user")
+
+
+def recover_stale_tasks(stale_minutes: int | None = None) -> int:
+    """Requeue interrupted work, or fail it when its retry budget is exhausted."""
+    minutes = stale_minutes or int(os.environ.get("TASK_STALE_MINUTES", "15"))
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    recovered = 0
+    with session_scope() as session:
+        stale = session.scalars(select(TaskRecord).where(
+            TaskRecord.status.in_(["running", "cancel_requested"]),
+            TaskRecord.updated_at < cutoff,
+        )).all()
+        for task in stale:
+            if task.status == "cancel_requested":
+                task.status = "cancelled"
+                task.error = "Cancellation completed after a stale worker heartbeat"
+            else:
+                task.status = "queued" if task.attempts < task.max_attempts else "failed"
+                task.error = "Recovered after a stale worker heartbeat"
+            task.updated_at = datetime.now(timezone.utc)
+            recovered += 1
+    return recovered
+
+
+def cleanup_completed_tasks(retention_days: int | None = None) -> int:
+    """Delete expired terminal tasks and only their strictly named artifacts."""
+    days = retention_days if retention_days is not None else int(os.environ.get("TASK_RETENTION_DAYS", "30"))
+    if days < 1:
+        raise ValueError("TASK_RETENTION_DAYS must be at least 1")
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    removed = 0
+    result_root = os.path.realpath(RESULT_DIR)
+    with session_scope() as session:
+        expired = session.scalars(select(TaskRecord).where(
+            TaskRecord.status.in_(["succeeded", "failed", "cancelled"]),
+            TaskRecord.updated_at < cutoff,
+        )).all()
+        for task in expired:
+            artifact = task.result.get("artifact") if task.result else None
+            if artifact == f"{task.id}.json.gz":
+                artifact_path = os.path.realpath(os.path.join(result_root, artifact))
+                if os.path.commonpath((result_root, artifact_path)) == result_root:
+                    try:
+                        os.remove(artifact_path)
+                    except FileNotFoundError:
+                        pass
+            session.delete(task)
+            removed += 1
+    return removed
+
+
 def _write_artifact(task_id: str, payload: dict) -> str:
     os.makedirs(RESULT_DIR, exist_ok=True)
     filename = f"{task_id}.json.gz"
     path = os.path.join(RESULT_DIR, filename)
-    with gzip.open(path, "wt", encoding="utf-8") as handle:
-        json.dump(payload, handle, separators=(",", ":"))
+    temporary_path = f"{path}.{uuid.uuid4().hex}.part"
+    try:
+        with gzip.open(temporary_path, "wt", encoding="utf-8") as handle:
+            json.dump(payload, handle, separators=(",", ":"))
+        os.replace(temporary_path, path)
+    finally:
+        try:
+            os.remove(temporary_path)
+        except OSError:
+            pass
     return filename
 
 
@@ -42,6 +113,7 @@ def _burst_detect_day(task: TaskRecord) -> dict:
     filenames = sorted(set(core._list_local_fits_files(station, date)) | set(core._list_ethz_files(station, date)))
     detections = 0
     for index, filename in enumerate(filenames):
+        _check_cancelled(task.id)
         path = core._download_from_ethz(station, date, filename)
         if not path:
             continue
@@ -53,22 +125,31 @@ def _burst_detect_day(task: TaskRecord) -> dict:
                 ended = datetime.fromisoformat(event["end_utc"].replace("Z", "+00:00"))
                 key = f"{filename}:{event_index}:{event['start_utc']}"
                 with session_scope() as session:
-                    exists = session.scalar(select(BurstEvent.id).where(BurstEvent.source == "ml", BurstEvent.event_key == key))
+                    detection_source = (
+                        "heuristic_visual" if result["event_source"].startswith("visual") else "ml_cnn"
+                    )
+                    exists = session.scalar(select(BurstEvent.id).where(
+                        BurstEvent.source == detection_source, BurstEvent.event_key == key
+                    ))
                     if not exists:
                         reports = session.scalars(
                             select(BurstEvent).where(
-                                BurstEvent.source != "ml",
+                                BurstEvent.source.like("official%"),
                                 BurstEvent.started_at <= ended,
                                 BurstEvent.ended_at >= started,
                             )
                         ).all()
                         matched = next((report for report in reports if station.upper() in report.stations), None)
                         session.add(BurstEvent(
-                            source="ml", event_key=key, started_at=started, ended_at=ended,
-                            burst_type=matched.burst_type if matched else None, stations=[station], score=result["file_score"],
+                            source=detection_source, event_key=key, started_at=started, ended_at=ended,
+                            burst_type=None, stations=[station], score=result["file_score"],
                             metadata_json={
                                 "filename": filename, "event": event, "model_version": result["model_version"],
+                                "model_sha256": result["model_sha256"],
+                                "inference_method": result["inference_method"],
+                                "localization_method": result["localization_method"],
                                 "matched_official_event_id": matched.id if matched else None,
+                                "matched_official_burst_type": matched.burst_type if matched else None,
                             },
                         ))
                         detections += 1
@@ -83,6 +164,7 @@ def _spectral_overview(task: TaskRecord) -> dict:
     filenames = sorted(set(core._list_local_fits_files(station, date)) | set(core._list_ethz_files(station, date)))
     loaded = []
     for index, filename in enumerate(filenames):
+        _check_cancelled(task.id)
         try:
             path = core._download_from_ethz(station, date, filename)
             raw, frequencies, time_values, header = core._load_raw_cached(path)
@@ -130,6 +212,7 @@ def _combine_time(task: TaskRecord) -> dict:
     matrices, labels = [], []
     reference_freqs = None
     for index, filename in enumerate(filenames):
+        _check_cancelled(task.id)
         path = core._download_from_ethz(station, date, filename)
         raw, freqs, time_values, header = core._load_raw_cached(path)
         if reference_freqs is None:
@@ -175,8 +258,12 @@ def run_once() -> bool:
         task = session.get(TaskRecord, task_id)
         try:
             result = HANDLERS[task.task_type](task)
+            _check_cancelled(task.id)
             _update(task.id, status="succeeded", progress=1.0, result=result, error=None)
+        except TaskCancelled as exc:
+            _update(task.id, status="cancelled", error=str(exc))
         except Exception as exc:
+            logger.exception("Task %s (%s) failed", task.id, task.task_type)
             status = "queued" if task.attempts < task.max_attempts else "failed"
             _update(task.id, status=status, error=str(exc))
     return True
@@ -186,14 +273,27 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--poll-seconds", type=float, default=2.0)
+    parser.add_argument("--cleanup-only", action="store_true")
     args = parser.parse_args()
     init_db()
+    recover_stale_tasks()
+    cleanup_completed_tasks()
+    if args.cleanup_only:
+        return
+    last_recovery = time.monotonic()
+    last_cleanup = time.monotonic()
     while True:
         worked = run_once()
         if args.once:
             return
         if not worked:
             time.sleep(args.poll_seconds)
+        if time.monotonic() - last_recovery >= 60:
+            recover_stale_tasks()
+            last_recovery = time.monotonic()
+        if time.monotonic() - last_cleanup >= 3600:
+            cleanup_completed_tasks()
+            last_cleanup = time.monotonic()
 
 
 if __name__ == "__main__":

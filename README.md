@@ -1,548 +1,360 @@
-# AstroDoncel - Solar Radio Spectrogram Portal
+# AstroDoncel
 
-Bachelor's Thesis - Universidad de Alcala - 2026  
-Author: Alfonso Munoz Sevillano
+Portal web para visualizar y analizar espectrogramas solares de la red e-CALLISTO.
 
-AstroDoncel is an interactive web application for visualising and analysing
-solar radio spectrograms from the e-CALLISTO network. It combines a React
-frontend with a FastAPI backend that downloads, parses and processes CALLISTO
-FITS files.
+Trabajo de Fin de Grado — Universidad de Alcalá, 2026
+Autor: Alfonso Muñoz Sevillano
 
-The goal of the project is to make solar radio burst inspection easier:
-stations can be selected from the network, files can be browsed by date and
-time, spectrograms can be compared across stations, and processing tools such
-as RFI filtering, GOES/XRS context, high-resolution zoom and drift measurements
-are available from the browser.
+AstroDoncel combina un frontend React con una API FastAPI y un worker científico. Permite explorar estaciones y ficheros FITS, procesar espectrogramas, comparar observaciones, consultar el catálogo de bursts y ejecutar análisis de día completo sin bloquear la API.
 
-## Features
+> Estado: prototipo funcional de TFG. Los cálculos Type II y algunos localizadores visuales son experimentales; deben validarse antes de usarse como resultado científico. Consulta [ROADMAP_COMPLETO_TFG.md](ROADMAP_COMPLETO_TFG.md) para la auditoría y el plan pendiente.
 
-### Station Discovery
+## Funciones disponibles
 
-- Loads the live e-CALLISTO station list from the ETHZ archive.
-- Falls back to a static station list if the archive is unreachable.
-- Provides a station search box in the sidebar.
-- Supports selecting one or multiple stations.
-- Includes a station map view with operative/offline status.
-- Shows station coordinates on a globe or flat map.
-- Learns station coordinates from FITS headers when available.
-- Keeps approximate fallback coordinates for known stations.
-- Displays monthly burst counts per station when ETHZ burst lists are available.
-- Includes day/night terminator and subsolar point overlays on the map.
+### Archivo y espectrogramas
 
-### Spectrogram Loading
+- Lista viva de estaciones y ficheros desde el archivo ETHZ, con fallback local.
+- Caché local de FITS y lectura opcional de un archivo NAS en modo solo lectura.
+- Selección por estación, fecha, hora y focus code.
+- Espectrograma Plotly, zoom de alta resolución y navegación entre ficheros.
+- Comparación de hasta seis estaciones en paneles sincronizados u overlay.
+- Descarga del FITS original y exportación del FITS procesado.
+- Combinación temporal de bloques consecutivos mediante el worker.
 
-- Select a station and observation date.
-- Lists available FITS files grouped by hour.
-- Marks locally cached files.
-- Loads single-station spectrograms.
-- Loads multiple stations concurrently.
-- Synchronises multi-station comparisons to the same 15-minute time block.
-- Can read FITS files from:
-  - local `data/` cache,
-  - optional NAS/external data directory,
-  - ETHZ remote archive.
-- Auto-downloads missing files from ETHZ and caches them locally.
+### Procesamiento y contexto
 
-### Processing
+- Lectura FITS con `astropy` y ejes UTC/MHz.
+- Resta de background por canal.
+- Mitigación RFI opcional: ocupación, componentes impulsivas e inpainting.
+- Escala relativa y conversión instrumental `median_dB`.
+- Contraste automático/manual y presets locales.
+- Overlay GOES/XRS-B con caché.
+- Regla de deriva en MHz/s y visor de cabeceras FITS.
+- Curva de luz a una frecuencia seleccionada, con panel cerrable.
+- Overview diario en seis bloques de cuatro horas con scroll independiente.
 
-- Reads CALLISTO FITS data through `astropy`.
-- Extracts frequency and time axes from FITS tables, WCS headers or fallback metadata.
-- Converts relative FITS time axes to absolute UTC timestamps.
-- Applies robust per-frequency background subtraction.
-- Optional RFI mitigation pipeline inspired by Sahan's tools:
-  - persistent narrowband RFI detection by channel occupancy,
-  - impulsive RFI detection through connected components,
-  - channel-median inpainting,
-  - adjustable thresholds from the UI.
-- Computes contrast using percentile clipping.
-- Exposes RFI statistics to the frontend.
+### Catálogo y detección
 
-### Visualisation
+- Catálogo de bursts oficiales e-CALLISTO con filtros por fecha, estación y tipo.
+- Estadísticas por estación y línea temporal.
+- Inferencia CNN+MIL con el modelo ONNX incluido.
+- Detección de fichero actual y tarea de detección de día completo.
+- Cruce temporal entre candidatos y catálogo oficial.
+- Endpoint experimental de band-splitting Type II.
 
-- Plotly heatmap spectrogram rendering.
-- Multiple scientific colour scales:
-  - Observatory,
-  - Hot,
-  - Inferno,
-  - Magma,
-  - Plasma,
-  - Viridis,
-  - Cividis,
-  - Turbo,
-  - Jet,
-  - RdYlBu,
-  - Cubehelix,
-  - Bone inverted.
-- Manual contrast controls with `Z min` and `Z max`.
-- Optional auto-contrast on high-resolution zoom.
-- Multi-station display modes:
-  - stacked synchronised panels,
-  - translucent overlay.
-- Per-layer visibility and opacity controls.
-- High-resolution zoom requests for selected time/frequency regions.
-- FITS header viewer modal.
-- Keyboard navigation through files with left/right arrows.
+### Mapa
 
-### Solar Context
+- Estado operativo de estaciones.
+- Coordenadas aprendidas de cabeceras FITS y registro persistente.
+- Los fallbacks manuales se muestran como aproximados; no son una medida autoritativa.
+- Terminador día/noche y punto subsolar como contexto visual aproximado.
 
-- Optional GOES/XRS overlay using SunPy/Fido.
-- Selects preferred GOES satellites by observation epoch.
-- Clips GOES data to the visible spectrogram time window.
-- Caches downloaded GOES files in `data/goes_cache/`.
-- Returns a graceful unavailable response if GOES data cannot be fetched.
-
-### Analysis Tools
-
-- Drift ruler:
-  - click two points on the spectrogram,
-  - measure time difference,
-  - measure frequency difference,
-  - calculate drift rate in MHz/s.
-- Automatic burst detection endpoint:
-  - uses the bundled CNN+MIL model,
-  - returns file-level probability,
-  - returns candidate event intervals,
-  - degrades gracefully if a custom installation misses model files.
-
-## Architecture
+## Arquitectura
 
 ```text
-Browser
-  React + Vite
-  Plotly.js
-  App.jsx
-  Spectrogram.jsx
-  StationsMap.jsx
-        |
-        | HTTP / JSON
-        v
-FastAPI backend
-  /api/stations
-  /api/stations/geo
-  /api/files
-  /api/spectrogram
-  /api/spectrogram/combine
-  /api/spectrogram/zoom
-  /api/goes
-  /api/burst/detect
-        |
-        | FITS / NetCDF / text indices
-        v
-ETHZ e-CALLISTO archive + NOAA/SunPy data sources
+frontend/                    React 19 + Vite 8 + Plotly
+  src/App.jsx                estado global, portal y herramientas
+  src/Spectrogram.jsx        render y navegación científica
+  src/StationsMap.jsx        mapa de estaciones
+  src/BurstCatalog.jsx       catálogo oficial
+  src/Statistics.jsx         estadísticas
+  src/DailyOverview.jsx      producto diario del worker
+  src/LightCurvePanel.jsx    curvas de luz
+
+backend/
+  main.py                    API principal, archivo y pipeline científico
+  api_features.py            catálogo, exportaciones, curvas y tareas
+  burst_detect.py            inferencia ONNX y postprocesado
+  catalog.py                 parser e ingesta del catálogo
+  db.py                      SQLAlchemy: SQLite/PostgreSQL
+  security.py                validación de identificadores y rutas seguras
+  type_ii.py                 cálculo experimental Type II
+  worker.py                  trabajos persistentes pesados
+
+migrations/                  esquema Alembic
+tests/                       pruebas backend
+frontend/src/*.test.jsx      regresiones de interfaz con Vitest
+tools/                       exportación ONNX y limpieza de caché
+nginx/                       proxy y frontend de producción
 ```
 
-The frontend is responsible for interaction, layout and plotting. The backend
-is responsible for I/O, FITS parsing, numerical processing and external data
-fetching.
-
-## Project Structure
+Flujo principal:
 
 ```text
-TFG-AstroDoncel/
-  backend/
-    main.py              FastAPI app, API endpoints and scientific pipeline
-    burst_detect.py      CNN+MIL burst detector
-    model/
-      burst_detector/    Deployment bundle for ML inference
-  frontend/
-    public/
-    src/
-      App.jsx            Main application state and controls
-      Spectrogram.jsx    Plotly spectrogram rendering and zoom logic
-      StationsMap.jsx    Station map view
-      api.js             API base URL helper
-      App.css            Main styles
-      index.css          Global styles
-    package.json         Frontend dependencies and scripts
-  data/
-    goes_cache/          Local GOES cache
-    station_coords.json  Learned station coordinates, if generated
-  requirements.txt       Backend Python dependencies
+Navegador → FastAPI → caché local / NAS / ETHZ
+                │
+                ├─ SQLite o PostgreSQL
+                └─ cola SQL → worker → data/task_results
 ```
 
-`data/` is used as a local runtime cache. It should not be treated as source
-code.
+Los repositorios `e-Callisto_FITS_Analyzer`, `Burst_No_Burst` y `ecallistolib` de Sahan son material de referencia. No hay que descargarlos para instalar, ejecutar ni probar AstroDoncel. Si se conservan copias locales, deben estar bajo `Sahan/`; esa carpeta está ignorada por Git y no forma parte de la aplicación.
 
-## Requirements
+## Requisitos
 
-### Backend
+- Python 3.12.
+- Node.js 22 y npm.
+- Windows, Linux o macOS para desarrollo local.
+- Docker Compose solo para el despliegue completo; no es necesario para SQLite local.
 
-- Python 3.12+
-- `pip`
-- Dependencies from `requirements.txt`
+Las dependencias están separadas por uso:
 
-### Frontend
+| Archivo | Contenido |
+|---|---|
+| `requirements.txt` | API, procesamiento, GOES, ONNX y persistencia |
+| `requirements-dev.txt` | runtime más pytest, Ruff, TestClient y Alembic |
+| `requirements-ml.txt` | toolchain opcional de exportación/reentrenamiento con PyTorch CPU |
 
-- Node.js 18+
-- npm
+PyTorch no se importa ni se necesita para servir la API o ejecutar ONNX.
 
-## Local Installation
+## Instalación local en Windows
 
-Clone the repository:
+Clona el repositorio y entra en él:
 
 ```powershell
 git clone https://github.com/Amunozsev/TFG-AstroDoncel.git
 cd TFG-AstroDoncel
 ```
 
-Create and activate a Python virtual environment:
+Crea el entorno, el directorio de datos e instala el perfil de desarrollo:
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\activate
+.\.venv\Scripts\Activate.ps1
+New-Item -ItemType Directory -Force data | Out-Null
+python -m pip install --upgrade pip
+python -m pip install -r requirements-dev.txt
 ```
 
-Install backend dependencies:
-
-```powershell
-pip install -r requirements.txt
-```
-
-Start the backend:
-
-```powershell
-uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-The backend will be available at:
-
-```text
-http://localhost:8000
-```
-
-The API documentation will be available at:
-
-```text
-http://localhost:8000/docs
-```
-
-In another terminal, install and start the frontend:
+Instala el frontend de forma reproducible:
 
 ```powershell
 cd frontend
-npm install
-npm run dev
+npm ci
+cd ..
 ```
 
-The frontend will be available at:
+### Arranque
 
-```text
-http://localhost:5173
-```
+Abre tres terminales desde la raíz del repositorio.
 
-## Configuration
-
-### Frontend API URL
-
-The frontend reads the backend URL from:
-
-```text
-VITE_API_BASE_URL
-```
-
-If it is not set, it falls back to:
-
-```text
-http://localhost:8000
-```
-
-For local development, no extra configuration is needed if the backend runs on
-port `8000`.
-
-### Backend CORS
-
-The backend reads allowed frontend origins from:
-
-```text
-FRONTEND_ORIGINS
-```
-
-Example:
-
-```text
-FRONTEND_ORIGINS=http://localhost:5173
-```
-
-Multiple origins can be separated by commas.
-
-If `FRONTEND_ORIGINS` is not set, the backend allows:
-
-```text
-http://localhost:5173
-http://127.0.0.1:5173
-```
-
-### Optional Data Paths
-
-```text
-ECALLISTO_DATA_DIR
-```
-
-Optional external directory for e-CALLISTO data organised as:
-
-```text
-YYYY/MM/DD/*.fit*
-```
-
-If this is not configured, the backend uses `data/` and the ETHZ archive.
-
-```text
-BURST_MODEL_DIR
-```
-
-Optional override path to the CNN+MIL burst detector model bundle. By default,
-the backend uses `backend/model/burst_detector/`.
-
-## How the Processing Pipeline Works
-
-1. The user selects station(s), date and optionally a FITS file.
-2. The frontend calls the backend API.
-3. The backend searches for the FITS file:
-   - first in `data/`,
-   - then in `ECALLISTO_DATA_DIR` if configured,
-   - then in the ETHZ archive.
-4. If needed, the backend downloads the FITS file into `data/`.
-5. The backend opens the FITS file with `astropy`.
-6. Raw data, frequency axis, time axis and header metadata are extracted.
-7. The time axis is converted to UTC timestamps.
-8. Background subtraction is applied per frequency channel.
-9. If enabled, RFI mitigation is applied.
-10. Data are clipped and serialised to JSON.
-11. The frontend renders the result with Plotly.
-
-## API Reference
-
-### `GET /health`
-
-Health check endpoint.
-
-Example response:
-
-```json
-{"status":"ok","version":"0.2.0"}
-```
-
-### `GET /api/stations`
-
-Returns the station list.
-
-Query parameters: none.
-
-Response fields:
-
-- `stations`
-- `source`
-
-### `GET /api/stations/geo`
-
-Returns station coordinates, operative status and monthly burst counts.
-
-Query parameters: none.
-
-Response fields:
-
-- `stations`
-- `source`
-- `operative_count`
-- `total_count`
-- `reference_date`
-- `burst_month`
-- `burst_total`
-- `unmapped`
-- `fits_coord_count`
-
-### `GET /api/files`
-
-Lists available FITS files for a station and date.
-
-Query parameters:
-
-- `station`
-- `date` in `YYYY-MM-DD`
-
-Example:
-
-```text
-/api/files?station=SPAIN-SIGUENZA&date=2024-05-08
-```
-
-### `GET /api/spectrogram`
-
-Processes one station and returns one spectrogram layer.
-
-Query parameters:
-
-- `station`
-- `date`
-- `filename` optional
-- `sahan_filter` optional boolean
-- `max_time_bins` optional integer
-- `rfi_z_thresh`
-- `rfi_occupancy`
-- `rfi_min_component`
-- `rfi_impulsive`
-
-### `GET /api/spectrogram/combine`
-
-Processes several stations concurrently and aligns secondary stations to the
-primary station time block.
-
-Query parameters:
-
-- `stations` repeated parameter
-- `date`
-- `filename` optional primary station file
-- `sahan_filter`
-- `max_time_bins`
-- RFI parameters
-
-Example:
-
-```text
-/api/spectrogram/combine?date=2024-05-08&stations=SPAIN-SIGUENZA&stations=HUMAIN
-```
-
-### `GET /api/spectrogram/zoom`
-
-Returns a high-resolution patch for a selected time/frequency region.
-
-Query parameters:
-
-- `station`
-- `date`
-- `filename`
-- `t0`
-- `t1`
-- `f0`
-- `f1`
-- RFI parameters
-
-### `GET /api/goes`
-
-Returns GOES/XRS flux for a date.
-
-Query parameters:
-
-- `date`
-
-### `GET /api/burst/detect`
-
-Runs CNN+MIL burst detection on one FITS file.
-
-Query parameters:
-
-- `station`
-- `date`
-- `filename`
-
-If the model dependencies or bundle files are missing in a custom installation,
-the endpoint returns an unavailable response rather than failing backend startup.
-
-Inference uses the bundled ONNX model through ONNX Runtime. PyTorch is only a
-development dependency for re-exporting or retraining the model.
-
-### Catalogue, statistics and analysis
-
-- `GET /api/bursts?start=YYYY-MM-DD&end=YYYY-MM-DD` ingests and queries official burst reports.
-- `GET /api/stats/stations` and `GET /api/stats/timeline` return network activity statistics.
-- `GET /api/xmatch` cross-matches stored ML candidates with official radio-burst reports.
-- `GET /api/lightcurve` extracts light curves at up to eight selected frequencies.
-- `GET /api/files/download` downloads the original FITS file.
-- `GET /api/spectrogram/export` exports the processed matrix as FITS.
-- `POST /api/analysis/type-ii-band-split` exposes the experimental Type-II calculation.
-
-### Background tasks
-
-`POST /api/tasks` accepts `burst_detect_day`, `spectral_overview` and
-`combine_time`. `GET /api/tasks/{id}` reports queued/running/succeeded/failed
-state and progress. Heavy jobs are run by the dedicated worker, never by the
-browser or the API request process.
+Terminal 1 — API:
 
 ```powershell
-python -m backend.worker
+.\.venv\Scripts\python.exe -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-## Reproducible deployment
+Terminal 2 — worker:
 
-Copy `.env.example` to `.env`, replace all placeholder passwords and set
-`ECALLISTO_HOST_DIR` to the NAS archive directory. Then run:
+```powershell
+.\.venv\Scripts\python.exe -m backend.worker
+```
 
-```text
+Terminal 3 — frontend:
+
+```powershell
+cd frontend
+npm run dev -- --host 127.0.0.1
+```
+
+Abre:
+
+- Portal: <http://127.0.0.1:5173>
+- API: <http://127.0.0.1:8000>
+- OpenAPI: <http://127.0.0.1:8000/docs>
+- Salud: <http://127.0.0.1:8000/health>
+- Disponibilidad detallada: <http://127.0.0.1:8000/ready>
+
+El worker es necesario para `Detect full day`, `Build daily overview` y `Combine next blocks`. El resto de la API puede funcionar sin él.
+
+### Preview del build de producción
+
+```powershell
+cd frontend
+$env:VITE_API_BASE_URL='http://127.0.0.1:8000'
+npm run build
+npm run preview -- --host 127.0.0.1 --port 5173
+```
+
+## Configuración
+
+El desarrollo local funciona sin `.env`: usa SQLite en `data/astrodoncel.db`, caché en `data/` y los puertos anteriores.
+
+`.env.example` está orientado a Docker Compose. No lo cargues directamente en un arranque local con Uvicorn sin cambiar `DATABASE_URL`, porque el host PostgreSQL `db` solo existe dentro de Compose.
+
+| Variable | Uso | Valor local por defecto |
+|---|---|---|
+| `DATABASE_URL` | SQLAlchemy; PostgreSQL en producción | `sqlite:///./data/astrodoncel.db` |
+| `DATA_DIR_LOCAL` | FITS descargados, GOES y coordenadas aprendidas | `data/` del repositorio |
+| `TASK_RESULT_DIR` | artefactos JSON gzip del worker | `data/task_results/` |
+| `ECALLISTO_DATA_DIR` | archivo externo `YYYY/MM/DD/*.fit*` | ruta histórica NAS, opcional |
+| `FRONTEND_ORIGINS` | orígenes CORS separados por coma | localhost/127.0.0.1:5173 |
+| `BURST_MODEL_DIR` | bundle ONNX alternativo | `backend/model/burst_detector/` |
+| `BURST_INTRA_OP_THREADS` | hilos CPU de ONNX | `1` |
+| `MAX_ACTIVE_TASKS` | límite global de tareas activas | `100` |
+| `TASK_STALE_MINUTES` | latido máximo antes de recuperar una tarea | `15` |
+| `TASK_RETENTION_DAYS` | retención de tareas/artefactos terminados | `30` |
+| `MAX_FITS_DOWNLOAD_BYTES` | límite por descarga remota | `134217728` (128 MiB) |
+| `CATALOG_REFRESH_HOURS` | vigencia de cada mes del catálogo | `12` |
+| `VITE_API_BASE_URL` | URL API embebida al construir frontend | API local en dev; mismo origen en producción |
+
+La API nunca acepta una ruta de disco enviada por el cliente. Estación, fecha y filename deben pasar `backend.security`.
+
+## Base de datos y migraciones
+
+SQLite es el fallback de desarrollo. El stack Docker usa PostgreSQL.
+
+```powershell
+.\.venv\Scripts\python.exe -m alembic upgrade head
+```
+
+Las migraciones son explícitas y se prueban en upgrade/downgrade. Antes de aplicarlas sobre una base persistente, realiza una copia de seguridad. Si ya arrancaste una versión antigua que creó las tablas mediante `create_all` pero no tiene `alembic_version`, no ejecutes el upgrade inicial a ciegas: respalda la base y usa `alembic stamp head` solo después de comprobar que su esquema coincide.
+
+## Docker Compose
+
+Requiere Docker con Compose:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Edita `.env`, cambia la contraseña en `POSTGRES_PASSWORD` y `DATABASE_URL`, y configura `ECALLISTO_HOST_DIR` si existe un archivo NAS. Después:
+
+```powershell
 docker compose up --build -d
 ```
 
-The stack contains PostgreSQL, a single-worker FastAPI service, a dedicated
-scientific worker and an Nginx-served React frontend. Open
-`http://localhost:8080`. Nginx applies request limits, security headers and
-immutable caching for hashed assets. `railway.toml` remains the documented
-provisional API-only deployment path; the NAS Compose stack is the target
-production architecture.
+Servicios:
 
-The API can run without PostgreSQL using its SQLite development fallback. Use
-`alembic upgrade head` when managing the persistent schema explicitly.
+- `db`: PostgreSQL.
+- `api`: FastAPI de un solo proceso.
+- `worker`: análisis pesados.
+- `web`: Nginx + build React, publicado en <http://localhost:8080>.
 
-## Testing and quality
+El archivo externo se monta en solo lectura. `data/` y PostgreSQL deben incluirse en la estrategia de backup. El Compose aún debe validarse en el NAS objetivo; véase el roadmap.
+
+## API resumida
+
+### Archivo y visualización
+
+- `GET /api/stations`
+- `GET /api/stations/geo`
+- `GET /api/files?station=&date=`
+- `GET /api/spectrogram?station=&date=&filename=`
+- `GET /api/spectrogram/combine`
+- `GET /api/spectrogram/zoom`
+- `GET /api/files/download`
+- `GET /api/spectrogram/export`
+- `GET /api/lightcurve`
+- `GET /api/goes`
+
+### Catálogo y análisis
+
+- `GET /api/bursts`
+- `GET /api/stats/stations`
+- `GET /api/stats/timeline`
+- `GET /api/xmatch`
+- `GET /api/burst/detect`
+- `POST /api/analysis/type-ii-band-split`
+
+### Tareas
+
+`POST /api/tasks` acepta:
+
+- `burst_detect_day`
+- `spectral_overview`
+- `combine_time`
+
+Consulta progreso con `GET /api/tasks/{id}`, cancela con `POST /api/tasks/{id}/cancel` y abre el resultado comprimido con `GET /api/tasks/{id}/artifact`. La cola deduplica clics repetidos, limita trabajos activos, recupera tareas abandonadas y elimina resultados terminales tras la retención configurada.
+
+Los contratos completos y parámetros están en `/docs`.
+
+## Calidad y pruebas
+
+Backend:
 
 ```powershell
-pip install -r requirements-dev.txt
-ruff check backend tests tools
-pytest
+.\.venv\Scripts\python.exe -m ruff check .
+.\.venv\Scripts\python.exe -m pytest
+.\.venv\Scripts\python.exe -m pip check
+```
+
+Frontend:
+
+```powershell
 cd frontend
 npm run lint
+npm run test
 npm run build
+npm audit
 ```
 
-GitHub Actions runs the same backend and frontend checks. The current suite
-covers identifier/path security, the official catalogue parser, scientific
-helpers, RFI behaviour, API contracts and Type-II calculations.
-
-## Useful Commands
-
-Backend syntax/import check:
-
-```powershell
-.\.venv\Scripts\python.exe -m compileall backend
-```
-
-Check backend dependencies:
+Instalación declarativa sin modificar el entorno:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install --dry-run -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install --dry-run -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pip install --dry-run -r requirements-ml.txt
 ```
 
-Frontend lint:
+GitHub Actions ejecuta Ruff, pytest, ESLint y el build en cada push y pull request.
+
+## Toolchain ML opcional
+
+Solo para exportar o investigar el modelo:
 
 ```powershell
-cd frontend
-npm run lint
+.\.venv\Scripts\python.exe -m pip install -r requirements-ml.txt
+.\.venv\Scripts\python.exe tools/export_onnx.py --help
 ```
 
-Frontend production build:
+No se debe reentrenar ni cambiar umbrales sin un dataset versionado, separación train/validation/test y métricas reproducibles. La identidad, métricas declaradas, límites y huecos de procedencia del bundle actual están en [MODEL_CARD.md](MODEL_CARD.md).
+
+## Datos y limpieza
+
+`data/` es almacenamiento de ejecución y no se versiona. Puede contener:
+
+- FITS descargados.
+- `astrodoncel.db`.
+- `station_coords.json` aprendido de cabeceras.
+- caché GOES.
+- artefactos de tareas.
+
+La limpieza de FITS es dry-run por defecto:
 
 ```powershell
-cd frontend
-npm run build
+.\.venv\Scripts\python.exe tools/prune_cache.py --data-dir data --max-gb 20 --max-age-days 90
 ```
 
-Preview frontend production build locally:
+Añade `--apply` únicamente después de revisar la lista. El script no borra SQLite, GOES ni artefactos de tareas.
 
-```powershell
-cd frontend
-npm run preview
-```
+## Interpretación científica
 
-## Notes and Limitations
+- Frecuencia: MHz.
+- Tiempo: UTC.
+- Deriva: MHz/s.
+- La intensidad `relative digits` es instrumental y no una densidad de flujo calibrada.
+- `median_dB` es una conversión instrumental, no calibración absoluta.
+- Background y RFI son transformaciones algorítmicas cuyos parámetros deben acompañar a cualquier producto exportado.
+- El detector CNN+MIL ofrece candidatos probabilísticos; no sustituye validación experta.
+- El localizador visual de fallback es heurístico.
+- El cálculo Type II devuelve una advertencia experimental y no incluye todavía incertidumbres completas.
 
-- The first request for a file may be slower if the backend needs to download it.
-- The first GOES request for a date may be slower because SunPy fetches external data.
-- Local cache files are runtime artefacts, not source code.
-- The automatic burst detector uses CPU inference and can be slower on small machines.
-- Some station coordinates are approximate until learned from real FITS headers.
-- Multi-station comparisons depend on matching 15-minute time blocks across stations.
+## Limitaciones conocidas
 
-## Credits and References
+- Primera consulta lenta si debe descargar FITS o GOES.
+- El catálogo y las listas de ficheros dependen de servicios ETHZ externos.
+- La cancelación es cooperativa: una operación científica individual no se interrumpe hasta alcanzar el siguiente punto de control.
+- Hay pruebas frontend de los paneles críticos, pero aún falta un E2E de navegador en CI y mayor cobertura de respuestas fuera de orden.
+- El bundle parcial de Plotly reduce mucho la carga, aunque su chunk principal sigue superando 1 MB sin comprimir.
+- La validación completa Docker/NAS y PostgreSQL queda pendiente en el host objetivo.
+- Falta elegir la licencia raíz y confirmar por escrito la redistribución de los pesos; véanse [MODEL_CARD.md](MODEL_CARD.md) y [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-- e-CALLISTO network and ETHZ archive.
-- RFI and burst-detection ideas adapted from tools by Sahan S. Liyanage.
-- GOES/XRS data access through SunPy/Fido.
-- Built with FastAPI, astropy, numpy, scipy, SunPy, React, Vite and Plotly.js.
+## Créditos
+
+- Red e-CALLISTO y archivo ETHZ.
+- Universidad de Alcalá y proyecto AstroDoncel.
+- Herramientas y algoritmos de referencia de Sahan S. Liyanage, adaptados con cambios propios.
+- SunPy/Fido para acceso a GOES.
+- FastAPI, Astropy, NumPy, SciPy, SQLAlchemy, ONNX Runtime, React, Vite y Plotly.
+
+El registro de atribución y asuntos legales pendientes está en [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

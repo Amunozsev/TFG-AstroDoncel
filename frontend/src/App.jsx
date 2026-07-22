@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, useEffect, useCallback } from 'react';
+import { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react';
 import { API_BASE_URL, apiFetch } from './api';
 import './App.css';
 
@@ -83,6 +83,7 @@ export default function App() {
   const [burstResults, setBurstResults]     = useState({});
   const [burstDetecting, setBurstDetecting] = useState(false);
   const [taskStatus, setTaskStatus]         = useState(null);
+  const taskRunRef = useRef(0);
 
   useEffect(() => {
     if (!showHeaderViewer) return undefined;
@@ -115,7 +116,7 @@ export default function App() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Reload burst list when primary station or date changes ────────────────
-  const loadFiles = useCallback(async (st, dt) => {
+  const loadFiles = useCallback(async (st, dt, signal) => {
     setFiles([]);
     setSelectedFile(null);
     setCollapsedHours({});
@@ -123,7 +124,8 @@ export default function App() {
     setFilesLoading(true);
     try {
       const res = await apiFetch(
-        `/api/files?station=${encodeURIComponent(st)}&date=${encodeURIComponent(dt)}`
+        `/api/files?station=${encodeURIComponent(st)}&date=${encodeURIComponent(dt)}`,
+        { signal },
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -132,15 +134,22 @@ export default function App() {
         setSelectedFile(data.files[0].filename);
       }
     } catch (err) {
-      console.warn('Could not load burst list:', err.message);
+      if (!signal.aborted) console.warn('Could not load burst list:', err.message);
     } finally {
-      setFilesLoading(false);
+      if (!signal.aborted) setFilesLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    queueMicrotask(() => loadFiles(station, date));
+    const controller = new AbortController();
+    queueMicrotask(() => loadFiles(station, date, controller.signal));
+    return () => controller.abort();
   }, [station, date, loadFiles]);
+
+  useEffect(() => {
+    taskRunRef.current += 1;
+    queueMicrotask(() => setTaskStatus(null));
+  }, [station, date]);
 
   useEffect(() => {
     if (!pendingEventTime || files.length === 0) return;
@@ -163,6 +172,7 @@ export default function App() {
     if (!hasLoaded || triggerLoad === 0) return;
     if (selectedStations.length === 0) return;
 
+    const controller = new AbortController();
     async function fetchLayers() {
       setFetchLoading(true);
       setFetchError(null);
@@ -190,7 +200,7 @@ export default function App() {
           const ordered = [station, ...selectedStations.filter((s) => s !== station)]
             .filter(Boolean);
           ordered.forEach((s) => params.append('stations', s));
-          const res = await apiFetch(`/api/spectrogram/combine?${params}`);
+          const res = await apiFetch(`/api/spectrogram/combine?${params}`, { signal: controller.signal });
           if (!res.ok) {
             const body = await res.json().catch(() => ({}));
             throw new Error(body.detail ?? `Error ${res.status}`);
@@ -208,7 +218,7 @@ export default function App() {
             ...rfiQS,
           });
           if (selectedFile) params.set('filename', selectedFile);
-          const res = await apiFetch(`/api/spectrogram?${params}`);
+          const res = await apiFetch(`/api/spectrogram?${params}`, { signal: controller.signal });
           if (!res.ok) {
             const body = await res.json().catch(() => ({}));
             throw new Error(body.detail ?? `Error ${res.status}`);
@@ -234,15 +244,18 @@ export default function App() {
           setZmax(Math.round(newLayers[0].vmax * 10) / 10);
         }
       } catch (err) {
-        setFetchError(err.message);
-        setLayers([]);
-        setFailedStations([]);
+        if (!controller.signal.aborted) {
+          setFetchError(err.message);
+          setLayers([]);
+          setFailedStations([]);
+        }
       } finally {
-        setFetchLoading(false);
+        if (!controller.signal.aborted) setFetchLoading(false);
       }
     }
 
     fetchLayers();
+    return () => controller.abort();
   }, [triggerLoad]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleLoad() {
@@ -305,7 +318,9 @@ export default function App() {
 
   async function startTask(type, options = {}) {
     if (!station) return;
-    setTaskStatus({ status: 'submitting', progress: 0, type });
+    const runId = ++taskRunRef.current;
+    const context = { station, date };
+    setTaskStatus({ status: 'submitting', progress: 0, type, ...context });
     try {
       const response = await apiFetch('/api/tasks', {
         method: 'POST', body: JSON.stringify({ type, station, date, options }),
@@ -313,14 +328,18 @@ export default function App() {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const created = await response.json();
       let current = created;
-      while (['queued', 'running'].includes(current.status)) {
+      while (['queued', 'running', 'cancel_requested'].includes(current.status)) {
         await new Promise((resolve) => window.setTimeout(resolve, 1500));
+        if (taskRunRef.current !== runId) return;
         const poll = await apiFetch(`/api/tasks/${created.id}`);
         if (!poll.ok) throw new Error(`HTTP ${poll.status}`);
-        current = await poll.json(); setTaskStatus(current);
+        current = await poll.json();
+        if (taskRunRef.current === runId) setTaskStatus({ ...current, ...context });
       }
     } catch (cause) {
-      setTaskStatus({ status: 'failed', error: cause.message, type });
+      if (taskRunRef.current === runId) {
+        setTaskStatus({ status: 'failed', error: cause.message, type, ...context });
+      }
     }
   }
 
@@ -654,7 +673,7 @@ export default function App() {
             }} disabled={!station || files.length < 2 || ['submitting', 'queued', 'running'].includes(taskStatus?.status)}>Combine next blocks</button>
             {layers[0] && <>
               <a className="btn-tool" href={`${API_BASE_URL}/api/files/download?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename })}`}>Download FITS</a>
-              <a className="btn-tool" href={`${API_BASE_URL}/api/spectrogram/export?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename, rfi: useSahanFilter })}`}>Export processed FITS</a>
+              <a className="btn-tool" href={`${API_BASE_URL}/api/spectrogram/export?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename, rfi: useSahanFilter, rfi_z_thresh: rfiParams.zThresh, rfi_occupancy: rfiParams.occupancy, rfi_min_component: rfiParams.minComponent, rfi_impulsive: rfiParams.impulsive })}`}>Export processed FITS</a>
             </>}
             {taskStatus && <span className={`task-status ${taskStatus.status}`} role="status">Job: {taskStatus.status}{Number.isFinite(taskStatus.progress) ? ` · ${Math.round(taskStatus.progress * 100)}%` : ''}{taskStatus.error ? ` · ${taskStatus.error}` : ''}{taskStatus.result?.artifact_url ? <a href={`${API_BASE_URL}${taskStatus.result.artifact_url}`}>Open result</a> : null}</span>}
             {Object.entries(burstResults).map(([st, r]) => (
@@ -722,7 +741,7 @@ export default function App() {
         <div className="dashboard">
 
       {/* ── Sidebar: observation essentials only ── */}
-      <aside className="sidebar">
+      <aside className={`sidebar${files.length > 0 ? ' has-files' : ''}`}>
         <div className="sidebar-header">
           <h1>e-CALLISTO<br /><span>Spain</span></h1>
           <p className="sidebar-subtitle">Solar Spectrogram Portal</p>
@@ -938,8 +957,8 @@ export default function App() {
           rulerMode={rulerMode}
           burstResults={burstResults}
         />
-        <LightCurvePanel layer={layers[0]} />
-        {taskStatus?.status === 'succeeded' && taskStatus.type === 'spectral_overview' && taskStatus.result?.artifact_url && <DailyOverview artifactUrl={taskStatus.result.artifact_url} />}
+        <LightCurvePanel key={layers[0] ? `${layers[0].station}:${layers[0].date}:${layers[0].filename}` : 'empty'} layer={layers[0]} />
+        {taskStatus?.status === 'succeeded' && taskStatus.type === 'spectral_overview' && taskStatus.result?.artifact_url && <DailyOverview key={taskStatus.id} artifactUrl={taskStatus.result.artifact_url} />}
       </main>
 
       {/* ── FITS header viewer modal ── */}

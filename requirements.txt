@@ -13,8 +13,6 @@ scipy==1.18.0
 
 # GOES/XRS overlay through SunPy/Fido
 sunpy[net,timeseries]==8.0.0
-mpl-animators==1.2.4
-pandas==3.0.3
 
 # Lightweight ML inference (PyTorch is development/export only)
 onnxruntime==1.22.0
