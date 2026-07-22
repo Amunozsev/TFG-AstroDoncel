@@ -8,10 +8,18 @@
 # Variables de entorno
 .env
 .env.*
+!.env.example
 
 # Caché de Python
 **/__pycache__/
 **/*.pyc
+/.pytest_cache/
+/.ruff_cache/
+.coverage
+htmlcov/
+
+# Logs locales
+*.log
 
 # JSON generado por el script (artefacto derivado de /data)
 frontend/public/datos_prueba.json

@@ -2,7 +2,7 @@ from logging.config import fileConfig
 
 from alembic import context
 
-from backend.db import Base, DATABASE_URL
+from backend.db import DATABASE_URL, Base
 
 config = context.config
 config.set_main_option("sqlalchemy.url", DATABASE_URL)

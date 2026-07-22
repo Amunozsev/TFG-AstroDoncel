@@ -4,12 +4,12 @@
   "created_utc": "2026-02-18T19:25:44.210205+00:00",
   "model_version": "20260218T113917Z",
   "checkpoint": {
-    "path": "/Users/saan/Desktop/Burst_No_Burst/deploy/deploy_v1/model.pt",
+    "path": "model.pt",
     "sha256": "54e071b9cf9a0013409c81d5866462b73158a98ed505bca2e0f23086a6685bb8",
     "size_bytes": 3566374
   },
   "threshold": 0.6,
-  "threshold_json": "/Users/saan/Desktop/Burst_No_Burst/deploy/deploy_v1/threshold.json",
+  "threshold_json": "threshold.json",
   "default_device": "mps",
   "config_snapshot": {
     "window": {

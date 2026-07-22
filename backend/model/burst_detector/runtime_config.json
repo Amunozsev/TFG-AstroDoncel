@@ -3,7 +3,8 @@
     "batch_size": 64,
     "min_event_windows": 3,
     "smooth_kernel": 5,
-    "threshold": 0.35
+    "threshold": 0.6,
+    "candidate_threshold": 0.4
   },
   "model": {
     "base_channels": 16,

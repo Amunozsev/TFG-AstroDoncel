@@ -25,3 +25,14 @@ def test_parse_burst_list_utc_and_source():
 def test_parse_burst_list_is_deterministic():
     first = parse_burst_list(SAMPLE)[0]["event_key"]
     assert first == parse_burst_list(SAMPLE)[0]["event_key"]
+
+
+def test_parse_burst_list_ignores_duplicate_rows():
+    duplicated = SAMPLE + "20240101\t18:02-18:03\tIII/2\tMEXICO-LANCE, (USA-ARIZONA-ERAU)\n"
+    assert len(parse_burst_list(duplicated)) == 2
+
+
+def test_parse_burst_list_rolls_end_into_next_day():
+    event = parse_burst_list("20240101\t23:58-00:04\tIII\tMRO\n")[0]
+    assert event["started_at"].isoformat() == "2024-01-01T23:58:00+00:00"
+    assert event["ended_at"].isoformat() == "2024-01-02T00:04:00+00:00"
