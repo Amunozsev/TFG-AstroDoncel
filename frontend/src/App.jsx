@@ -1,6 +1,7 @@
 import { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react';
 import { API_BASE_URL, apiFetch } from './api';
 import './App.css';
+import FullDayScanResult from './FullDayScanResult';
 
 const Spectrogram = lazy(() => import('./Spectrogram'));
 const StationsMap = lazy(() => import('./StationsMap'));
@@ -301,6 +302,7 @@ export default function App() {
   function handleOpenEvent(event, requestedStation = null) {
     const targetStation = requestedStation ?? event.stations?.[0];
     if (!targetStation) return;
+    setBurstResults({});
     changeObservationDate(event.started_at.slice(0, 10));
     setSelectedStations([targetStation]);
     setStation(targetStation);
@@ -697,7 +699,17 @@ export default function App() {
             >
               {burstDetecting ? 'Detecting…' : 'Detect current file (ML)'}
             </button>
-            <button className="btn-tool" onClick={() => startTask('burst_detect_day')} disabled={!station || ['submitting', 'queued', 'running'].includes(taskStatus?.status)}>Detect full day</button>
+            <button
+              className="btn-tool"
+              onClick={() => startTask('burst_detect_day')}
+              disabled={!station || ['submitting', 'queued', 'running'].includes(taskStatus?.status)}
+              title="Scan every FITS block for the primary station and selected UTC date"
+            >
+              {taskStatus?.type === 'burst_detect_day' && ['submitting', 'queued', 'running'].includes(taskStatus.status)
+                ? `Scanning full day · ${Math.round((taskStatus.progress ?? 0) * 100)}%`
+                : 'Scan selected station · full day'}
+            </button>
+            <p className="tool-help">Runs CNN+MIL over every block for the primary station and selected UTC date. ML candidates are saved; visual heuristics remain experimental and are excluded by default.</p>
             <fieldset className="overview-task-controls">
               <legend>Spectral overview interval (UTC)</legend>
               <label>
@@ -732,7 +744,12 @@ export default function App() {
               <a className="btn-tool" href={`${API_BASE_URL}/api/files/download?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename })}`}>Download FITS</a>
               <a className="btn-tool" href={`${API_BASE_URL}/api/spectrogram/export?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename, rfi: useSahanFilter, rfi_z_thresh: rfiParams.zThresh, rfi_occupancy: rfiParams.occupancy, rfi_min_component: rfiParams.minComponent, rfi_impulsive: rfiParams.impulsive })}`}>Export processed FITS</a>
             </>}
-            {taskStatus && <span className={`task-status ${taskStatus.status}`} role="status">Job: {taskStatus.status}{Number.isFinite(taskStatus.progress) ? ` · ${Math.round(taskStatus.progress * 100)}%` : ''}{taskStatus.error ? ` · ${taskStatus.error}` : ''}{taskStatus.result?.artifact_url ? <a href={`${API_BASE_URL}${taskStatus.result.artifact_url}`}>Open result</a> : null}</span>}
+            {taskStatus && taskStatus.type !== 'burst_detect_day' && <span className={`task-status ${taskStatus.status}`} role="status">Job: {taskStatus.status}{Number.isFinite(taskStatus.progress) ? ` · ${Math.round(taskStatus.progress * 100)}%` : ''}{taskStatus.error ? ` · ${taskStatus.error}` : ''}{taskStatus.result?.artifact_url ? <a href={`${API_BASE_URL}${taskStatus.result.artifact_url}`}>Open result</a> : null}</span>}
+            <FullDayScanResult
+              key={taskStatus?.id ?? `${taskStatus?.type ?? 'idle'}:${station ?? 'none'}:${date}`}
+              task={taskStatus}
+              onOpenEvent={handleOpenEvent}
+            />
             {Object.entries(burstResults).map(([st, r]) => (
               <span
                 key={st}
