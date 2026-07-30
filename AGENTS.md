@@ -1,6 +1,6 @@
 # AstroDoncel agent instructions
 
-- Read `ROADMAP_COMPLETO_TFG.md`, `README.md` and the real code before broad changes.
+- Read `HANDOFF.md`, `ROADMAP_COMPLETO_TFG.md`, `README.md` and the real code before broad changes.
 - Do not edit `Sahan/`; it is reference material.
 - Authoritative station coordinates come from FITS headers or live archive data, not hand-written guesses.
 - Keep the API functional without optional external services where possible.

@@ -8,7 +8,7 @@ Before opening a pull request run:
 
 ```text
 ruff check backend tests migrations tools
-pytest
+python -m pytest
 pip-audit -r requirements-dev.txt
 cd frontend
 npm run lint

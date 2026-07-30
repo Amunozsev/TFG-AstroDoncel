@@ -15,7 +15,7 @@ jobs:
           POSTGRES_PASSWORD: test-password
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U astrodoncel"
+          --health-cmd "pg_isready -U astrodoncel -d astrodoncel_test"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
@@ -30,7 +30,7 @@ jobs:
       - run: alembic upgrade head
       - run: alembic downgrade base
       - run: alembic upgrade head
-      - run: pytest
+      - run: python -m pytest
       - run: pip-audit -r requirements-dev.txt
       - run: DATABASE_URL=sqlite:////tmp/astrodoncel-migration.db alembic upgrade head
 
