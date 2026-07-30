@@ -16,7 +16,14 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from backend.catalog import ingest_month, list_events, station_statistics
+from backend.catalog import (
+    CATALOG_SOURCES,
+    DEFAULT_CATALOG_SOURCE,
+    ingest_month,
+    list_events,
+    source_label,
+    station_statistics,
+)
 from backend.db import TaskRecord, session_scope
 from backend.security import safe_join, validate_date, validate_filename_context, validate_station
 
@@ -51,12 +58,28 @@ def _range(start: str, end: str | None) -> tuple[datetime, datetime]:
     return start_dt, end_dt
 
 
-def _ensure_months(start: datetime, end: datetime) -> list[str]:
+def _task_instant(value: object, field_name: str) -> datetime:
+    if not isinstance(value, str):
+        raise HTTPException(status_code=422, detail=f"{field_name} must be an ISO date-time")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"{field_name} must be an ISO date-time") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _ensure_months(
+    start: datetime,
+    end: datetime,
+    source: str = DEFAULT_CATALOG_SOURCE,
+) -> list[str]:
     warnings: list[str] = []
     cursor = start.replace(day=1)
     while cursor < end:
         try:
-            ingest_month(cursor.year, cursor.month)
+            ingest_month(cursor.year, cursor.month, source=source)
         except Exception as exc:
             warnings.append(f"{cursor:%Y-%m}: {exc}")
         cursor = (cursor + timedelta(days=32)).replace(day=1)
@@ -69,7 +92,7 @@ def get_bursts(
     end: str | None = Query(None, description="Exclusive YYYY-MM-DD"),
     station: str | None = None,
     burst_type: str | None = Query(None, alias="type"),
-    source: str | None = None,
+    source: str = DEFAULT_CATALOG_SOURCE,
 ):
     start_dt, end_dt = _range(start, end)
     if station:
@@ -77,28 +100,64 @@ def get_bursts(
             station = validate_station(station)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-    warnings = _ensure_months(start_dt, end_dt)
+    if source not in CATALOG_SOURCES:
+        raise HTTPException(status_code=422, detail=f"Unknown catalogue source: {source}")
+    warnings = _ensure_months(start_dt, end_dt, source)
     events = list_events(start_dt, end_dt, station, burst_type, source)
-    return {"events": events, "count": len(events), "warnings": warnings}
+    return {
+        "events": events,
+        "count": len(events),
+        "source": source,
+        "source_label": source_label(source),
+        "available_sources": [
+            {"id": key, "label": value["label"]}
+            for key, value in CATALOG_SOURCES.items()
+        ],
+        "warnings": warnings,
+    }
 
 
 @router.get("/stats/stations")
-def get_station_stats(start: str, end: str | None = None):
+def get_station_stats(
+    start: str,
+    end: str | None = None,
+    source: str = DEFAULT_CATALOG_SOURCE,
+):
     start_dt, end_dt = _range(start, end)
-    warnings = _ensure_months(start_dt, end_dt)
-    ranking = station_statistics(start_dt, end_dt)
-    return {"ranking": ranking, "count": len(ranking), "warnings": warnings}
+    if source not in CATALOG_SOURCES:
+        raise HTTPException(status_code=422, detail=f"Unknown catalogue source: {source}")
+    warnings = _ensure_months(start_dt, end_dt, source)
+    ranking = station_statistics(start_dt, end_dt, source)
+    return {
+        "ranking": ranking,
+        "count": len(ranking),
+        "source": source,
+        "source_label": source_label(source),
+        "warnings": warnings,
+    }
 
 
 @router.get("/stats/timeline")
-def get_event_timeline(start: str, end: str | None = None):
+def get_event_timeline(
+    start: str,
+    end: str | None = None,
+    source: str = DEFAULT_CATALOG_SOURCE,
+):
     start_dt, end_dt = _range(start, end)
-    _ensure_months(start_dt, end_dt)
+    if source not in CATALOG_SOURCES:
+        raise HTTPException(status_code=422, detail=f"Unknown catalogue source: {source}")
+    _ensure_months(start_dt, end_dt, source)
     counts: dict[str, int] = {}
-    for event in list_events(start_dt, end_dt):
+    for event in list_events(start_dt, end_dt, source=source):
         day = event["started_at"][:10]
         counts[day] = counts.get(day, 0) + 1
-    return {"points": [{"date": day, "count": counts[day]} for day in sorted(counts)]}
+    points = []
+    cursor = start_dt
+    while cursor < end_dt:
+        day = cursor.date().isoformat()
+        points.append({"date": day, "count": counts.get(day, 0)})
+        cursor += timedelta(days=1)
+    return {"points": points, "source": source, "source_label": source_label(source)}
 
 
 @router.get("/xmatch")
@@ -107,7 +166,7 @@ def cross_match_events(start: str, end: str | None = None, tolerance_minutes: in
     start_dt, end_dt = _range(start, end)
     events = list_events(start_dt, end_dt)
     ml = [event for event in events if event["source"] == "ml_cnn"]
-    official = [event for event in events if event["source"].startswith("official")]
+    official = [event for event in events if event["source"] in CATALOG_SOURCES]
     tolerance = timedelta(minutes=tolerance_minutes)
     matches = []
     for candidate in ml:
@@ -119,6 +178,74 @@ def cross_match_events(start: str, end: str | None = None, tolerance_minutes: in
                 compatible.append(report)
         matches.append({"candidate": candidate, "reports": compatible})
     return {"matches": matches, "candidate_count": len(ml), "matched_count": sum(bool(item["reports"]) for item in matches)}
+
+
+@router.get("/xmatch/timeline")
+def get_xmatch_timeline(
+    date: str,
+    source: str = DEFAULT_CATALOG_SOURCE,
+):
+    """Build an interactive station/event timeline from live archive evidence."""
+    from backend import main as core
+
+    try:
+        validate_date(date)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if source not in CATALOG_SOURCES:
+        raise HTTPException(status_code=422, detail=f"Unknown catalogue source: {source}")
+    start_at = datetime.fromisoformat(date).replace(tzinfo=timezone.utc)
+    end_at = start_at + timedelta(days=1)
+    warnings = _ensure_months(start_at, end_at, source)
+    events = list_events(start_at, end_at, source=source)
+    inventory = core._archive_inventory_for_date(date)
+    stations = set(inventory)
+    for event in events:
+        stations.update(event["stations"])
+
+    nominal_minutes = int(os.environ.get("XMATCH_NOMINAL_BLOCK_MINUTES", "15"))
+    rows = []
+    for station in sorted(stations):
+        starts: list[datetime] = []
+        for filename in inventory.get(station, []):
+            raw_time = core._time_from_filename(filename)
+            try:
+                starts.append(datetime.fromisoformat(f"{date}T{raw_time}+00:00"))
+            except ValueError:
+                continue
+        merged: list[list[datetime]] = []
+        for started in sorted(set(starts)):
+            ended = min(started + timedelta(minutes=nominal_minutes), end_at)
+            if merged and started <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], ended)
+            else:
+                merged.append([started, ended])
+        station_events = [
+            event for event in events
+            if station in event["stations"]
+        ]
+        rows.append({
+            "station": station,
+            "positive": bool(station_events),
+            "availability": [
+                {"start_at": started.isoformat(), "end_at": ended.isoformat()}
+                for started, ended in merged
+            ],
+            "events": station_events,
+        })
+    return {
+        "date": date,
+        "source": source,
+        "source_label": source_label(source),
+        "rows": rows,
+        "station_count": len(rows),
+        "positive_count": sum(row["positive"] for row in rows),
+        "availability_basis": (
+            "Heuristic intervals inferred from live archive filename start times "
+            f"using a nominal {nominal_minutes}-minute block duration."
+        ),
+        "warnings": warnings,
+    }
 
 
 @router.post("/analysis/type-ii-band-split")
@@ -250,6 +377,33 @@ def create_task(task: TaskCreate):
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     options = dict(task.options)
+    if task.type == "spectral_overview":
+        requested_stations = options.get("stations", [station])
+        max_stations = int(os.environ.get("OVERVIEW_MAX_STATIONS", "120"))
+        if not isinstance(requested_stations, list) or not 1 <= len(requested_stations) <= max_stations:
+            raise HTTPException(
+                status_code=422,
+                detail=f"spectral_overview needs 1 to {max_stations} stations",
+            )
+        try:
+            requested_stations = list(dict.fromkeys(validate_station(item) for item in requested_stations))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        default_start = datetime.fromisoformat(date).replace(tzinfo=timezone.utc)
+        start_at = _task_instant(options.get("start_at", default_start.isoformat()), "start_at")
+        end_at = _task_instant(
+            options.get("end_at", (default_start + timedelta(days=1)).isoformat()),
+            "end_at",
+        )
+        max_hours = float(os.environ.get("OVERVIEW_MAX_HOURS", "72"))
+        if end_at <= start_at or end_at - start_at > timedelta(hours=max_hours):
+            raise HTTPException(
+                status_code=422,
+                detail=f"spectral_overview interval must be positive and at most {max_hours:g} hours",
+            )
+        options["stations"] = requested_stations
+        options["start_at"] = start_at.isoformat()
+        options["end_at"] = end_at.isoformat()
     if task.type == "combine_time":
         filenames = options.get("filenames")
         if not isinstance(filenames, list) or not 2 <= len(filenames) <= 16:

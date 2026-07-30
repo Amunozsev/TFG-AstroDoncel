@@ -35,6 +35,8 @@ class Station(Base):
     lat: Mapped[float | None] = mapped_column(Float)
     lon: Mapped[float | None] = mapped_column(Float)
     coord_source: Mapped[str | None] = mapped_column(String(20))
+    first_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
@@ -60,6 +62,9 @@ class BurstEvent(Base):
     ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     burst_type: Mapped[str | None] = mapped_column(String(30), index=True)
     intensity: Mapped[int | None] = mapped_column(Integer)
+    min_lon: Mapped[float | None] = mapped_column(Float)
+    mid_lon: Mapped[float | None] = mapped_column(Float)
+    max_lon: Mapped[float | None] = mapped_column(Float)
     stations: Mapped[list] = mapped_column(JSON_TYPE, default=list)
     score: Mapped[float | None] = mapped_column(Float)
     metadata_json: Mapped[dict] = mapped_column(JSON_TYPE, default=dict)

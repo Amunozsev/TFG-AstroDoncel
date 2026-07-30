@@ -134,7 +134,12 @@ def _burst_detect_day(task: TaskRecord) -> dict:
                     if not exists:
                         reports = session.scalars(
                             select(BurstEvent).where(
-                                BurstEvent.source.like("official%"),
+                                BurstEvent.source.in_([
+                                    "dearce_v3",
+                                    "ecallisto_v2",
+                                    "legacy_monthly",
+                                    "official_v2",
+                                ]),
                                 BurstEvent.started_at <= ended,
                                 BurstEvent.ended_at >= started,
                             )
@@ -160,46 +165,137 @@ def _burst_detect_day(task: TaskRecord) -> dict:
 def _spectral_overview(task: TaskRecord) -> dict:
     from backend import main as core
 
-    station, date = task.payload["station"], task.payload["date"]
-    filenames = sorted(set(core._list_local_fits_files(station, date)) | set(core._list_ethz_files(station, date)))
-    loaded = []
-    for index, filename in enumerate(filenames):
+    options = task.payload.get("options", {})
+    stations = options.get("stations") or [task.payload["station"]]
+    start_at = datetime.fromisoformat(
+        options.get("start_at", f"{task.payload['date']}T00:00:00+00:00")
+    ).astimezone(timezone.utc)
+    end_at = datetime.fromisoformat(
+        options.get("end_at", f"{task.payload['date']}T23:59:59+00:00")
+    ).astimezone(timezone.utc)
+
+    dates = []
+    cursor = start_at.date()
+    while cursor <= end_at.date():
+        dates.append(cursor.isoformat())
+        cursor += timedelta(days=1)
+
+    work: list[tuple[str, str, str]] = []
+    for station in stations:
+        for date in dates:
+            filenames = sorted(
+                set(core._list_local_fits_files(station, date))
+                | set(core._list_ethz_files(station, date))
+            )
+            work.extend((station, date, filename) for filename in filenames)
+
+    loaded_by_station: dict[str, list[dict]] = {station: [] for station in stations}
+    errors_by_station: dict[str, int] = {station: 0 for station in stations}
+    for index, (station, date, filename) in enumerate(work):
         _check_cancelled(task.id)
         try:
             path = core._download_from_ethz(station, date, filename)
+            if not path:
+                raise ValueError("FITS file could not be downloaded")
             raw, frequencies, time_values, header = core._load_raw_cached(path)
             labels = core._times_to_utc(time_values, header)
-            width = min(160, raw.shape[1])
-            edges = np.linspace(0, raw.shape[1], width + 1, dtype=int)
+            instants = [
+                datetime.fromisoformat(label.replace("Z", "+00:00")).astimezone(timezone.utc)
+                for label in labels
+            ]
+            selected_indices = [
+                item for item, instant in enumerate(instants)
+                if start_at <= instant < end_at
+            ]
+            if not selected_indices:
+                continue
+            selected_raw = raw[:, selected_indices]
+            selected_labels = [labels[item] for item in selected_indices]
+            width = min(120, selected_raw.shape[1])
+            edges = np.linspace(0, selected_raw.shape[1], width + 1, dtype=int)
             # Maximum preserves short burst peaks that a block mean can erase.
-            reduced = np.stack([np.nanmax(raw[:, edges[i]:max(edges[i] + 1, edges[i + 1])], axis=1) for i in range(width)], axis=1)
-            label_indices = np.minimum(raw.shape[1] - 1, (edges[:-1] + edges[1:]) // 2)
-            loaded.append({
-                "filename": filename, "freqs": np.asarray(frequencies), "raw": reduced,
-                "times": [labels[int(item)] for item in label_indices],
+            reduced = np.stack([
+                np.nanmax(
+                    selected_raw[:, edges[item]:max(edges[item] + 1, edges[item + 1])],
+                    axis=1,
+                )
+                for item in range(width)
+            ], axis=1)
+            label_indices = np.minimum(
+                selected_raw.shape[1] - 1,
+                (edges[:-1] + edges[1:]) // 2,
+            )
+            loaded_by_station[station].append({
+                "filename": filename,
+                "freqs": np.asarray(frequencies),
+                "raw": reduced,
+                "times": [selected_labels[int(item)] for item in label_indices],
             })
         except Exception:
-            continue
-        _update(task.id, progress=(index + 1) / max(1, len(filenames)))
-    if not loaded:
-        raise ValueError("No compatible FITS files were available for the daily overview")
-    # Use the largest compatible receiver/frequency group.
-    groups: dict[tuple, list[dict]] = {}
-    for segment in loaded:
-        key = tuple(np.round(segment["freqs"], 3).tolist())
-        groups.setdefault(key, []).append(segment)
-    selected = max(groups.values(), key=len)
-    baseline = np.nanmedian(np.concatenate([segment["raw"] for segment in selected], axis=1), axis=1, keepdims=True)
-    panels = [{"start_hour": hour, "end_hour": hour + 4, "segments": []} for hour in range(0, 24, 4)]
-    for segment in selected:
-        hour = int(segment["times"][0][11:13])
-        processed = np.nan_to_num(segment["raw"] - baseline)
-        panels[min(5, hour // 4)]["segments"].append({
-            "filename": segment["filename"], "time_axis": segment["times"],
-            "freq_axis": np.round(segment["freqs"], 3).tolist(), "z": np.round(processed, 4).tolist(),
+            errors_by_station[station] += 1
+            logger.debug("Overview skipped %s/%s", station, filename, exc_info=True)
+        finally:
+            _update(task.id, progress=(index + 1) / max(1, len(work)) * 0.9)
+
+    station_results = []
+    total_segments = 0
+    for station in stations:
+        grouped: dict[tuple, list[dict]] = {}
+        for segment in loaded_by_station[station]:
+            key = tuple(np.round(segment["freqs"], 3).tolist())
+            grouped.setdefault(key, []).append(segment)
+        receiver_groups = []
+        for group_index, segments in enumerate(grouped.values(), start=1):
+            combined = np.concatenate([segment["raw"] for segment in segments], axis=1)
+            baseline = np.nanmedian(combined, axis=1, keepdims=True)
+            processed_group = np.nan_to_num(combined - baseline)
+            vmin, vmax = core._percentile_clip_global(processed_group)
+            output_segments = []
+            for segment in segments:
+                processed = np.nan_to_num(segment["raw"] - baseline)
+                output_segments.append({
+                    "filename": segment["filename"],
+                    "time_axis": segment["times"],
+                    "freq_axis": np.round(segment["freqs"], 3).tolist(),
+                    "z": np.round(processed, 4).tolist(),
+                })
+            frequencies = segments[0]["freqs"]
+            receiver_groups.append({
+                "id": group_index,
+                "frequency_min_mhz": round(float(np.nanmin(frequencies)), 3),
+                "frequency_max_mhz": round(float(np.nanmax(frequencies)), 3),
+                "vmin": vmin,
+                "vmax": vmax,
+                "segments": output_segments,
+            })
+            total_segments += len(output_segments)
+        station_results.append({
+            "station": station,
+            "status": "ok" if receiver_groups else "no_data",
+            "groups": receiver_groups,
+            "files_skipped": errors_by_station[station],
         })
-    artifact = _write_artifact(task.id, {"station": station, "date": date, "panels": panels, "baseline": "daily_median", "downsample": "peak_preserving"})
-    return {"segments": len(selected), "panels": 6, "artifact_url": f"/api/tasks/{task.id}/artifact", "artifact": artifact}
+
+    if not any(result["status"] == "ok" for result in station_results):
+        raise ValueError("No FITS observations were available inside the requested UTC interval")
+
+    payload = {
+        "start_at": start_at.isoformat(),
+        "end_at": end_at.isoformat(),
+        "stations": station_results,
+        "baseline": "median per station and compatible receiver group",
+        "intensity_unit": "relative detector digits",
+        "downsample": "peak_preserving",
+    }
+    artifact = _write_artifact(task.id, payload)
+    _update(task.id, progress=0.98)
+    return {
+        "stations_requested": len(stations),
+        "stations_with_data": sum(result["status"] == "ok" for result in station_results),
+        "segments": total_segments,
+        "artifact_url": f"/api/tasks/{task.id}/artifact",
+        "artifact": artifact,
+    }
 
 
 def _combine_time(task: TaskRecord) -> dict:

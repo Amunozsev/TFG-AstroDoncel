@@ -347,7 +347,14 @@ def _record_station_coords(station: str, header) -> bool:
     _save_coord_registry()
     try:
         with session_scope() as session:
-            session.merge(Station(name=name, lat=coords[0], lon=coords[1], coord_source="fits"))
+            station = session.get(Station, name)
+            if station is None:
+                session.add(Station(name=name, lat=coords[0], lon=coords[1], coord_source="fits"))
+            else:
+                station.lat = coords[0]
+                station.lon = coords[1]
+                station.coord_source = "fits"
+                station.updated_at = datetime.now(timezone.utc)
     except Exception as exc:
         logger.debug("Could not persist station coordinates in database: %s", exc)
     logger.info("Learned coordinates for %s from FITS: %.4f, %.4f", name, *coords)
@@ -486,6 +493,9 @@ class GoesResponse(BaseModel):
 class StationsResponse(BaseModel):
     stations: list[str]
     source: str
+    reference_date: str = ""
+    refreshed_at: datetime | None = None
+    details: list[dict] = Field(default_factory=list)
 
 
 class StationGeo(BaseModel):
@@ -604,30 +614,56 @@ def _list_local_fits_files(station: str, date: str) -> list[str]:
     return sorted(set(found))
 
 
-def _list_ethz_files(station: str, date: str) -> list[str]:
-    """Scan the ETHZ HTTP index and return available filenames."""
+_ARCHIVE_DAY_CACHE: dict[str, tuple[float, dict[str, list[str]]]] = {}
+_ARCHIVE_DAY_CACHE_LOCK = threading.Lock()
+
+
+def _archive_inventory_for_date(date: str) -> dict[str, list[str]]:
+    """Return the live archive's station-to-filenames inventory for one UTC day."""
     try:
+        validate_date(date)
         dt = datetime.strptime(date, "%Y-%m-%d")
     except ValueError:
-        return []
+        return {}
+    now = datetime.now(timezone.utc).timestamp()
+    ttl = float(os.environ.get("ARCHIVE_INDEX_REFRESH_MINUTES", "60")) * 60.0
+    with _ARCHIVE_DAY_CACHE_LOCK:
+        cached = _ARCHIVE_DAY_CACHE.get(date)
+    if cached and now - cached[0] < ttl:
+        return cached[1]
+
     dir_url = f"{ETHZ_BASE_URL}/{dt.strftime('%Y/%m/%d')}/"
     try:
         req = Request(dir_url, headers={"User-Agent": "AstroDoncel/1.0"})
         with urlopen(req, timeout=15) as resp:
             page = resp.read().decode("utf-8", errors="replace")
     except Exception:
+        return cached[1] if cached else {}
+
+    expected_date = dt.strftime("%Y%m%d")
+    inventory: dict[str, list[str]] = {}
+    for raw_name in re.findall(r'href="([^"]+\.fits?(?:\.gz)?)"', page, re.IGNORECASE):
+        filename = os.path.basename(html.unescape(raw_name))
+        station = _station_from_filename(filename)
+        if station is None or f"_{expected_date}_" not in filename.upper():
+            continue
+        inventory.setdefault(station, []).append(filename)
+    inventory = {
+        station: sorted(set(filenames))
+        for station, filenames in inventory.items()
+    }
+    with _ARCHIVE_DAY_CACHE_LOCK:
+        _ARCHIVE_DAY_CACHE[date] = (now, inventory)
+    return inventory
+
+
+def _list_ethz_files(station: str, date: str) -> list[str]:
+    """Return the filenames advertised by the live ETHZ archive index."""
+    try:
+        station = validate_station(station)
+    except ValueError:
         return []
-    date_str = dt.strftime("%Y%m%d")
-    # Permissive: matches with or without trailing _NN, and .fit/.fits/.fit.gz/.fits.gz
-    prefix_re = re.compile(
-        r'href="(' + re.escape(station.upper()) + r'_' + date_str + r'_\d{6}.*?\.fits?(?:\.gz)?)"',
-        re.IGNORECASE,
-    )
-    matches = sorted(set(prefix_re.findall(page)))
-    if not matches:
-        all_files = re.findall(r'href="([^"]+\.fits?(?:\.gz)?)"', page, re.IGNORECASE)
-        matches = sorted(c for c in all_files if html.unescape(c).upper().startswith(station.upper() + "_"))
-    return matches
+    return _archive_inventory_for_date(date).get(station.upper(), [])
 
 
 def _download_from_ethz(station: str, date: str, filename: str | None = None) -> str | None:
@@ -1403,8 +1439,44 @@ def _burst_counts_for_month(year: int, month: int) -> dict[str, int]:
 # number of client refreshes are served from memory instead of hammering the
 # external ETHZ server (soleil.i4ds.ch).
 _STATION_SCAN_CACHE: tuple[float, list[str], str] | None = None
-_STATION_SCAN_TTL = 300.0  # seconds
 _STATION_SCAN_LOCK = threading.Lock()
+
+
+def _persist_station_inventory(names: list[str], reference_date: str) -> None:
+    """Persist archive-derived sightings without overwriting FITS coordinates."""
+    if not names or not reference_date:
+        return
+    observed = datetime.strptime(reference_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    with session_scope() as session:
+        for name in names:
+            station = session.get(Station, name)
+            if station is None:
+                session.add(Station(
+                    name=name,
+                    first_seen_at=observed,
+                    last_seen_at=observed,
+                    updated_at=now,
+                ))
+            else:
+                first_seen = station.first_seen_at
+                last_seen = station.last_seen_at
+                if first_seen and first_seen.tzinfo is None:
+                    first_seen = first_seen.replace(tzinfo=timezone.utc)
+                if last_seen and last_seen.tzinfo is None:
+                    last_seen = last_seen.replace(tzinfo=timezone.utc)
+                station.first_seen_at = min(first_seen or observed, observed)
+                station.last_seen_at = max(last_seen or observed, observed)
+                station.updated_at = now
+
+
+def _known_station_names() -> set[str]:
+    try:
+        with session_scope() as session:
+            return set(session.scalars(select(Station.name)).all())
+    except Exception as exc:
+        logger.debug("Persisted station catalogue unavailable: %s", exc)
+        return set()
 
 
 def _scan_recent_ethz_stations() -> tuple[list[str], str]:
@@ -1416,34 +1488,31 @@ def _scan_recent_ethz_stations() -> tuple[list[str], str]:
     """
     global _STATION_SCAN_CACHE
     now = datetime.now(timezone.utc).timestamp()
+    ttl = float(os.environ.get("STATION_REFRESH_MINUTES", "60")) * 60.0
     with _STATION_SCAN_LOCK:
         cached = _STATION_SCAN_CACHE
-    if cached and (now - cached[0]) < _STATION_SCAN_TTL:
+    if cached and (now - cached[0]) < ttl:
         return cached[1], cached[2]
 
+    latest: tuple[list[str], str] | None = None
     for days_back in range(0, 8):
         dt = datetime.now(timezone.utc) - timedelta(days=days_back)
-        dir_url = f"{ETHZ_BASE_URL}/{dt.strftime('%Y/%m/%d')}/"
-        try:
-            req = Request(dir_url, headers={"User-Agent": "AstroDoncel/1.0"})
-            with urlopen(req, timeout=10) as resp:
-                page = resp.read().decode("utf-8", errors="replace")
-            # Extract station name: everything before _YYYYMMDD_HHMMSS_NN.fit[.gz]
-            pattern = re.compile(
-                r'href="([A-Za-z][A-Za-z0-9_-]*?)_\d{8}_\d{6}_\d{2}\.fit(?:\.gz)?"',
-                re.IGNORECASE,
-            )
-            names = [m.upper() for m in pattern.findall(page)]
-            if names:
-                unique = sorted(set(names))
-                ref = dt.strftime("%Y-%m-%d")
-                logger.info("Stations found in ETHZ: %d (date %s)", len(unique), ref)
-                with _STATION_SCAN_LOCK:
-                    _STATION_SCAN_CACHE = (now, unique, ref)
-                return unique, ref
-        except Exception as exc:
-            logger.debug("ETHZ stations failed for %s: %s", dt.strftime("%Y-%m-%d"), exc)
-            continue
+        ref = dt.strftime("%Y-%m-%d")
+        unique = sorted(_archive_inventory_for_date(ref))
+        if unique:
+            _persist_station_inventory(unique, ref)
+            if latest is None:
+                latest = (unique, ref)
+    if latest is not None:
+        unique, ref = latest
+        logger.info(
+            "Stations found in ETHZ: %d active on %s; recent history persisted",
+            len(unique),
+            ref,
+        )
+        with _STATION_SCAN_LOCK:
+            _STATION_SCAN_CACHE = (now, unique, ref)
+        return unique, ref
 
     # ETHZ unreachable right now — fall back to the last good scan if we have one.
     if cached:
@@ -1454,17 +1523,43 @@ def _scan_recent_ethz_stations() -> tuple[list[str], str]:
 
 @app.get("/api/stations", response_model=StationsResponse)
 def get_stations():
-    """Return the live e-Callisto station list by scanning the ETHZ archive.
+    """Return all known stations plus archive-derived active/inactive state."""
+    reporting, ref_date = _scan_recent_ethz_stations()
+    reporting_set = set(reporting)
+    known = _known_station_names()
+    catalog = sorted(known | reporting_set)
+    source = "ethz+persisted"
+    if not catalog:
+        logger.warning("No dynamic station inventory available; using bootstrap fallback")
+        catalog = list(_STATIONS_FALLBACK)
+        source = "bootstrap"
 
-    Tries the last 7 days to find a day with data. Falls back to the
-    static list if ETHZ is unreachable.
-    """
-    stations, _ref = _scan_recent_ethz_stations()
-    if stations:
-        return StationsResponse(stations=stations, source="ethz")
-
-    logger.warning("ETHZ unreachable for station list; using static fallback")
-    return StationsResponse(stations=_STATIONS_FALLBACK, source="static")
+    persisted: dict[str, Station] = {}
+    try:
+        with session_scope() as session:
+            persisted = {
+                item.name: item
+                for item in session.scalars(select(Station).where(Station.name.in_(catalog))).all()
+            }
+    except Exception as exc:
+        logger.debug("Station activity details unavailable: %s", exc)
+    details = []
+    for name in catalog:
+        stored = persisted.get(name)
+        details.append({
+            "station": name,
+            "active": name in reporting_set,
+            "first_seen_at": stored.first_seen_at.isoformat() if stored and stored.first_seen_at else None,
+            "last_seen_at": stored.last_seen_at.isoformat() if stored and stored.last_seen_at else None,
+            "coordinate_source": stored.coord_source if stored else None,
+        })
+    return StationsResponse(
+        stations=catalog,
+        source=source,
+        reference_date=ref_date,
+        refreshed_at=datetime.now(timezone.utc),
+        details=details,
+    )
 
 
 @app.get("/api/stations/geo", response_model=StationsGeoResponse)
@@ -1495,10 +1590,9 @@ def get_stations_geo():
     # The catalogue is driven by real data: stations reporting now, plus every
     # station we already know coordinates for. The hand-written list is never the
     # source of truth for *which* stations exist — only a coordinate fallback.
-    _load_coord_registry()
-    with _COORD_REGISTRY_LOCK:
-        known = set(_COORD_REGISTRY.keys())
-    catalog = reporting_set | known | set(_STATIONS_GEO.keys())
+    # Station existence comes from archive/catalog sightings. The coordinate
+    # registry is only a lookup table and must never create phantom stations.
+    catalog = reporting_set | _known_station_names()
 
     entries: list[StationGeo] = []
     unmapped: list[str] = []
