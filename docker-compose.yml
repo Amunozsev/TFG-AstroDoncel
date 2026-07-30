@@ -1,3 +1,11 @@
+name: astrodoncel
+
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   db:
     image: postgres:17-alpine
@@ -9,17 +17,22 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-astrodoncel}"]
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 5s
       timeout: 3s
       retries: 10
+      start_period: 10s
+    security_opt: [no-new-privileges:true]
+    logging: *default-logging
 
-  api:
+  migrate:
+    image: astrodoncel-backend:local
     build:
       context: .
       dockerfile: Dockerfile.api
-    restart: unless-stopped
-    env_file: .env
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    env_file: ${APP_ENV_FILE:-.env}
     environment:
       DATA_DIR_LOCAL: /data
       TASK_RESULT_DIR: /data/task_results
@@ -27,38 +40,59 @@ services:
       db:
         condition: service_healthy
     volumes:
-      - ./data:/data
-      - ${ECALLISTO_HOST_DIR:-./data}:/archive/ecallistodata:ro
+      - ${APP_DATA_SOURCE:-app_data}:/data
     read_only: true
     tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    logging: *default-logging
+
+  api:
+    image: astrodoncel-backend:local
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    env_file: ${APP_ENV_FILE:-.env}
+    environment:
+      DATA_DIR_LOCAL: /data
+      TASK_RESULT_DIR: /data/task_results
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ${APP_DATA_SOURCE:-app_data}:/data
+      - ${ECALLISTO_HOST_DIR:-./data/archive}:/archive/ecallistodata:ro
+    read_only: true
+    tmpfs: [/tmp]
+    init: true
     security_opt: [no-new-privileges:true]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=2)"]
       interval: 10s
       timeout: 3s
       retries: 6
+      start_period: 20s
+    logging: *default-logging
 
   worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
+    image: astrodoncel-backend:local
+    command: ["python", "-m", "backend.worker"]
     restart: unless-stopped
-    env_file: .env
+    env_file: ${APP_ENV_FILE:-.env}
     environment:
       DATA_DIR_LOCAL: /data
       TASK_RESULT_DIR: /data/task_results
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     volumes:
-      - ./data:/data
-      - ${ECALLISTO_HOST_DIR:-./data}:/archive/ecallistodata:ro
+      - ${APP_DATA_SOURCE:-app_data}:/data
+      - ${ECALLISTO_HOST_DIR:-./data/archive}:/archive/ecallistodata:ro
+    init: true
     security_opt: [no-new-privileges:true]
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-          cpus: "2.0"
+    mem_limit: ${WORKER_MEMORY_LIMIT:-1g}
+    cpus: ${WORKER_CPU_LIMIT:-2.0}
+    logging: *default-logging
 
   web:
     build:
@@ -66,10 +100,18 @@ services:
       dockerfile: Dockerfile.web
     restart: unless-stopped
     ports:
-      - "8080:80"
+      - "${WEB_PORT:-8080}:80"
     depends_on:
       api:
         condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    security_opt: [no-new-privileges:true]
+    logging: *default-logging
 
 volumes:
+  app_data:
   postgres_data:
