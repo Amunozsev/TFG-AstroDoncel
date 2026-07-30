@@ -15,11 +15,15 @@
 **/*.pyc
 /.pytest_cache/
 /.ruff_cache/
+/.mypy_cache/
+/.tox/
 .coverage
 htmlcov/
+frontend/coverage/
 
 # Logs locales
 *.log
+/backups/
 
 # JSON generado por el script (artefacto derivado de /data)
 frontend/public/datos_prueba.json
@@ -33,3 +37,8 @@ frontend/public/datos_prueba.json
 /ecallistolib-main/
 /Sahan/
 /sahan/
+
+# Archivos del sistema/IDE local
+.DS_Store
+Thumbs.db
+.idea/

@@ -13,6 +13,8 @@ scipy==1.18.0
 
 # GOES/XRS overlay through SunPy/Fido
 sunpy[net,timeseries]==8.0.0
+# Required by the visualization import path used from sunpy.timeseries
+mpl-animators==1.2.4
 
 # Lightweight ML inference (PyTorch is development/export only)
 onnxruntime==1.22.0
@@ -20,3 +22,6 @@ onnxruntime==1.22.0
 # Persistence (PostgreSQL in production; SQLite fallback in development)
 SQLAlchemy==2.0.41
 psycopg[binary]==3.2.9
+
+# Schema migrations are part of the production startup flow
+alembic==1.16.2

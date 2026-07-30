@@ -42,7 +42,14 @@ Siguen abiertos porque necesitan datos, infraestructura o una decisión humana: 
 - El inventario de estaciones se obtiene del índice diario ETHZ, persiste altas/último avistamiento y usa solo FITS/live archive para aprender coordenadas nuevas.
 - Nueva migración `20260728_03`; 46 pruebas backend y 3 frontend pasan. ESLint 10 elimina las vulnerabilidades conocidas del lockfile auditado.
 
-La validación Docker/NAS sigue deliberadamente fuera de esta fase y es la siguiente tarea prevista.
+El cierre de Docker/NAS comienza en la actualización del 30 de julio; la prueba de carga y permisos en el NAS físico sigue siendo específica del host objetivo.
+
+### Actualización — 30 de julio de 2026
+
+- El despliegue Compose incorpora una migración Alembic de un solo uso antes de API/worker, una única imagen backend, PostgreSQL y datos persistentes, healthchecks, límites del worker, rotación de logs y Nginx como único servicio publicado.
+- Se añadieron arranques asistidos para PowerShell y POSIX, generación segura de `.env`, comprobación de readiness y scripts de backup con hashes.
+- El perfil de dependencias conserva `httpx2` 2.7 para el `TestClient` de Starlette 1.3 y mueve Alembic al runtime porque las migraciones también se ejecutan en producción.
+- Docker Desktop 4.84 quedó instalado en el equipo de desarrollo. La ejecución local del motor sigue bloqueada por WSL 2 y virtualización de firmware desactivados; el smoke de Compose queda automatizado en CI y la prueba final de rendimiento/permisos debe realizarse en el NAS objetivo.
 
 ## 2. Estado verificado
 
@@ -89,7 +96,7 @@ GOES y tareas           combinación temporal y artefactos
 - El overview ya separa receptores incompatibles y muestra omisiones; aún hace falta validar científicamente la definición de baseline y reducción sobre un dataset de referencia.
 - El bundle Plotly bajó a ~1,24 MB sin comprimir, pero sigue siendo el principal coste de carga y merece medición de TTI/memoria.
 - `MODEL_CARD.md` y `THIRD_PARTY_NOTICES.md` registran lo conocido, pero faltan licencia raíz, upstream commits exactos, dataset de validación y permiso escrito para redistribuir los pesos.
-- Docker no está instalado en el equipo auditado, por lo que el Compose se revisó estáticamente pero no se ejecutó de extremo a extremo en el NAS objetivo.
+- En la auditoría del 28 de julio Docker aún no estaba instalado. Desde el 30 de julio el cliente y Compose están instalados, pero el motor local espera WSL 2/virtualización; la validación física del NAS objetivo sigue abierta.
 
 ## 3. Prioridad P0 — antes de entregar o publicar
 

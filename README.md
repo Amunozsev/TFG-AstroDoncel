@@ -9,6 +9,30 @@ AstroDoncel combina un frontend React con una API FastAPI y un worker científic
 
 > Estado: prototipo funcional de TFG. Los cálculos Type II y algunos localizadores visuales son experimentales; deben validarse antes de usarse como resultado científico. Consulta [ROADMAP_COMPLETO_TFG.md](ROADMAP_COMPLETO_TFG.md) para la auditoría y el plan pendiente.
 
+## Inicio rápido recomendado
+
+Para probar o desplegar AstroDoncel en otro PC o en un NAS, usa Docker. El stack incluye PostgreSQL, migraciones, API, worker y frontend; no hace falta instalar Python ni Node.js en el host.
+
+Windows, con Docker Desktop ya abierto:
+
+```powershell
+git clone https://github.com/Amunozsev/TFG-AstroDoncel.git
+cd TFG-AstroDoncel
+powershell -ExecutionPolicy Bypass -File .\scripts\docker-up.ps1
+```
+
+Linux o NAS con Docker Engine y el plugin Compose:
+
+```bash
+git clone https://github.com/Amunozsev/TFG-AstroDoncel.git
+cd TFG-AstroDoncel
+sh scripts/docker-up.sh
+```
+
+Los scripts generan un `.env` con contraseña aleatoria, construyen las imágenes, ejecutan Alembic, esperan a que la API esté lista y muestran la URL final. Por defecto el portal queda en <http://localhost:8080>, la documentación de la API en <http://localhost:8080/docs> y el diagnóstico en <http://localhost:8080/ready>.
+
+Si el profesor no tiene Git, puede descargar **Code → Download ZIP** desde GitHub, descomprimirlo y ejecutar el mismo script desde esa carpeta.
+
 ## Funciones disponibles
 
 ### Archivo y espectrogramas
@@ -93,22 +117,26 @@ Los repositorios `e-Callisto_FITS_Analyzer`, `Burst_No_Burst` y `ecallistolib` d
 
 ## Requisitos
 
-- Python 3.12.
-- Node.js 22 y npm.
-- Windows, Linux o macOS para desarrollo local.
-- Docker Compose solo para el despliegue completo; no es necesario para SQLite local.
+Elige una de estas dos formas de instalación:
+
+| Uso | Requisitos del host | Base de datos | Recomendación |
+|---|---|---|---|
+| Profesor, demo estable o NAS | Docker Engine/Desktop con `docker compose` | PostgreSQL incluido | **Opción recomendada** |
+| Desarrollo del código | Python 3.12, Node.js 22 y npm | SQLite local | Para modificar backend/frontend |
+
+En Windows, Docker Desktop usa WSL 2 y necesita virtualización de hardware activada. La guía oficial de instalación está en [Docker Desktop para Windows](https://docs.docker.com/desktop/setup/install/windows-install/). En Linux/NAS basta Docker Engine con el plugin Compose v2; compruébalo con `docker compose version`.
 
 Las dependencias están separadas por uso:
 
 | Archivo | Contenido |
 |---|---|
-| `requirements.txt` | API, procesamiento, GOES, ONNX y persistencia |
-| `requirements-dev.txt` | runtime más pytest, Ruff, TestClient y Alembic |
+| `requirements.txt` | API, procesamiento, GOES, ONNX, persistencia y migraciones |
+| `requirements-dev.txt` | runtime más pytest, Ruff, TestClient y auditoría de dependencias |
 | `requirements-ml.txt` | toolchain opcional de exportación/reentrenamiento con PyTorch CPU |
 
-PyTorch no se importa ni se necesita para servir la API o ejecutar ONNX.
+Los tres perfiles están fijados a versiones verificadas. `requirements-dev.txt` incluye el runtime mediante `-r requirements.txt`; `requirements-ml.txt` incluye el perfil de desarrollo. PyTorch no se importa ni se necesita para servir la API o ejecutar ONNX.
 
-## Instalación local en Windows
+## Desarrollo local
 
 Clona el repositorio y entra en él:
 
@@ -117,26 +145,35 @@ git clone https://github.com/Amunozsev/TFG-AstroDoncel.git
 cd TFG-AstroDoncel
 ```
 
-Crea el entorno, el directorio de datos e instala el perfil de desarrollo:
+### Windows
+
+Crea el entorno e instala el perfil de desarrollo:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-New-Item -ItemType Directory -Force data | Out-Null
 python -m pip install --upgrade pip
 python -m pip install -r requirements-dev.txt
-```
-
-Instala el frontend de forma reproducible:
-
-```powershell
-cd frontend
-npm ci
-cd ..
+New-Item -ItemType Directory -Force data | Out-Null
 .\.venv\Scripts\python.exe -m alembic upgrade head
+Push-Location frontend
+npm ci
+Pop-Location
 ```
 
-### Arranque
+### Linux/macOS
+
+```bash
+python3.12 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements-dev.txt
+mkdir -p data
+python -m alembic upgrade head
+(cd frontend && npm ci)
+```
+
+### Arranque de desarrollo
 
 Abre tres terminales desde la raíz del repositorio.
 
@@ -169,7 +206,9 @@ Abre:
 
 El worker es necesario para `Detect full day`, `Build daily overview` y `Combine next blocks`. El resto de la API puede funcionar sin él.
 
-### Preview del build de producción
+En Linux/macOS sustituye `.\.venv\Scripts\python.exe` por `.venv/bin/python`.
+
+### Build local de producción
 
 ```powershell
 cd frontend
@@ -187,12 +226,17 @@ El desarrollo local funciona sin `.env`: usa SQLite en `data/astrodoncel.db`, ca
 | Variable | Uso | Valor local por defecto |
 |---|---|---|
 | `DATABASE_URL` | SQLAlchemy; PostgreSQL en producción | `sqlite:///./data/astrodoncel.db` |
+| `APP_DATA_SOURCE` | volumen Docker o bind mount para caché/artefactos | volumen `app_data` |
 | `DATA_DIR_LOCAL` | FITS descargados, GOES y coordenadas aprendidas | `data/` del repositorio |
 | `TASK_RESULT_DIR` | artefactos JSON gzip del worker | `data/task_results/` |
+| `ECALLISTO_HOST_DIR` | ruta del host con archivo FITS opcional | `./data/archive` |
 | `ECALLISTO_DATA_DIR` | archivo externo `YYYY/MM/DD/*.fit*` | ruta histórica NAS, opcional |
+| `WEB_PORT` | puerto publicado por Nginx | `8080` |
 | `FRONTEND_ORIGINS` | orígenes CORS separados por coma | localhost/127.0.0.1:5173 |
 | `BURST_MODEL_DIR` | bundle ONNX alternativo | `backend/model/burst_detector/` |
 | `BURST_INTRA_OP_THREADS` | hilos CPU de ONNX | `1` |
+| `WORKER_MEMORY_LIMIT` | límite de memoria del worker Docker | `1g` |
+| `WORKER_CPU_LIMIT` | límite de CPU del worker Docker | `2.0` |
 | `MAX_ACTIVE_TASKS` | límite global de tareas activas | `100` |
 | `TASK_STALE_MINUTES` | latido máximo antes de recuperar una tarea | `15` |
 | `TASK_RETENTION_DAYS` | retención de tareas/artefactos terminados | `30` |
@@ -235,26 +279,115 @@ Las migraciones son explícitas y se prueban en upgrade/downgrade. Antes de apli
 
 ## Docker Compose
 
-Requiere Docker con Compose:
+El Compose crea cinco servicios:
+
+| Servicio | Responsabilidad | Expuesto al host |
+|---|---|---|
+| `db` | PostgreSQL persistente | No |
+| `migrate` | `alembic upgrade head`; termina antes de arrancar la app | No |
+| `api` | FastAPI, un proceso | No |
+| `worker` | tareas científicas pesadas | No |
+| `web` | React + Nginx y proxy hacia la API | `WEB_PORT`, 8080 por defecto |
+
+API y worker usan la misma imagen para evitar instalaciones divergentes. El archivo e-CALLISTO externo se monta en solo lectura; la API no recibe rutas locales del navegador. Los logs JSON rotan a tres ficheros de 10 MB por servicio.
+
+### Primer arranque manual
+
+Los scripts de inicio rápido son la vía más sencilla. La alternativa manual es:
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Edita `.env`, cambia la contraseña en `POSTGRES_PASSWORD` y `DATABASE_URL`, y configura `ECALLISTO_HOST_DIR` si existe un archivo NAS. Después:
+Edita `.env` y sustituye `change-this-password` en **las dos apariciones**. Usa una contraseña alfanumérica larga o codifica para URL los caracteres especiales dentro de `DATABASE_URL`; el script automático evita este problema generando hexadecimal. Si existe un archivo local/NAS, configura `ECALLISTO_HOST_DIR`; si no, deja la carpeta vacía y AstroDoncel consultará ETHZ. Después:
 
 ```powershell
+docker compose config --quiet
 docker compose up --build -d
+docker compose ps
 ```
 
-Servicios:
+El primer build descarga las imágenes base e instala las dependencias, por lo que tarda más que los siguientes. No borres `.env`, el volumen `astrodoncel_postgres_data` ni `astrodoncel_app_data` durante una actualización.
 
-- `db`: PostgreSQL.
-- `api`: FastAPI de un solo proceso.
-- `worker`: análisis pesados.
-- `web`: Nginx + build React, publicado en <http://localhost:8080>.
+### Instalación en un NAS
 
-El archivo externo se monta en solo lectura. `data/` y PostgreSQL deben incluirse en la estrategia de backup. El Compose aún debe validarse en el NAS objetivo; véase el roadmap.
+1. Instala Docker/Container Manager con Compose y habilita acceso SSH o usa la función de proyectos Compose del NAS.
+2. Copia o clona el repositorio en una carpeta administrada, por ejemplo `/volume1/docker/astrodoncel`.
+3. Ejecuta `sh scripts/docker-up.sh` una vez. El volumen Docker es la opción más portable.
+4. Para guardar caché y artefactos en una carpeta visible del NAS, cambia `APP_DATA_SOURCE` por una ruta absoluta y dale permisos de escritura al UID/GID `10001`. El archivo de observaciones indicado por `ECALLISTO_HOST_DIR` solo necesita permiso de lectura.
+5. Publica únicamente el puerto de `web`. Para acceso fuera de la red interna, coloca el proxy HTTPS del NAS delante del portal y añade su URL a `FRONTEND_ORIGINS`.
+
+Ejemplo de `.env` para un Synology; adapta los volúmenes reales:
+
+```dotenv
+APP_DATA_SOURCE=/volume1/docker/astrodoncel/data
+ECALLISTO_HOST_DIR=/volume1/web/ecallistodata
+WEB_PORT=8080
+FRONTEND_ORIGINS=https://astrodoncel.universidad.example
+```
+
+En Linux/NAS, prepara el bind mount mutable antes del arranque:
+
+```bash
+sudo mkdir -p /volume1/docker/astrodoncel/data
+sudo chown -R 10001:10001 /volume1/docker/astrodoncel/data
+```
+
+No cambies permisos del archivo científico si ya es compartido por otros servicios; basta que Docker pueda leerlo.
+
+### Operación habitual
+
+```bash
+# Estado y salud
+docker compose ps
+curl http://127.0.0.1:8080/ready
+
+# Logs recientes
+docker compose logs --tail 200 api worker
+
+# Reinicio sin borrar datos
+docker compose restart api worker web
+
+# Actualización del código y de las imágenes
+git pull
+docker compose up --build -d
+
+# Parada; conserva base de datos y caché
+docker compose down
+```
+
+No uses `docker compose down -v` salvo que quieras eliminar de forma irreversible los volúmenes del proyecto.
+
+### Backup y recuperación
+
+El backup incluye un `pg_dump` consistente y, salvo que se pida solo base de datos, la caché/artefactos de `/data`. También genera hashes SHA-256:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\backup.ps1
+# o solo PostgreSQL
+powershell -ExecutionPolicy Bypass -File .\scripts\backup.ps1 -DatabaseOnly
+```
+
+```bash
+sh scripts/backup.sh
+# o solo PostgreSQL
+sh scripts/backup.sh --database-only
+```
+
+Los resultados quedan en `backups/YYYYMMDD-HHMMSS/`, una carpeta ignorada por Git que debe copiarse a otro volumen o sistema de backup. Para una recuperación, detén `api`, `worker` y `web`; restaura `postgres.dump` con `pg_restore` y extrae `app-data.tar.gz` únicamente sobre un volumen de aplicación vacío o una copia aislada. Haz primero una prueba de restauración en otro proyecto/host: una copia no se considera backup verificado hasta que se ha restaurado.
+
+### Comprobación del despliegue
+
+Después de instalar:
+
+- `docker compose ps` debe mostrar `db`, `api`, `worker` y `web` activos y saludables; `migrate` debe aparecer finalizado con código 0.
+- `/health` confirma que el proceso API responde.
+- `/ready` devuelve `status: ok` y `database: ok`; el modelo ONNX aparece por separado.
+- `/docs` debe cargar OpenAPI a través de Nginx.
+- Crea una tarea corta desde la interfaz y confirma que el worker actualiza su progreso.
+- Reinicia el stack y confirma que catálogo, tareas y coordenadas siguen presentes.
+
+El CI construye y levanta el Compose sobre Linux para detectar errores de imagen, migración, proxy y salud. El rendimiento, permisos y rutas deben comprobarse además en el NAS concreto porque dependen de su CPU, arquitectura, memoria y almacenamiento.
 
 ## API resumida
 
@@ -332,6 +465,7 @@ Backend:
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m pytest
 .\.venv\Scripts\python.exe -m pip check
+.\.venv\Scripts\python.exe -m pip_audit -r requirements-dev.txt
 ```
 
 Frontend:

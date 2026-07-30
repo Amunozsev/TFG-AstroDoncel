@@ -7,12 +7,18 @@ port only the minimal algorithm with attribution and tests.
 Before opening a pull request run:
 
 ```text
-ruff check backend tests tools
+ruff check backend tests migrations tools
 pytest
+pip-audit -r requirements-dev.txt
 cd frontend
 npm run lint
+npm run test
 npm run build
 ```
+
+Deployment changes must also pass `docker compose config --quiet` and the
+Compose smoke job in CI. Keep Alembic migrations in the production dependency
+profile because the deployment runs them before API and worker startup.
 
 Never accept an arbitrary filesystem path from an API client. Station, date and
 FITS filename must pass `backend.security`, and filenames must match the
