@@ -68,8 +68,17 @@ try {
     }
     Invoke-Docker $upArguments
 
-    $portLine = (& $dockerExe compose port web 80 | Select-Object -First 1)
-    if ($LASTEXITCODE -ne 0 -or -not $portLine) {
+    $portLine = $null
+    for ($attempt = 1; $attempt -le 30; $attempt++) {
+        $portOutput = & $dockerExe compose port web 80 2>$null
+        $portExitCode = $LASTEXITCODE
+        if ($portExitCode -eq 0 -and $portOutput) {
+            $portLine = @($portOutput)[0]
+            break
+        }
+        Start-Sleep -Seconds 1
+    }
+    if (-not $portLine) {
         throw "Could not determine the published web port."
     }
     $webPort = ($portLine -split ":")[-1].Trim()
