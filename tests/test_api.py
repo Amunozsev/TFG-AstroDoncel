@@ -1,5 +1,7 @@
 from fastapi.testclient import TestClient
 
+from backend import api_features
+from backend import main as core
 from backend.db import SessionLocal, TaskRecord
 from backend.main import app
 
@@ -58,5 +60,76 @@ def test_tasks_are_deduplicated_and_can_be_cancelled():
     with SessionLocal() as session:
         stored = session.get(TaskRecord, task_id)
         if stored:
-            session.delete(stored)
-            session.commit()
+                session.delete(stored)
+                session.commit()
+
+
+def test_spectral_overview_validates_interval_and_multiple_stations():
+    response = client.post("/api/tasks", json={
+        "type": "spectral_overview",
+        "station": "MRO",
+        "date": "2024-01-01",
+        "options": {
+            "stations": ["MRO", "BIR"],
+            "start_at": "2024-01-01T02:15:00Z",
+            "end_at": "2024-01-01T06:45:00Z",
+        },
+    })
+    assert response.status_code == 202
+    task_id = response.json()["id"]
+    try:
+        with SessionLocal() as session:
+            stored = session.get(TaskRecord, task_id)
+            assert stored.payload["options"]["stations"] == ["MRO", "BIR"]
+            assert stored.payload["options"]["start_at"].startswith("2024-01-01T02:15")
+    finally:
+        with SessionLocal() as session:
+            stored = session.get(TaskRecord, task_id)
+            if stored:
+                session.delete(stored)
+                session.commit()
+
+
+def test_spectral_overview_rejects_backwards_interval():
+    response = client.post("/api/tasks", json={
+        "type": "spectral_overview",
+        "station": "MRO",
+        "date": "2024-01-01",
+        "options": {
+            "stations": ["MRO"],
+            "start_at": "2024-01-01T08:00:00Z",
+            "end_at": "2024-01-01T07:00:00Z",
+        },
+    })
+    assert response.status_code == 422
+
+
+def test_xmatch_timeline_builds_clickable_station_events(monkeypatch):
+    event = {
+        "id": 7,
+        "source": "dearce_v3",
+        "source_label": "deARCE detection (v3)",
+        "started_at": "2026-07-24T12:04:00+00:00",
+        "ended_at": "2026-07-24T12:05:00+00:00",
+        "burst_type": "III",
+        "intensity": 1,
+        "min_lon": -7.9,
+        "mid_lon": 11.1,
+        "max_lon": 73.7,
+        "stations": ["MRO"],
+        "score": None,
+        "metadata": {},
+    }
+    monkeypatch.setattr(api_features, "_ensure_months", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(api_features, "list_events", lambda *_args, **_kwargs: [event])
+    monkeypatch.setattr(
+        core,
+        "_archive_inventory_for_date",
+        lambda _date: {"MRO": ["MRO_20260724_120000_01.fit.gz"]},
+    )
+    result = api_features.get_xmatch_timeline("2026-07-24")
+    row = result["rows"][0]
+    assert row["station"] == "MRO"
+    assert row["positive"] is True
+    assert row["events"] == [event]
+    assert row["availability"][0]["start_at"].startswith("2026-07-24T12:00:00")

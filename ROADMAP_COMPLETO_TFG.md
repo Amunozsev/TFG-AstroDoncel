@@ -1,6 +1,6 @@
 # Roadmap completo del TFG AstroDoncel
 
-Auditoría técnica actualizada: 23 de julio de 2026
+Auditoría técnica actualizada: 28 de julio de 2026
 Ámbito: backend, frontend, persistencia, worker, pipeline científico, modelo ML, pruebas, dependencias, despliegue y archivos versionados.
 
 ## 1. Resumen ejecutivo
@@ -32,6 +32,17 @@ Quedan implementados y verificados en el repositorio:
 - `MODEL_CARD.md`, `THIRD_PARTY_NOTICES.md`, CI ampliada a PostgreSQL/migraciones/Vitest/audit.
 
 Siguen abiertos porque necesitan datos, infraestructura o una decisión humana: licencia raíz y permiso de pesos, reproducción independiente de métricas ML, dataset científico versionado, E2E completo en CI, modularización de los monolitos y piloto Docker/NAS con backup/restauración. Las secciones siguientes conservan el plan completo como trazabilidad; los puntos de la lista anterior ya no son trabajo pendiente.
+
+### Actualización — 28 de julio de 2026
+
+- Burst Reports ingiere por defecto `dearce_v3` desde `NCELESTINA`, conserva `ecallisto_v2` como fuente separada y publica Min/Mid/Max longitude con procedencia explícita.
+- Cada estación de un report y cada marcador rojo del nuevo Xmatch abre el bloque FITS de esa estación inmediatamente anterior al instante del evento.
+- Statistics conserva ranking y barras diarias, ahora con números de día visibles, y añade Xmatch con filtro todas/positivas.
+- El overview acepta un intervalo UTC exacto y una o todas las estaciones; conserva todos los grupos de receptor compatibles y muestra estaciones sin datos y ficheros omitidos.
+- El inventario de estaciones se obtiene del índice diario ETHZ, persiste altas/último avistamiento y usa solo FITS/live archive para aprender coordenadas nuevas.
+- Nueva migración `20260728_03`; 46 pruebas backend y 3 frontend pasan. ESLint 10 elimina las vulnerabilidades conocidas del lockfile auditado.
+
+La validación Docker/NAS sigue deliberadamente fuera de esta fase y es la siguiente tarea prevista.
 
 ## 2. Estado verificado
 
@@ -67,7 +78,7 @@ GOES y tareas           combinación temporal y artefactos
 - GZip, CORS configurable, proxy Nginx, contenedores sin privilegios y API de un solo worker.
 - Interfaz funcional y responsive, incluyendo scroll del overview y cierre de la curva de luz.
 - CI con Ruff, pytest, ESLint y build.
-- 42 pruebas backend, 2 regresiones frontend y `npm audit` sin vulnerabilidades conocidas en el lockfile auditado.
+- 46 pruebas backend, 3 regresiones frontend y `npm audit` sin vulnerabilidades conocidas en el lockfile auditado.
 
 ### Deuda confirmada que permanece abierta
 
@@ -75,7 +86,7 @@ GOES y tareas           combinación temporal y artefactos
 - La cobertura crítica ha mejorado, pero faltan pruebas de descarga real simulada, GOES, paridad ONNX, PostgreSQL concurrente y un E2E completo de navegador en CI.
 - El límite de cola es global; si se expone el portal a usuarios no confiables harán falta identidad, cuota por usuario/IP y almacenamiento del dedupe en DB para múltiples réplicas de API.
 - La cancelación es cooperativa y espera al siguiente punto de control entre ficheros; una inferencia/lectura individual no se puede abortar a mitad.
-- El overview omite segmentos incompatibles o erróneos y calcula el baseline después de una reducción que preserva máximos; hace falta validar la definición científica y mostrar omisiones.
+- El overview ya separa receptores incompatibles y muestra omisiones; aún hace falta validar científicamente la definición de baseline y reducción sobre un dataset de referencia.
 - El bundle Plotly bajó a ~1,24 MB sin comprimir, pero sigue siendo el principal coste de carga y merece medición de TTI/memoria.
 - `MODEL_CARD.md` y `THIRD_PARTY_NOTICES.md` registran lo conocido, pero faltan licencia raíz, upstream commits exactos, dataset de validación y permiso escrito para redistribuir los pesos.
 - Docker no está instalado en el equipo auditado, por lo que el Compose se revisó estáticamente pero no se ejecutó de extremo a extremo en el NAS objetivo.

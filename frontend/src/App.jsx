@@ -24,11 +24,18 @@ const TABS = [
   { id: 'tools',      label: 'Tools' },
 ];
 
+function nextUtcDate(value) {
+  const parsed = new Date(`${value}T00:00:00Z`);
+  parsed.setUTCDate(parsed.getUTCDate() + 1);
+  return parsed.toISOString().slice(0, 10);
+}
+
 export default function App() {
   // Top-level view: the spectrogram portal or the world stations map.
   const [view, setView]                     = useState('portal');
   const [stations, setStations]             = useState(FALLBACK_STATIONS);
   const [stationsSource, setStationsSource] = useState('');
+  const [stationDetails, setStationDetails] = useState({});
   const [stationFilter, setStationFilter]   = useState('');
   // Primary station: drives the burst-file list and the 15-min sync block.
   // No station is preselected on startup — the user must pick one.
@@ -36,6 +43,8 @@ export default function App() {
   // All stations selected for multi-layer loading
   const [selectedStations, setSelectedStations] = useState([]);
   const [date, setDate]                     = useState(() => new Date().toISOString().slice(0, 10));
+  const [overviewStart, setOverviewStart]   = useState(() => `${new Date().toISOString().slice(0, 10)}T00:00`);
+  const [overviewEnd, setOverviewEnd]       = useState(() => `${nextUtcDate(new Date().toISOString().slice(0, 10))}T00:00`);
 
   // Daily burst list (primary station only)
   const [files, setFiles]                   = useState([]);
@@ -102,6 +111,9 @@ export default function App() {
         if (data.stations?.length > 0) {
           setStations(data.stations);
           setStationsSource(data.source);
+          setStationDetails(Object.fromEntries(
+            (data.details ?? []).map((item) => [item.station, item]),
+          ));
           if (station && !data.stations.includes(station)) {
             setStation(null);
             setSelectedStations([]);
@@ -155,10 +167,14 @@ export default function App() {
     if (!pendingEventTime || files.length === 0) return;
     const target = new Date(pendingEventTime);
     const targetSeconds = target.getUTCHours() * 3600 + target.getUTCMinutes() * 60 + target.getUTCSeconds();
-    const nearest = [...files].sort((a, b) => {
-      const seconds = (value) => value.time.split(':').reduce((sum, part, index) => sum + Number(part) * [3600, 60, 1][index], 0);
-      return Math.abs(seconds(a) - targetSeconds) - Math.abs(seconds(b) - targetSeconds);
-    })[0];
+    const seconds = (value) => value.time.split(':').reduce(
+      (sum, part, index) => sum + Number(part) * [3600, 60, 1][index],
+      0,
+    );
+    const ordered = [...files].sort((a, b) => seconds(a) - seconds(b));
+    // e-CALLISTO filenames identify the start of a time block. The event
+    // belongs to the latest block that started at or before its UTC time.
+    const nearest = [...ordered].reverse().find((item) => seconds(item) <= targetSeconds) ?? ordered[0];
     queueMicrotask(() => {
       setSelectedFile(nearest.filename);
       setPendingEventTime(null);
@@ -264,6 +280,12 @@ export default function App() {
     setTriggerLoad((n) => n + 1);
   }
 
+  function changeObservationDate(nextDate) {
+    setDate(nextDate);
+    setOverviewStart(`${nextDate}T00:00`);
+    setOverviewEnd(`${nextUtcDate(nextDate)}T00:00`);
+  }
+
   // ── Open a station from the map: select it and load its spectrograms ───────
   function handleOpenStation(st) {
     setSelectedStations([st]);
@@ -276,10 +298,10 @@ export default function App() {
     setTriggerLoad((n) => n + 1);
   }
 
-  function handleOpenEvent(event) {
-    const targetStation = event.stations?.[0];
+  function handleOpenEvent(event, requestedStation = null) {
+    const targetStation = requestedStation ?? event.stations?.[0];
     if (!targetStation) return;
-    setDate(event.started_at.slice(0, 10));
+    changeObservationDate(event.started_at.slice(0, 10));
     setSelectedStations([targetStation]);
     setStation(targetStation);
     setPendingEventTime(event.started_at);
@@ -401,6 +423,16 @@ export default function App() {
     const preset = contrastPresets[index];
     if (!preset) return;
     setZmin(preset.zmin); setZmax(preset.zmax); setColormap(preset.colormap); setUseCustomZ(true);
+  }
+
+  function startOverview(requestedStations) {
+    if (!overviewStart || !overviewEnd || requestedStations.length === 0) return;
+    const toUtcIso = (value) => new Date(`${value}:00Z`).toISOString();
+    startTask('spectral_overview', {
+      stations: requestedStations,
+      start_at: toUtcIso(overviewStart),
+      end_at: toUtcIso(overviewEnd),
+    });
   }
 
   const loadDisabled =
@@ -666,11 +698,36 @@ export default function App() {
               {burstDetecting ? 'Detecting…' : 'Detect current file (ML)'}
             </button>
             <button className="btn-tool" onClick={() => startTask('burst_detect_day')} disabled={!station || ['submitting', 'queued', 'running'].includes(taskStatus?.status)}>Detect full day</button>
-            <button className="btn-tool" onClick={() => startTask('spectral_overview')} disabled={!station || ['submitting', 'queued', 'running'].includes(taskStatus?.status)}>Build daily overview</button>
+            <fieldset className="overview-task-controls">
+              <legend>Spectral overview interval (UTC)</legend>
+              <label>
+                From
+                <input type="datetime-local" value={overviewStart} onChange={(event) => setOverviewStart(event.target.value)} />
+              </label>
+              <label>
+                To
+                <input type="datetime-local" value={overviewEnd} onChange={(event) => setOverviewEnd(event.target.value)} />
+              </label>
+              <button
+                className="btn-tool"
+                onClick={() => startOverview(selectedStations)}
+                disabled={!station || selectedStations.length === 0 || ['submitting', 'queued', 'running'].includes(taskStatus?.status)}
+              >
+                Overview · selected ({selectedStations.length})
+              </button>
+              <button
+                className="btn-tool"
+                onClick={() => startOverview(stations)}
+                disabled={!station || stations.length === 0 || ['submitting', 'queued', 'running'].includes(taskStatus?.status)}
+              >
+                Overview · all known ({stations.length})
+              </button>
+            </fieldset>
             <button className="btn-tool" onClick={() => {
               const current = Math.max(0, files.findIndex((file) => file.filename === selectedFile));
               startTask('combine_time', { filenames: files.slice(current, current + 4).map((file) => file.filename) });
-            }} disabled={!station || files.length < 2 || ['submitting', 'queued', 'running'].includes(taskStatus?.status)}>Combine next blocks</button>
+            }} disabled={!station || files.length < 2 || ['submitting', 'queued', 'running'].includes(taskStatus?.status)} title="Merge the current FITS block and up to three following compatible blocks into one continuous spectrogram">Combine next blocks</button>
+            <p className="tool-help">Combine next blocks joins the current time block with up to three following blocks from the same station and receiver. It does not mix stations.</p>
             {layers[0] && <>
               <a className="btn-tool" href={`${API_BASE_URL}/api/files/download?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename })}`}>Download FITS</a>
               <a className="btn-tool" href={`${API_BASE_URL}/api/spectrogram/export?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename, rfi: useSahanFilter, rfi_z_thresh: rfiParams.zThresh, rfi_occupancy: rfiParams.occupancy, rfi_min_component: rfiParams.minComponent, rfi_impulsive: rfiParams.impulsive })}`}>Export processed FITS</a>
@@ -732,7 +789,7 @@ export default function App() {
       {view === 'catalog' ? (
         <BurstCatalog onOpenEvent={handleOpenEvent} />
       ) : view === 'statistics' ? (
-        <Statistics onOpenStation={handleOpenStation} />
+        <Statistics onOpenStation={handleOpenStation} onOpenEvent={handleOpenEvent} />
       ) : view === 'about' ? (
         <About />
       ) : view === 'map' ? (
@@ -755,10 +812,10 @@ export default function App() {
             Stations
             {stationsSource && (
               <span
-                title={stationsSource === 'ethz' ? 'Live list from ETHZ' : 'Static fallback list'}
-                style={{ marginLeft: '0.4rem', fontSize: '0.65rem', color: stationsSource === 'ethz' ? '#38bdf8' : '#f59e0b', verticalAlign: 'middle' }}
+                title={stationsSource.includes('ethz') ? 'Live ETHZ inventory plus persisted stations' : 'Local bootstrap list'}
+                style={{ marginLeft: '0.4rem', fontSize: '0.65rem', color: stationsSource.includes('ethz') ? '#38bdf8' : '#f59e0b', verticalAlign: 'middle' }}
               >
-                {stationsSource === 'ethz' ? '● ETHZ' : '● local'}
+                {stationsSource.includes('ethz') ? '● live + known' : '● local'}
               </span>
             )}
             {selectedStations.length > 0 && (
@@ -787,6 +844,10 @@ export default function App() {
                     checked={selectedStations.includes(s)}
                     onChange={() => toggleStation(s)}
                   />
+                  <i
+                    className={`station-status-dot ${stationDetails[s]?.active ? 'active' : 'inactive'}`}
+                    title={stationDetails[s]?.active ? 'Active on the latest archive day' : `Inactive on the latest archive day${stationDetails[s]?.last_seen_at ? ` · last seen ${stationDetails[s].last_seen_at.slice(0, 10)}` : ''}`}
+                  />
                   <span>{s}</span>
                 </label>
               ))}
@@ -799,7 +860,7 @@ export default function App() {
               type="date"
               className="control-input"
               value={date}
-              onChange={(e) => setDate(e.target.value)}
+              onChange={(e) => changeObservationDate(e.target.value)}
             />
           </label>
         </div>
