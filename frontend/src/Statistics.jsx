@@ -15,6 +15,7 @@ function rangeFor(period, date) {
 }
 
 export default function Statistics({ onOpenStation, onOpenEvent }) {
+  const [activeView, setActiveView] = useState('xmatch');
   const [period, setPeriod] = useState('month');
   const [date, setDate] = useState(today);
   const [ranking, setRanking] = useState([]);
@@ -96,46 +97,57 @@ export default function Statistics({ onOpenStation, onOpenEvent }) {
     name: 'deARCE burst',
   };
 
+  const handleViewKeyDown = (event) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const nextView = event.key === 'Home' || event.key === 'ArrowLeft' ? 'xmatch' : 'summary';
+    setActiveView(nextView);
+    document.getElementById(`statistics-tab-${nextView}`)?.focus();
+  };
+
   return (
     <main className="page-shell statistics-page" id="main-content" tabIndex="-1">
       <header className="page-header">
         <div>
-          <p className="eyebrow">Network activity</p>
-          <h1>Station statistics</h1>
-          <p className="page-subtitle">Catalogue: {sourceLabel}</p>
-        </div>
-        <div className="stats-controls">
-          <label>Period<select value={period} onChange={(event) => setPeriod(event.target.value)}><option value="day">Day</option><option value="month">Month</option></select></label>
-          <label>Date<input type={period === 'month' ? 'month' : 'date'} value={period === 'month' ? date.slice(0, 7) : date} onChange={(event) => setDate(period === 'month' ? `${event.target.value}-01` : event.target.value)} /></label>
+          <p className="eyebrow">Network intelligence</p>
+          <h1>Statistics &amp; Xmatch</h1>
+          <p className="page-subtitle">Compare station coverage with deARCE bursts, or review activity across the network.</p>
         </div>
       </header>
-      {error && <div className="page-error" role="alert">{error}<button onClick={load}>Retry</button></div>}
-      {period === 'month' && timeline.length > 0 && (
-        <section className="timeline-card" aria-label="Daily burst totals">
-          <h2>Events per day</h2>
-          <div className="timeline-bars">
-            {timeline.map((point) => (
-              <span className="timeline-bar-item" key={point.date} title={`${point.date}: ${point.count}`}>
-                <i style={{ height: point.count ? `${Math.max(6, point.count / timelineMax * 100)}%` : 0 }}><b>{point.count}</b></i>
-                <small>{point.date.slice(-2)}</small>
-              </span>
-            ))}
-          </div>
-        </section>
-      )}
-      <section className="ranking-card" aria-label={`Station ranking from ${range.start} to ${range.end}`}>
-        <h2>Bursts observed</h2>
-        {ranking.length === 0 && !error ? <p className="empty-inline">No events available for this period.</p> : ranking.map((item, index) => (
-          <button key={item.station} className="ranking-row" onClick={() => onOpenStation(item.station)}>
-            <span className="rank tabular">{index + 1}</span>
-            <span className="ranking-name">{item.station}</span>
-            <span className="ranking-bar" aria-hidden="true"><i style={{ width: `${item.count / max * 100}%` }} /></span>
-            <strong className="tabular">{item.count}</strong>
-          </button>
-        ))}
-      </section>
 
-      <section className="xmatch-card" aria-labelledby="xmatch-title">
+      <div className="statistics-view-switcher" role="tablist" aria-label="Statistics views" onKeyDown={handleViewKeyDown}>
+        <button
+          id="statistics-tab-xmatch"
+          type="button"
+          role="tab"
+          aria-selected={activeView === 'xmatch'}
+          aria-controls="statistics-panel-xmatch"
+          tabIndex={activeView === 'xmatch' ? 0 : -1}
+          onClick={() => setActiveView('xmatch')}
+        >
+          <strong>Xmatch timeline</strong>
+          <span>Availability + burst markers</span>
+        </button>
+        <button
+          id="statistics-tab-summary"
+          type="button"
+          role="tab"
+          aria-selected={activeView === 'summary'}
+          aria-controls="statistics-panel-summary"
+          tabIndex={activeView === 'summary' ? 0 : -1}
+          onClick={() => setActiveView('summary')}
+        >
+          <strong>Network summary</strong>
+          <span>Daily totals + station ranking</span>
+        </button>
+      </div>
+
+      {activeView === 'xmatch' && <section
+        className="xmatch-card"
+        id="statistics-panel-xmatch"
+        role="tabpanel"
+        aria-labelledby="statistics-tab-xmatch"
+      >
         <header>
           <div>
             <p className="eyebrow">Cross-station context</p>
@@ -193,7 +205,51 @@ export default function Statistics({ onOpenStation, onOpenEvent }) {
             </details>
           </>
         )}
-      </section>
+      </section>}
+
+      {activeView === 'summary' && <section
+        className="statistics-summary"
+        id="statistics-panel-summary"
+        role="tabpanel"
+        aria-labelledby="statistics-tab-summary"
+      >
+        <div className="statistics-summary-toolbar">
+          <div>
+            <p className="eyebrow">Catalogue activity</p>
+            <h2>Network summary</h2>
+            <p>Catalogue: {sourceLabel}</p>
+          </div>
+          <div className="stats-controls">
+            <label>Period<select value={period} onChange={(event) => setPeriod(event.target.value)}><option value="day">Day</option><option value="month">Month</option></select></label>
+            <label>Date<input type={period === 'month' ? 'month' : 'date'} value={period === 'month' ? date.slice(0, 7) : date} onChange={(event) => setDate(period === 'month' ? `${event.target.value}-01` : event.target.value)} /></label>
+          </div>
+        </div>
+        {error && <div className="page-error" role="alert">{error}<button onClick={load}>Retry</button></div>}
+        {period === 'month' && timeline.length > 0 && (
+          <section className="timeline-card" aria-label="Daily burst totals">
+            <h2>Events per day</h2>
+            <div className="timeline-bars">
+              {timeline.map((point) => (
+                <span className="timeline-bar-item" key={point.date} title={`${point.date}: ${point.count}`}>
+                  <i style={{ height: point.count ? `${Math.max(6, point.count / timelineMax * 100)}%` : 0 }}><b>{point.count}</b></i>
+                  <small>{point.date.slice(-2)}</small>
+                </span>
+              ))}
+            </div>
+          </section>
+        )}
+        <section className="ranking-card" aria-label={`Station ranking from ${range.start} to ${range.end}`}>
+          <h2>Bursts observed</h2>
+          {ranking.length === 0 && !error ? <p className="empty-inline">No events available for this period.</p> : ranking.map((item, index) => (
+            <button key={item.station} className="ranking-row" onClick={() => onOpenStation(item.station)}>
+              <span className="rank tabular">{index + 1}</span>
+              <span className="ranking-name">{item.station}</span>
+              <span className="ranking-bar" aria-hidden="true"><i style={{ width: `${item.count / max * 100}%` }} /></span>
+              <strong className="tabular">{item.count}</strong>
+            </button>
+          ))}
+        </section>
+      </section>}
     </main>
   );
 }

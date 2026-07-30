@@ -291,6 +291,14 @@ El archivo externo se monta en solo lectura. `data/` y PostgreSQL deben incluirs
 
 Consulta progreso con `GET /api/tasks/{id}`, cancela con `POST /api/tasks/{id}/cancel` y abre el resultado comprimido con `GET /api/tasks/{id}/artifact`. La cola deduplica clics repetidos, limita trabajos activos, recupera tareas abandonadas y elimina resultados terminales tras la retención configurada.
 
+### Qué hace «Scan selected station · full day»
+
+Analiza todos los bloques FITS disponibles para la estación primaria y la fecha UTC seleccionadas. El worker combina el inventario local y el índice ETHZ, descarga los bloques que falten y ejecuta en cada uno el detector CNN+MIL ONNX. Si el postprocesado del modelo no localiza un evento, un transitorio visual especialmente fuerte puede mostrarse como señal heurística experimental; ambos métodos aparecen diferenciados en el resultado.
+
+La vista inicial **Recommended** incluye detecciones CNN+MIL que superan el umbral del bundle y cualquier señal que coincida temporalmente y por estación con el catálogo oficial. Los filtros separan CNN+MIL, coincidencias deARCE y señales visuales experimentales. Estas últimas quedan excluidas por defecto, muestran una advertencia sobre RFI/ruido persistente y no se guardan automáticamente en `burst_events`.
+
+El resumen indica bloques descubiertos, procesados y omitidos, candidatos CNN+MIL, señales experimentales y coincidencias oficiales. Los resultados se agrupan por bloque FITS y permiten abrir directamente el espectrograma de su momento. Repetir el análisis no duplica eventos ML: solo marca como guardados en esa ejecución los registros realmente insertados. Una coincidencia deARCE/e-CALLISTO se conserva como referencia; no convierte el tipo oficial en una clasificación producida por el modelo. Los registros heurísticos creados por versiones anteriores se conservan hasta ejecutar una limpieza explícita y revisada.
+
 Ejemplo de overview multiestación entre dos instantes UTC:
 
 ```json
