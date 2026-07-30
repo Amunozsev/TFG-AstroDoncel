@@ -33,6 +33,22 @@ Los scripts generan un `.env` con contraseña aleatoria, construyen las imágene
 
 Si el profesor no tiene Git, puede descargar **Code → Download ZIP** desde GitHub, descomprimirlo y ejecutar el mismo script desde esa carpeta.
 
+### Qué se recupera desde GitHub
+
+Un clon limpio contiene todo lo necesario para construir y ejecutar la aplicación: código backend/frontend, migraciones, modelo ONNX, configuración Docker/Nginx, dependencias fijadas, tests y documentación. Para continuar el desarrollo en otro equipo, empieza también por [HANDOFF.md](HANDOFF.md); resume el estado actual y las decisiones que antes podían depender del contexto de las conversaciones.
+
+No se versionan deliberadamente:
+
+- `.env`, porque contiene secretos y el script genera uno nuevo;
+- `data/`, bases locales, cachés FITS y resultados de tareas, porque son estado de ejecución y se reconstruyen desde ETHZ o desde el archivo NAS;
+- `backups/`, que deben guardarse fuera del repositorio;
+- `.venv`, `node_modules` y `dist`, que se regeneran desde los requirements y lockfiles;
+- `Sahan/`, que es material de referencia y no una dependencia de AstroDoncel.
+
+Por tanto, un portátil nuevo arranca con una base PostgreSQL vacía y obtiene estaciones, catálogo y FITS automáticamente. Si se quiere conservar el historial o la caché de una instalación anterior, hay que mover un backup generado por `scripts/backup.ps1` o `scripts/backup.sh`; esos datos no deben subirse a GitHub.
+
+Para trabajar y hacer `git pull`/`push`, usa `git clone` en vez de **Download ZIP**. El ZIP está pensado únicamente para instalar o probar una copia puntual.
+
 ## Funciones disponibles
 
 ### Archivo y espectrogramas
@@ -538,7 +554,7 @@ Añade `--apply` únicamente después de revisar la lista. El script no borra SQ
 - La cancelación es cooperativa: una operación científica individual no se interrumpe hasta alcanzar el siguiente punto de control.
 - Hay pruebas frontend de los paneles críticos, pero aún falta un E2E de navegador en CI y mayor cobertura de respuestas fuera de orden.
 - El bundle parcial de Plotly reduce mucho la carga, aunque su chunk principal sigue superando 1 MB sin comprimir.
-- La validación completa Docker/NAS y PostgreSQL queda pendiente en el host objetivo.
+- Docker Compose y PostgreSQL están validados desde un clon limpio en Windows; sigue pendiente la prueba física de rendimiento, permisos y restauración en el NAS objetivo.
 - Falta elegir la licencia raíz y confirmar por escrito la redistribución de los pesos; véanse [MODEL_CARD.md](MODEL_CARD.md) y [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Créditos
