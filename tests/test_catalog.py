@@ -1,4 +1,7 @@
-from backend.catalog import DEFAULT_CATALOG_SOURCE, parse_burst_list
+from datetime import datetime, timezone
+
+from backend.catalog import DEFAULT_CATALOG_SOURCE, list_events, parse_burst_list
+from backend.db import BurstEvent, session_scope
 
 SAMPLE = """#Date\tTime\tType\tStations
 20240101\t18:02-18:03\tIII/2\tMEXICO-LANCE, (USA-ARIZONA-ERAU)
@@ -51,3 +54,26 @@ def test_parse_astrodoncel_link_rows_with_longitudes_and_html():
     assert event["max_lon"] == 77.5
     assert event["stations"] == ["GERMANY-DLR", "POLAND-BALDY"]
     assert event["metadata_json"]["source_label"] == "deARCE (v3)"
+
+
+def test_list_events_matches_case_insensitive_station_fragment():
+    started_at = datetime(2026, 8, 25, 11, 15, tzinfo=timezone.utc)
+    with session_scope() as session:
+        session.add(BurstEvent(
+            source="test_partial_station",
+            event_key="partial-station-search",
+            started_at=started_at,
+            ended_at=datetime(2026, 8, 25, 11, 16, tzinfo=timezone.utc),
+            burst_type="III",
+            stations=["BIR", "GLASGOW", "GERMANY-DLR"],
+        ))
+
+    events = list_events(
+        datetime(2026, 8, 25, tzinfo=timezone.utc),
+        datetime(2026, 8, 26, tzinfo=timezone.utc),
+        station="glas",
+        source="test_partial_station",
+    )
+
+    assert len(events) == 1
+    assert "GLASGOW" in events[0]["stations"]

@@ -92,6 +92,24 @@ describe('analysis panels', () => {
     });
   });
 
+  it('searches Burst Reports with a partial station name', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ events: [], warnings: [], source_label: 'deARCE (v3)' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<BurstCatalog onOpenEvent={vi.fn()} />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByLabelText('Station'), { target: { value: 'glas' } });
+
+    await waitFor(() => {
+      const url = String(fetchMock.mock.calls.at(-1)[0]);
+      expect(url).toContain('station=glas');
+    });
+    expect(screen.getByLabelText('Station')).toHaveValue('glas');
+  });
+
   it('lets the user close a loaded light curve', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
