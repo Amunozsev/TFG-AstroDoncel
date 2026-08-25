@@ -90,7 +90,7 @@ def _ensure_months(
 def get_bursts(
     start: str = Query(..., description="Inclusive YYYY-MM-DD"),
     end: str | None = Query(None, description="Exclusive YYYY-MM-DD"),
-    station: str | None = None,
+    station: str | None = Query(None, description="Case-insensitive station name fragment"),
     burst_type: str | None = Query(None, alias="type"),
     source: str = DEFAULT_CATALOG_SOURCE,
 ):

@@ -85,7 +85,7 @@ export default function BurstCatalog({ onOpenEvent }) {
         <label>Period<select value={period} onChange={(event) => setPeriod(event.target.value)}><option value="day">Day</option><option value="month">Full month</option></select></label>
         <label>{period === 'month' ? 'Month' : 'Date'}<input type={period === 'month' ? 'month' : 'date'} value={period === 'month' ? date.slice(0, 7) : date} onChange={(event) => setDate(period === 'month' ? `${event.target.value}-01` : event.target.value)} /></label>
         <label>Type<select value={type} onChange={(event) => setType(event.target.value)}><option value="">All types</option>{['II', 'III', 'IIIG', 'V', 'VI', 'U', 'J', 'CTM', 'RBR'].map((value) => <option key={value}>{value}</option>)}</select></label>
-        <label>Station<input value={station} onChange={(event) => setStation(event.target.value.toUpperCase())} placeholder="e.g. SPAIN-SIGUENZA" /></label>
+        <label>Station<input value={station} onChange={(event) => setStation(event.target.value)} placeholder="Search stations…" /></label>
         <button className="btn-primary" onClick={load} disabled={loading}>{loading ? 'Loading…' : 'Refresh'}</button>
         <button type="button" onClick={exportCsv} disabled={loading || events.length === 0}>Export CSV</button>
       </section>

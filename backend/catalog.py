@@ -244,8 +244,12 @@ def list_events(
             query = query.where(BurstEvent.burst_type == burst_type.upper())
         rows = session.scalars(query.order_by(BurstEvent.started_at.desc())).all()
         if station:
-            station_upper = station.upper()
-            rows = [row for row in rows if station_upper in row.stations]
+            station_fragment = station.casefold()
+            rows = [
+                row
+                for row in rows
+                if any(station_fragment in name.casefold() for name in (row.stations or []))
+            ]
         return [{
             "id": row.id, "source": row.source, "source_label": source_label(row.source),
             "started_at": row.started_at.replace(tzinfo=timezone.utc).isoformat(),
