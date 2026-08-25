@@ -368,7 +368,7 @@ def export_processed_fits(
 
 @router.post("/tasks", status_code=202)
 def create_task(task: TaskCreate):
-    allowed = {"burst_detect_day", "spectral_overview", "combine_time"}
+    allowed = {"spectral_overview", "combine_time"}
     if task.type not in allowed:
         raise HTTPException(status_code=422, detail=f"Unsupported task type; choose {sorted(allowed)}")
     try:

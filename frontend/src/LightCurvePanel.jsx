@@ -13,13 +13,21 @@ export default function LightCurvePanel({ layer }) {
   async function load() {
     if (!layer) return;
 
+    const frequencies = [...new Set(
+      frequency.split(/[\s,;]+/).map(Number).filter((value) => Number.isFinite(value) && value > 0),
+    )].slice(0, 8);
+    if (frequencies.length === 0) {
+      setStatus('Enter at least one valid frequency in MHz.');
+      return;
+    }
+
     setStatus('Loading light curve…');
     const params = new URLSearchParams({
       station: layer.station,
       date: layer.date,
       filename: layer.filename,
     });
-    params.append('freq_mhz', frequency);
+    frequencies.forEach((value) => params.append('freq_mhz', String(value)));
 
     try {
       const response = await apiFetch(`/api/lightcurve?${params}`);
@@ -36,17 +44,37 @@ export default function LightCurvePanel({ layer }) {
     setStatus('');
   }
 
+  function exportCsv() {
+    if (!data) return;
+    const header = ['UTC', ...data.curves.map((curve) => `${curve.frequency_mhz} MHz (${data.unit})`)];
+    const rows = data.times.map((time, index) => [
+      time,
+      ...data.curves.map((curve) => curve.intensity[index] ?? ''),
+    ]);
+    const csv = [header, ...rows].map((row) => row.map((value) => {
+      const text = String(value ?? '');
+      return `"${text.replaceAll('"', '""')}"`;
+    }).join(',')).join('\r\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `light-curves-${layer.station}-${layer.date}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <section className="lightcurve-card">
       <div className="lightcurve-toolbar">
         <div className="inline-controls">
           <label>
-            Frequency (MHz)
+            Frequencies (MHz)
             <input
-              type="number"
-              step="0.1"
+              type="text"
               value={frequency}
               onChange={(event) => setFrequency(event.target.value)}
+              aria-describedby="lightcurve-frequency-help"
+              placeholder="45, 55, 65"
             />
           </label>
           <button
@@ -58,16 +86,20 @@ export default function LightCurvePanel({ layer }) {
           >
             Plot light curve
           </button>
+          <span id="lightcurve-frequency-help" className="field-help">Up to eight values, separated by commas.</span>
         </div>
         {data && (
-          <button
-            type="button"
-            className="lightcurve-close"
-            onClick={close}
-            aria-label="Close light curve"
-          >
-            × Close curve
-          </button>
+          <div className="lightcurve-actions">
+            <button type="button" onClick={exportCsv}>Export CSV</button>
+            <button
+              type="button"
+              className="lightcurve-close"
+              onClick={close}
+              aria-label="Close light curve"
+            >
+              × Close curve
+            </button>
+          </div>
         )}
       </div>
 

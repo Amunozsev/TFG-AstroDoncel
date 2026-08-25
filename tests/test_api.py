@@ -1,8 +1,10 @@
+from datetime import datetime, timezone
+
 from fastapi.testclient import TestClient
 
 from backend import api_features
 from backend import main as core
-from backend.db import SessionLocal, TaskRecord
+from backend.db import SessionLocal, Station, TaskRecord
 from backend.main import app
 
 client = TestClient(app)
@@ -104,11 +106,18 @@ def test_spectral_overview_rejects_backwards_interval():
     assert response.status_code == 422
 
 
+def test_removed_full_day_scan_task_is_rejected():
+    response = client.post("/api/tasks", json={
+        "type": "burst_detect_day", "station": "MRO", "date": "2024-01-01",
+    })
+    assert response.status_code == 422
+
+
 def test_xmatch_timeline_builds_clickable_station_events(monkeypatch):
     event = {
         "id": 7,
         "source": "dearce_v3",
-        "source_label": "deARCE detection (v3)",
+        "source_label": "deARCE (v3)",
         "started_at": "2026-07-24T12:04:00+00:00",
         "ended_at": "2026-07-24T12:05:00+00:00",
         "burst_type": "III",
@@ -133,3 +142,36 @@ def test_xmatch_timeline_builds_clickable_station_events(monkeypatch):
     assert row["positive"] is True
     assert row["events"] == [event]
     assert row["availability"][0]["start_at"].startswith("2026-07-24T12:00:00")
+
+
+def test_station_inventory_hides_stale_rows_but_preserves_recent_and_live(monkeypatch):
+    old_name = "TEST-RETIRED-STATION"
+    recent_name = "TEST-RECENT-STATION"
+    live_name = "TEST-LIVE-STATION"
+    with SessionLocal() as session:
+        session.merge(Station(
+            name=old_name,
+            first_seen_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+            last_seen_at=datetime(2020, 1, 2, tzinfo=timezone.utc),
+        ))
+        session.merge(Station(
+            name=recent_name,
+            first_seen_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+            last_seen_at=datetime(2026, 8, 20, tzinfo=timezone.utc),
+        ))
+        session.commit()
+    monkeypatch.setenv("STATION_RETENTION_DAYS", "30")
+    monkeypatch.setattr(core, "_scan_recent_ethz_stations", lambda: ([live_name], "2026-08-24"))
+    try:
+        result = core.get_stations()
+        assert live_name in result.stations
+        assert recent_name in result.stations
+        assert old_name not in result.stations
+        assert result.retention_days == 30
+    finally:
+        with SessionLocal() as session:
+            for name in (old_name, recent_name):
+                row = session.get(Station, name)
+                if row:
+                    session.delete(row)
+            session.commit()

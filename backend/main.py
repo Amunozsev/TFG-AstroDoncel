@@ -1,6 +1,6 @@
 """
 AstroDoncel API — FastAPI backend for e-CALLISTO spectrograms.
-Scientific engine ported from e-CALLISTO FITS Analyzer (Sahan S Liyanage, v2.4.1).
+Scientific engine adapted from e-CALLISTO FITS Analyzer (Sahan S. Liyanage, through v2.8.0).
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi import Request as FastAPIRequest
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from scipy.ndimage import label as ndi_label
 from sqlalchemy import select
@@ -62,6 +63,10 @@ async def request_observability(request: FastAPIRequest, call_next):
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     response.headers["X-Request-ID"] = request_id
     response.headers["Server-Timing"] = f"app;dur={elapsed_ms:.1f}"
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
     logger.info("request id=%s method=%s path=%s status=%s duration_ms=%.1f", request_id, request.method, request.url.path, response.status_code, elapsed_ms)
     return response
 
@@ -495,6 +500,7 @@ class StationsResponse(BaseModel):
     source: str
     reference_date: str = ""
     refreshed_at: datetime | None = None
+    retention_days: int = 90
     details: list[dict] = Field(default_factory=list)
 
 
@@ -517,6 +523,7 @@ class StationsGeoResponse(BaseModel):
     burst_total: int = 0   # total burst-station detections counted that month
     unmapped: list[str] = Field(default_factory=list)   # live stations we have no coordinates for (yet)
     fits_coord_count: int = 0  # how many plotted coords came from real FITS headers
+    retention_days: int = 90
 
 
 class FileEntry(BaseModel):
@@ -1112,9 +1119,13 @@ def _percentile_clip_global(data: np.ndarray, lo: float = 2.0, hi: float = 98.0)
     contrast: it crushes the most extreme outliers and lets moderate bursts
     stand out clearly against the background.
     """
-    vmin = float(np.nanpercentile(data, lo))
-    vmax = float(np.nanpercentile(data, hi))
-    return vmin, vmax
+    if not 0 <= lo < hi <= 100:
+        raise ValueError("percentile bounds must satisfy 0 <= lo < hi <= 100")
+    # Request both bounds together so NumPy performs one order-statistics pass.
+    # This follows the v2.8.0 playback/row-statistics optimisation from Sahan's
+    # analyzer while keeping AstroDoncel's established 2–98 % display contract.
+    vmin, vmax = np.nanpercentile(np.asarray(data), [lo, hi])
+    return float(vmin), float(vmax)
 
 
 def _header_to_dict(header) -> dict:
@@ -1130,6 +1141,12 @@ def _header_to_dict(header) -> dict:
     return result
 
 
+def _as_aware_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
 def _record_fits_metadata(station: str, path: str, header) -> None:
     """Persist searchable FITS metadata without making processing depend on the DB."""
     filename = os.path.basename(path)
@@ -1139,14 +1156,28 @@ def _record_fits_metadata(station: str, path: str, header) -> None:
     observed = datetime.strptime("".join(match.groups()), "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
     try:
         with session_scope() as session:
+            station_name = station.upper()
             row = session.scalar(select(FitsFile).where(FitsFile.filename == filename))
             if row is None:
-                row = FitsFile(filename=filename, station=station.upper(), observed_at=observed)
+                row = FitsFile(filename=filename, station=station_name, observed_at=observed)
                 session.add(row)
             row.path = path
             row.origin = "nas" if os.path.realpath(path).startswith(os.path.realpath(ECALLISTO_DATA_DIR)) else "cache"
             row.focus_code = _focus_code_from_filename(filename)
             row.fits_header = _header_to_dict(header)
+            station_row = session.get(Station, station_name)
+            if station_row is None:
+                session.add(Station(
+                    name=station_name,
+                    first_seen_at=observed,
+                    last_seen_at=observed,
+                ))
+            else:
+                first_seen = _as_aware_utc(station_row.first_seen_at)
+                last_seen = _as_aware_utc(station_row.last_seen_at)
+                station_row.first_seen_at = min(first_seen or observed, observed)
+                station_row.last_seen_at = max(last_seen or observed, observed)
+                station_row.updated_at = datetime.now(timezone.utc)
     except Exception as exc:
         logger.debug("Could not persist FITS metadata: %s", exc)
 
@@ -1372,7 +1403,7 @@ def readiness():
     return payload
 
 
-# e-CALLISTO monthly burst lists (deARCE, UAH / ETHZ). One text file per month
+# e-CALLISTO monthly burst lists (deARCE (v3), UAH / ETHZ). One text file per month
 # lists every detected solar radio burst and the stations that recorded it.
 _BURSTLIST_BASE = "http://soleil.i4ds.ch/solarradio/data/BurstLists/2010-yyyy_Monstein"
 _BURST_CACHE: dict[str, tuple[float, dict[str, int]]] = {}
@@ -1470,10 +1501,37 @@ def _persist_station_inventory(names: list[str], reference_date: str) -> None:
                 station.updated_at = now
 
 
-def _known_station_names() -> set[str]:
+def _station_retention_days() -> int:
+    try:
+        return max(1, min(3650, int(os.environ.get("STATION_RETENTION_DAYS", "90"))))
+    except ValueError:
+        logger.warning("Invalid STATION_RETENTION_DAYS; using 90")
+        return 90
+
+
+def _known_station_names(reference_date: str = "") -> set[str]:
+    """Return stations seen recently, plus FITS-only stations without a sighting date.
+
+    Historical rows remain in the database for provenance, but stations absent
+    beyond the configured retention window automatically leave the live UI.
+    """
+    retention_days = _station_retention_days()
+    try:
+        anchor = (
+            datetime.strptime(reference_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            if reference_date
+            else datetime.now(timezone.utc)
+        )
+    except ValueError:
+        anchor = datetime.now(timezone.utc)
+    cutoff = anchor - timedelta(days=retention_days)
     try:
         with session_scope() as session:
-            return set(session.scalars(select(Station.name)).all())
+            return set(session.scalars(
+                select(Station.name).where(
+                    Station.last_seen_at.is_(None) | (Station.last_seen_at >= cutoff)
+                )
+            ).all())
     except Exception as exc:
         logger.debug("Persisted station catalogue unavailable: %s", exc)
         return set()
@@ -1526,7 +1584,7 @@ def get_stations():
     """Return all known stations plus archive-derived active/inactive state."""
     reporting, ref_date = _scan_recent_ethz_stations()
     reporting_set = set(reporting)
-    known = _known_station_names()
+    known = _known_station_names(ref_date)
     catalog = sorted(known | reporting_set)
     source = "ethz+persisted"
     if not catalog:
@@ -1558,6 +1616,7 @@ def get_stations():
         source=source,
         reference_date=ref_date,
         refreshed_at=datetime.now(timezone.utc),
+        retention_days=_station_retention_days(),
         details=details,
     )
 
@@ -1592,7 +1651,7 @@ def get_stations_geo():
     # source of truth for *which* stations exist — only a coordinate fallback.
     # Station existence comes from archive/catalog sightings. The coordinate
     # registry is only a lookup table and must never create phantom stations.
-    catalog = reporting_set | _known_station_names()
+    catalog = reporting_set | _known_station_names(ref_date)
 
     entries: list[StationGeo] = []
     unmapped: list[str] = []
@@ -1643,6 +1702,7 @@ def get_stations_geo():
         burst_total=sum(burst_counts.values()),
         unmapped=sorted(unmapped),
         fits_coord_count=fits_count,
+        retention_days=_station_retention_days(),
     )
 
 
@@ -2305,3 +2365,18 @@ async def get_goes(date: str = Query(..., description="Date YYYY-MM-DD")):
 
 
 # uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+
+
+def _mount_frontend() -> None:
+    """Serve the production Vite build from the API in single-host deployments."""
+    if os.environ.get("SERVE_FRONTEND", "").strip().lower() not in {"1", "true", "yes"}:
+        return
+    dist_dir = os.path.realpath(os.environ.get("FRONTEND_DIST_DIR", "frontend/dist"))
+    if not os.path.isfile(os.path.join(dist_dir, "index.html")):
+        logger.warning("SERVE_FRONTEND enabled but no index.html exists in %s", dist_dir)
+        return
+    app.mount("/", StaticFiles(directory=dist_dir, html=True), name="frontend")
+    logger.info("Serving the AstroDoncel frontend from %s", dist_dir)
+
+
+_mount_frontend()

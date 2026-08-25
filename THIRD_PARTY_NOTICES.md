@@ -4,10 +4,11 @@ This file records the provenance that is currently known. It is not a substitute
 
 | Component/data | Use in AstroDoncel | Provenance/licence status |
 |---|---|---|
-| e-CALLISTO / ETHZ archive | FITS observations and official monthly burst lists | External scientific data service. Cite e-CALLISTO and verify the archive's current data-use terms for publication/redistribution. |
-| Sahan S. Liyanage — `e-Callisto_FITS_Analyzer` | Reference processing and interaction patterns | Reference implementation. Exact upstream URL/commit and licence must be recorded before formal release. |
-| Sahan S. Liyanage — `Burst_No_Burst` | CNN+MIL architecture, preprocessing and supplied weights | Origin described in `MODEL_CARD.md`. Weight redistribution permission and dataset licence are still pending written confirmation. |
-| Sahan S. Liyanage — `ecallistolib` | Reference notebooks/library | Not required at runtime and not vendored into the application. Exact upstream URL/commit and licence remain to be recorded. |
+| e-CALLISTO / ETHZ/FHNW archive | FITS observations and monthly burst-list fallback | External scientific data service: <https://www.e-callisto.org/Data/data.html>. Cite e-CALLISTO and verify the archive's current data-use terms for publication/redistribution. |
+| Universidad de Alcalá — original AstroDoncel portal | Product reference and deARCE (v3) monthly catalogue | External portal/data source: <https://astrodoncel.uah.es/dashboard/>. Preserve deARCE (v3) as a catalogue source distinct from ML/heuristic output. |
+| Sahan S. Liyanage — `e-Callisto_FITS_Analyzer` v2.8.0 | Reference processing, comparison, measurement, provenance and interaction patterns | MIT reference implementation: <https://github.com/SaanDev/e-Callisto_FITS_Analyzer>. Cite the published article <https://doi.org/10.1093/rasti/rzag056>. AstroDoncel contains adaptations, not the desktop application. |
+| Sahan S. Liyanage — `Burst_No_Burst` | CNN+MIL architecture, preprocessing and supplied weights | Origin described in `MODEL_CARD.md`. The source `model.pt` is not published. Redistribution permission for the runtime ONNX weights and the dataset licence are still pending written confirmation. |
+| Sahan S. Liyanage — `ecallistolib` | Reference notebooks/library | Not required at runtime and not vendored into the application. Upstream: <https://github.com/SaanDev/ecallistolib>. |
 | SunPy and Astropy ecosystem | FITS, time series and GOES access | Installed Python dependencies; retain their licence notices in any binary distribution. |
 | Plotly.js / react-plotly.js | Interactive scientific plots and map | Installed npm dependencies; retain their licence notices in any bundled redistribution. |
 | FastAPI, NumPy, SciPy, SQLAlchemy, ONNX Runtime, React and Vite | Application runtime/tooling | Installed dependencies governed by their respective upstream licences. |

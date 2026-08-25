@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 from sqlalchemy import select
 
-from backend.db import BurstEvent, TaskRecord, init_db, session_scope
+from backend.db import TaskRecord, init_db, session_scope
 
 RESULT_DIR = os.environ.get("TASK_RESULT_DIR", os.path.join("data", "task_results"))
 logger = logging.getLogger(__name__)
@@ -103,125 +103,6 @@ def _write_artifact(task_id: str, payload: dict) -> str:
         except OSError:
             pass
     return filename
-
-
-def _burst_detect_day(task: TaskRecord) -> dict:
-    from backend import burst_detect
-    from backend import main as core
-
-    station, date = task.payload["station"], task.payload["date"]
-    filenames = sorted(set(core._list_local_fits_files(station, date)) | set(core._list_ethz_files(station, date)))
-    files_processed = 0
-    skipped_files = []
-    events_inserted = 0
-    candidates = []
-    for index, filename in enumerate(filenames):
-        _check_cancelled(task.id)
-        path = core._download_from_ethz(station, date, filename)
-        if not path:
-            skipped_files.append({"filename": filename, "reason": "download_failed"})
-            _update(task.id, progress=(index + 1) / max(1, len(filenames)))
-            continue
-        try:
-            raw, freqs, times, header = core._load_raw_cached(path)
-            result = burst_detect.detect_bursts(
-                raw,
-                freqs,
-                core._time_offsets_seconds(times, header),
-                core._observation_start(header),
-            )
-            files_processed += 1
-        except Exception:
-            logger.exception("Full-day burst scan skipped %s for %s on %s", filename, station, date)
-            skipped_files.append({"filename": filename, "reason": "processing_failed"})
-            _update(task.id, progress=(index + 1) / max(1, len(filenames)))
-            continue
-        if result["is_burst"] or result["is_candidate"]:
-            for event_index, event in enumerate(result["events"]):
-                started = datetime.fromisoformat(event["start_utc"].replace("Z", "+00:00"))
-                ended = datetime.fromisoformat(event["end_utc"].replace("Z", "+00:00"))
-                key = f"{filename}:{event_index}:{event['start_utc']}"
-                with session_scope() as session:
-                    detection_source = (
-                        "heuristic_visual" if result["event_source"].startswith("visual") else "ml_cnn"
-                    )
-                    event_id = session.scalar(select(BurstEvent.id).where(
-                        BurstEvent.source == detection_source, BurstEvent.event_key == key
-                    ))
-                    reports = session.scalars(
-                        select(BurstEvent).where(
-                            BurstEvent.source.in_([
-                                "dearce_v3",
-                                "ecallisto_v2",
-                                "legacy_monthly",
-                                "official_v2",
-                            ]),
-                            BurstEvent.started_at <= ended,
-                            BurstEvent.ended_at >= started,
-                        )
-                    ).all()
-                    matched = next((report for report in reports if station.upper() in report.stations), None)
-                    is_high_confidence = detection_source == "ml_cnn" and result["is_burst"]
-                    is_recommended = is_high_confidence or matched is not None
-                    should_persist = detection_source == "ml_cnn"
-                    is_new = event_id is None and should_persist
-                    if is_new:
-                        detection = BurstEvent(
-                            source=detection_source, event_key=key, started_at=started, ended_at=ended,
-                            burst_type=None, stations=[station], score=result["file_score"],
-                            metadata_json={
-                                "filename": filename, "event": event, "model_version": result["model_version"],
-                                "model_sha256": result["model_sha256"],
-                                "inference_method": result["inference_method"],
-                                "localization_method": result["localization_method"],
-                                "matched_official_event_id": matched.id if matched else None,
-                                "matched_official_burst_type": matched.burst_type if matched else None,
-                            },
-                        )
-                        session.add(detection)
-                        session.flush()
-                        event_id = detection.id
-                        events_inserted += 1
-                    frequency_band = event.get("freq_band_mhz") or [None, None]
-                    candidates.append({
-                        "id": event_id,
-                        "station": station,
-                        "started_at": event["start_utc"],
-                        "ended_at": event["end_utc"],
-                        "filename": filename,
-                        "source": detection_source,
-                        "source_label": (
-                            "CNN+MIL model" if detection_source == "ml_cnn" else "Visual heuristic"
-                        ),
-                        "file_score": result["file_score"],
-                        "peak_score": event.get("peak_score"),
-                        "frequency_min_mhz": frequency_band[0],
-                        "frequency_max_mhz": frequency_band[1],
-                        "matched_official_event_id": matched.id if matched else None,
-                        "matched_official_burst_type": matched.burst_type if matched else None,
-                        "is_burst": result["is_burst"],
-                        "is_recommended": is_recommended,
-                        "persisted": event_id is not None,
-                        "is_new": is_new,
-                    })
-        _update(task.id, progress=(index + 1) / max(1, len(filenames)))
-    ml_candidates = sum(item["source"] == "ml_cnn" for item in candidates)
-    heuristic_candidates = sum(item["source"] == "heuristic_visual" for item in candidates)
-    official_matches = sum(item["matched_official_event_id"] is not None for item in candidates)
-    recommended_candidates = sum(item["is_recommended"] for item in candidates)
-    return {
-        "files_discovered": len(filenames),
-        "files_processed": files_processed,
-        "files_skipped": len(skipped_files),
-        "skipped_files": skipped_files,
-        "events_found": len(candidates),
-        "ml_candidates": ml_candidates,
-        "heuristic_candidates": heuristic_candidates,
-        "official_matches": official_matches,
-        "recommended_candidates": recommended_candidates,
-        "events_inserted": events_inserted,
-        "candidates": candidates,
-    }
 
 
 def _spectral_overview(task: TaskRecord) -> dict:
@@ -391,7 +272,6 @@ def _combine_time(task: TaskRecord) -> dict:
 
 
 HANDLERS = {
-    "burst_detect_day": _burst_detect_day,
     "spectral_overview": _spectral_overview,
     "combine_time": _combine_time,
 }

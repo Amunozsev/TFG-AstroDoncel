@@ -20,7 +20,7 @@ export default function Statistics({ onOpenStation, onOpenEvent }) {
   const [date, setDate] = useState(today);
   const [ranking, setRanking] = useState([]);
   const [timeline, setTimeline] = useState([]);
-  const [sourceLabel, setSourceLabel] = useState('deARCE detection (v3)');
+  const [sourceLabel, setSourceLabel] = useState('deARCE (v3)');
   const [error, setError] = useState('');
   const [xmatchDate, setXmatchDate] = useState(today);
   const [xmatch, setXmatch] = useState(null);
@@ -41,7 +41,7 @@ export default function Statistics({ onOpenStation, onOpenEvent }) {
       const timelineData = await timelineResponse.json();
       setRanking(rankingData.ranking ?? []);
       setTimeline(timelineData.points ?? []);
-      setSourceLabel(rankingData.source_label ?? 'deARCE detection (v3)');
+      setSourceLabel(rankingData.source_label ?? 'deARCE (v3)');
     } catch (cause) {
       setError(cause.message);
     }
@@ -94,7 +94,7 @@ export default function Statistics({ onOpenStation, onOpenEvent }) {
     marker: { color: '#ff3b30', size: 15, symbol: 'line-ns-open', line: { color: '#ff3b30', width: 3 } },
     text: eventPoints.map((item) => `${item.station} · ${item.event.burst_type ?? 'burst'}`),
     hovertemplate: '%{text}<br>%{x|%H:%M:%S} UTC<br>Click to open spectrogram<extra></extra>',
-    name: 'deARCE burst',
+    name: 'deARCE (v3)',
   };
 
   const handleViewKeyDown = (event) => {
@@ -111,7 +111,7 @@ export default function Statistics({ onOpenStation, onOpenEvent }) {
         <div>
           <p className="eyebrow">Network intelligence</p>
           <h1>Statistics &amp; Xmatch</h1>
-          <p className="page-subtitle">Compare station coverage with deARCE bursts, or review activity across the network.</p>
+          <p className="page-subtitle">Compare station coverage with deARCE (v3), or review activity across the network.</p>
         </div>
       </header>
 
@@ -152,7 +152,7 @@ export default function Statistics({ onOpenStation, onOpenEvent }) {
           <div>
             <p className="eyebrow">Cross-station context</p>
             <h2 id="xmatch-title">Xmatch timeline</h2>
-            <p>Grey bands are archive availability. Red markers are {xmatch?.source_label ?? 'deARCE detections'}; select one to open that station at the event time.</p>
+            <p>Grey bands are archive availability. Red markers are {xmatch?.source_label ?? 'deARCE (v3)'}; select one to open that station at the event time.</p>
           </div>
           <div className="stats-controls">
             <label>Date<input type="date" value={xmatchDate} onChange={(event) => setXmatchDate(event.target.value)} /></label>

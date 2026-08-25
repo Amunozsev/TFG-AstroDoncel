@@ -5,9 +5,9 @@ Portal web para visualizar y analizar espectrogramas solares de la red e-CALLIST
 Trabajo de Fin de Grado — Universidad de Alcalá, 2026
 Autor: Alfonso Muñoz Sevillano
 
-AstroDoncel combina un frontend React con una API FastAPI y un worker científico. Permite explorar estaciones y ficheros FITS, procesar espectrogramas, comparar observaciones, consultar el catálogo de bursts y ejecutar análisis de día completo sin bloquear la API.
+AstroDoncel combina un frontend React con una API FastAPI y un worker científico. Permite explorar estaciones y ficheros FITS, procesar espectrogramas, comparar observaciones, consultar Burst Reports y generar overviews sin bloquear la API.
 
-> Estado: prototipo funcional de TFG. Los cálculos Type II y algunos localizadores visuales son experimentales; deben validarse antes de usarse como resultado científico. Consulta [ROADMAP_COMPLETO_TFG.md](ROADMAP_COMPLETO_TFG.md) para la auditoría y el plan pendiente.
+> Estado: candidato a versión final del TFG. Los cálculos Type II y algunos localizadores visuales son experimentales; deben validarse antes de usarse como resultado científico. Las limitaciones científicas y de redistribución están documentadas en [MODEL_CARD.md](MODEL_CARD.md), [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) y la sección **Limitaciones conocidas** de este README.
 
 ## Inicio rápido recomendado
 
@@ -35,7 +35,7 @@ Si el profesor no tiene Git, puede descargar **Code → Download ZIP** desde Git
 
 ### Qué se recupera desde GitHub
 
-Un clon limpio contiene todo lo necesario para construir y ejecutar la aplicación: código backend/frontend, migraciones, modelo ONNX, configuración Docker/Nginx, dependencias fijadas, tests y documentación. Para continuar el desarrollo en otro equipo, empieza también por [HANDOFF.md](HANDOFF.md); resume el estado actual y las decisiones que antes podían depender del contexto de las conversaciones.
+Un clon limpio contiene todo lo necesario para construir y ejecutar la aplicación: código backend/frontend, migraciones, modelo ONNX, configuración Docker/Nginx, dependencias fijadas, tests y documentación pública de instalación, contribución y procedencia.
 
 No se versionan deliberadamente:
 
@@ -53,7 +53,7 @@ Para trabajar y hacer `git pull`/`push`, usa `git clone` en vez de **Download ZI
 
 ### Archivo y espectrogramas
 
-- Inventario vivo y persistente de estaciones desde el archivo ETHZ: distingue activas e inactivas y descubre automáticamente estaciones nuevas.
+- Inventario vivo y persistente de estaciones desde el archivo ETHZ: descubre altas, distingue activas/inactivas y retira de la interfaz las que superan el periodo configurable sin observaciones, conservando su historial.
 - Caché local de FITS y lectura opcional de un archivo NAS en modo solo lectura.
 - Selección por estación, fecha, hora y focus code.
 - Espectrograma Plotly, zoom de alta resolución y navegación entre ficheros.
@@ -70,17 +70,19 @@ Para trabajar y hacer `git pull`/`push`, usa `git clone` en vez de **Download ZI
 - Contraste automático/manual y presets locales.
 - Overlay GOES/XRS-B con caché.
 - Regla de deriva en MHz/s y visor de cabeceras FITS.
-- Curva de luz a una frecuencia seleccionada, con panel cerrable.
+- Curvas de luz de hasta ocho frecuencias simultáneas, con exportación CSV y panel cerrable.
 - Overview espectral para un intervalo UTC exacto, desde/hasta fecha y hora, sobre las estaciones seleccionadas o todas las conocidas.
 - El overview conserva todos los grupos de receptor/eje de frecuencia compatibles, informa los ficheros omitidos y permite cambiar la escala de color.
+- Manifiesto JSON reproducible con FITS seleccionados, unidades, procesamiento, configuración visual y procedencia científica; nunca incluye rutas locales.
+- Cálculo conjunto de percentiles de visualización, adaptado de la optimización de estadísticas de e-CALLISTO FITS Analyzer v2.8.0.
 
 ### Catálogo y detección
 
-- Catálogo `deARCE detection (v3)` con filtros por fecha, estación y tipo, longitudes solares Min/Mid/Max y enlaces directos desde cada estación al bloque FITS del evento.
+- Catálogo **deARCE (v3)** por día o mes completo, con filtros por estación/tipo, exportación CSV, longitudes solares Min/Mid/Max y enlaces directos al bloque FITS del evento.
 - Estadísticas por estación y línea temporal mensual con el día visible bajo cada barra.
-- Xmatch diario interactivo: disponibilidad por estación, detecciones deARCE clicables y filtro entre todas las estaciones o solo positivas.
+- Xmatch diario interactivo: disponibilidad por estación, eventos **deARCE (v3)** clicables y filtro entre todas las estaciones o solo positivas.
 - Inferencia CNN+MIL con el modelo ONNX incluido.
-- Detección de fichero actual y tarea de detección de día completo.
+- Detección ML del fichero actual; el escaneo completo de una estación durante todo el día se retiró por su coste y bajo valor práctico.
 - Cruce temporal entre candidatos ML y catálogo, separado del Xmatch visual diario.
 - Endpoint experimental de band-splitting Type II.
 
@@ -102,12 +104,13 @@ frontend/                    React 19 + Vite 8 + Plotly
   src/Statistics.jsx         estadísticas y Xmatch interactivo
   src/DailyOverview.jsx      overview multiestación del worker
   src/LightCurvePanel.jsx    curvas de luz
+  src/analysisManifest.js    export reproducible sin rutas locales
 
 backend/
   main.py                    API principal, archivo y pipeline científico
   api_features.py            catálogo, exportaciones, curvas y tareas
   burst_detect.py            inferencia ONNX y postprocesado
-  catalog.py                 parser e ingesta de deARCE v3 / e-CALLISTO v2
+  catalog.py                 parser e ingesta de deARCE (v3) / e-CALLISTO v2
   db.py                      SQLAlchemy: SQLite/PostgreSQL
   security.py                validación de identificadores y rutas seguras
   type_ii.py                 cálculo experimental Type II
@@ -118,6 +121,8 @@ tests/                       pruebas backend
 frontend/src/*.test.jsx      regresiones de interfaz con Vitest
 tools/                       exportación ONNX y limpieza de caché
 nginx/                       proxy y frontend de producción
+Dockerfile                   imagen única: frontend + API + worker
+scripts/start_single_host.py supervisor del despliegue monohost
 ```
 
 Flujo principal:
@@ -220,7 +225,7 @@ Abre:
 - Salud: <http://127.0.0.1:8000/health>
 - Disponibilidad detallada: <http://127.0.0.1:8000/ready>
 
-El worker es necesario para `Detect full day`, `Build daily overview` y `Combine next blocks`. El resto de la API puede funcionar sin él.
+El worker es necesario para `Spectral overview` y `Combine next blocks`. La detección ML del fichero actual se mantiene como petición acotada; no existe ya una tarea de escaneo diario completo.
 
 En Linux/macOS sustituye `.\.venv\Scripts\python.exe` por `.venv/bin/python`.
 
@@ -259,29 +264,33 @@ El desarrollo local funciona sin `.env`: usa SQLite en `data/astrodoncel.db`, ca
 | `MAX_FITS_DOWNLOAD_BYTES` | límite por descarga remota | `134217728` (128 MiB) |
 | `CATALOG_REFRESH_HOURS` | vigencia de cada mes del catálogo | `12` |
 | `STATION_REFRESH_MINUTES` | vigencia del escaneo de estaciones activas | `60` |
+| `STATION_RETENTION_DAYS` | días sin observaciones antes de ocultar una estación del inventario vivo | `90` |
 | `ARCHIVE_INDEX_REFRESH_MINUTES` | vigencia del índice de ficheros por día | `60` |
 | `OVERVIEW_MAX_STATIONS` | máximo de estaciones por overview | `120` |
 | `OVERVIEW_MAX_HOURS` | máximo de horas por overview | `72` |
 | `XMATCH_NOMINAL_BLOCK_MINUTES` | duración heurística usada para dibujar disponibilidad | `15` |
 | `VITE_API_BASE_URL` | URL API embebida al construir frontend | API local en dev; mismo origen en producción |
+| `PORT` | puerto del contenedor monohost | `8000` |
+| `SERVE_FRONTEND` | servir el build Vite desde FastAPI | activado en el `Dockerfile` raíz |
+| `RUN_TASK_WORKER` | ejecutar el worker persistente en la imagen monohost | `1` |
 
 La API nunca acepta una ruta de disco enviada por el cliente. Estación, fecha y filename deben pasar `backend.security`.
 
 ### Descubrimiento automático de estaciones
 
-`GET /api/stations` escanea el índice del archivo ETHZ, guarda cada estación observada en la tabla `stations` y devuelve la unión de estaciones activas y conocidas. `active` significa que la estación publicó al menos un FITS en el día más reciente con datos; una estación conocida que no publicó ese día aparece como inactiva. La caché se renueva según `STATION_REFRESH_MINUTES`, por lo que no hay que editar una lista al añadir una estación en el archivo.
+`GET /api/stations` escanea los ocho días recientes del archivo ETHZ, guarda cada estación observada y devuelve las activas junto a las vistas durante `STATION_RETENTION_DAYS`. `active` significa que publicó al menos un FITS en el día más reciente con datos; una estación reciente que no publicó ese día aparece como inactiva. Superado el periodo de retención deja de aparecer automáticamente, pero su fila histórica y coordenadas no se destruyen. El frontend vuelve a consultar el inventario cada 15 minutos y la caché del servidor se renueva según `STATION_REFRESH_MINUTES`; no hay que editar una lista para añadir o retirar estaciones.
 
 `GET /api/stations/geo` usa la misma unión. Las coordenadas autoritativas se leen de `OBS_LAT`, `OBS_LON`, `OBS_LAC` y `OBS_LOC` en cabeceras FITS y se persisten en SQLite/PostgreSQL y `data/station_coords.json`. Una estación nueva sin coordenadas queda en `unmapped` mientras se descarga en background un FITS para aprenderlas; nunca se inventan coordenadas. Los valores manuales heredados solo sirven como fallback temporal para una estación ya descubierta, no para decidir qué estaciones existen.
 
-El catálogo de bursts también registra estaciones observadas, de modo que una estación puede aparecer en listas mensuales y estadísticas aunque ese día esté inactiva. Para cambiar la frecuencia de refresco o los límites del overview basta con las variables anteriores; no hay constantes de producto repartidas por el frontend.
+El catálogo de bursts y los FITS locales/NAS actualizan también primer/último avistamiento. Una estación puede aparecer como inactiva mientras siga dentro de la ventana reciente. Para cambiar refresco, retención o límites del overview se usan las variables anteriores.
 
 ### Procedencia del catálogo de bursts
 
-La vista Burst Reports usa por defecto `dearce_v3`, mostrado como **deARCE detection (v3)**. La fuente primaria es el fichero mensual `NCELESTINA_YYYY_MM.link` de AstroDoncel/UAH; contiene fecha, intervalo UTC, tipo, `Min.lon`, `Mid.lon`, `Max.lon` y estaciones. El código intenta HTTPS con verificación normal y, si el certificado del servidor no es válido, el mismo recurso HTTP público. Nunca desactiva la verificación TLS.
+La vista Burst Reports usa por defecto `dearce_v3`, mostrado exactamente como **deARCE (v3)**. Permite consultar un día o un mes completo; `end` es siempre exclusivo. La fuente primaria es el fichero mensual `NCELESTINA_YYYY_MM.link` de AstroDoncel/UAH; contiene fecha, intervalo UTC, tipo, `Min.lon`, `Mid.lon`, `Max.lon` y estaciones. El código intenta HTTPS con verificación normal y, si el certificado del servidor no es válido, el mismo recurso HTTP público. Nunca desactiva la verificación TLS.
 
-Como último fallback de disponibilidad usa `e-CALLISTO_YYYY_MM.txt` del archivo FHNW/ETHZ únicamente si la cabecera declara deARCE v3. Ese formato no publica las tres longitudes y la interfaz muestra `—`, no un valor estimado. También existe la fuente seleccionable `ecallisto_v2`, etiquetada **Official e-CALLISTO (v2)**. No se mezclan en una misma consulta las detecciones deARCE, candidatos ML y heurísticas visuales.
+Como último fallback de disponibilidad usa `e-CALLISTO_YYYY_MM.txt` del archivo FHNW/ETHZ únicamente si la cabecera declara **deARCE (v3)**. Ese formato no publica las tres longitudes y la interfaz muestra `—`, no un valor estimado. También existe la fuente seleccionable `ecallisto_v2`, etiquetada **Official e-CALLISTO (v2)**. No se mezclan en una misma consulta **deARCE (v3)**, candidatos ML y heurísticas visuales.
 
-La clave `official_v2` puede seguir existiendo en bases locales creadas por versiones antiguas; se conserva para no destruir historial, pero ya no es la fuente por defecto ni se presenta como procedencia de los datos deARCE v3.
+La clave `official_v2` puede seguir existiendo en bases locales antiguas; se conserva para no destruir historial, pero ya no es la fuente por defecto ni se presenta como procedencia de deARCE (v3).
 
 ## Base de datos y migraciones
 
@@ -292,6 +301,36 @@ SQLite es el fallback de desarrollo. El stack Docker usa PostgreSQL.
 ```
 
 Las migraciones son explícitas y se prueban en upgrade/downgrade. Antes de aplicarlas sobre una base persistente, realiza una copia de seguridad. Si ya arrancaste una versión antigua que creó las tablas mediante `create_all` pero no tiene `alembic_version`, no ejecutes el upgrade inicial a ciegas: respalda la base y usa `alembic stamp head` solo después de comprobar que su esquema coincide.
+
+## Despliegue monohost (Railway)
+
+El `Dockerfile` de la raíz es la opción recomendada para publicar. Compila React, copia el build dentro de la imagen Python y arranca, bajo un único supervisor, las migraciones Alembic, el worker persistente y FastAPI. FastAPI sirve tanto el portal como `/api`, `/docs`, `/health` y `/ready` en el mismo dominio y en el `PORT` asignado por el host. Frontend y backend no se despliegan como servicios separados.
+
+Prueba local de esa imagen con SQLite y un volumen persistente:
+
+```powershell
+docker build -t astrodoncel:final .
+docker volume create astrodoncel_single_data
+docker run --rm -p 8000:8000 `
+  -e DATABASE_URL=sqlite:////data/astrodoncel.db `
+  -v astrodoncel_single_data:/data `
+  astrodoncel:final
+```
+
+Abre <http://127.0.0.1:8000> y comprueba <http://127.0.0.1:8000/ready>. Para producción se recomienda PostgreSQL, no SQLite.
+
+Pasos en Railway:
+
+1. Crea un proyecto desde el repositorio GitHub y un único servicio de aplicación. `railway.toml` selecciona el `Dockerfile` raíz y usa `/ready` como healthcheck.
+2. Añade PostgreSQL desde **New → Database → PostgreSQL**. En las variables del servicio de aplicación crea `DATABASE_URL=${{Postgres.DATABASE_URL}}` como referencia al servicio gestionado; AstroDoncel normaliza automáticamente las variantes `postgres://` y `postgresql://` para Psycopg 3.
+3. Adjunta un volumen al servicio de aplicación con mount path `/data`. PostgreSQL conserva catálogo/tareas; este volumen conserva FITS descargados, GOES, coordenadas aprendidas y artefactos entre despliegues.
+4. Mantén `RUN_TASK_WORKER=1`, `SERVE_FRONTEND=1`, `BURST_INTRA_OP_THREADS=1` y ajusta límites de cola/overview según la memoria contratada. No fijes `PORT`: Railway lo inyecta.
+5. Genera un dominio público para el servicio de aplicación y despliega. Al ser mismo origen, no hace falta una URL pública distinta para la API.
+6. Verifica `/ready`, `/docs`, una descarga FITS, una curva multifrecuencia y una tarea corta de overview. Revisa también reinicio y persistencia del volumen.
+
+Railway recomienda sus bases gestionadas y variables de referencia para sustituir el servicio PostgreSQL de Compose; consulta [Deploy a Docker Compose App](https://docs.railway.com/guides/docker-compose), [PostgreSQL](https://docs.railway.com/databases/postgresql) y [Start Command](https://docs.railway.com/deployments/start-command). La aplicación sigue siendo un único servicio público; PostgreSQL es almacenamiento gestionado privado.
+
+Vercel no es el destino recomendado para la aplicación completa: sus funciones serverless no sustituyen el worker persistente ni el almacenamiento local de FITS/artefactos. Puede alojar un frontend separado, pero eso contradice el objetivo monohost y obliga a mantener otro servicio para FastAPI y el worker.
 
 ## Docker Compose
 
@@ -434,19 +473,12 @@ El CI construye y levanta el Compose sobre Linux para detectar errores de imagen
 
 `POST /api/tasks` acepta:
 
-- `burst_detect_day`
 - `spectral_overview`
 - `combine_time`
 
 Consulta progreso con `GET /api/tasks/{id}`, cancela con `POST /api/tasks/{id}/cancel` y abre el resultado comprimido con `GET /api/tasks/{id}/artifact`. La cola deduplica clics repetidos, limita trabajos activos, recupera tareas abandonadas y elimina resultados terminales tras la retención configurada.
 
-### Qué hace «Scan selected station · full day»
-
-Analiza todos los bloques FITS disponibles para la estación primaria y la fecha UTC seleccionadas. El worker combina el inventario local y el índice ETHZ, descarga los bloques que falten y ejecuta en cada uno el detector CNN+MIL ONNX. Si el postprocesado del modelo no localiza un evento, un transitorio visual especialmente fuerte puede mostrarse como señal heurística experimental; ambos métodos aparecen diferenciados en el resultado.
-
-La vista inicial **Recommended** incluye detecciones CNN+MIL que superan el umbral del bundle y cualquier señal que coincida temporalmente y por estación con el catálogo oficial. Los filtros separan CNN+MIL, coincidencias deARCE y señales visuales experimentales. Estas últimas quedan excluidas por defecto, muestran una advertencia sobre RFI/ruido persistente y no se guardan automáticamente en `burst_events`.
-
-El resumen indica bloques descubiertos, procesados y omitidos, candidatos CNN+MIL, señales experimentales y coincidencias oficiales. Los resultados se agrupan por bloque FITS y permiten abrir directamente el espectrograma de su momento. Repetir el análisis no duplica eventos ML: solo marca como guardados en esa ejecución los registros realmente insertados. Una coincidencia deARCE/e-CALLISTO se conserva como referencia; no convierte el tipo oficial en una clasificación producida por el modelo. Los registros heurísticos creados por versiones anteriores se conservan hasta ejecutar una limpieza explícita y revisada.
+### Qué hace «Spectral overview»
 
 Ejemplo de overview multiestación entre dos instantes UTC:
 
@@ -478,7 +510,7 @@ Los contratos completos y parámetros están en `/docs`.
 Backend:
 
 ```powershell
-.\.venv\Scripts\python.exe -m ruff check .
+.\.venv\Scripts\python.exe -m ruff check backend tests migrations tools scripts/start_single_host.py
 .\.venv\Scripts\python.exe -m pytest
 .\.venv\Scripts\python.exe -m pip check
 .\.venv\Scripts\python.exe -m pip_audit -r requirements-dev.txt
@@ -502,7 +534,7 @@ Instalación declarativa sin modificar el entorno:
 .\.venv\Scripts\python.exe -m pip install --dry-run -r requirements-ml.txt
 ```
 
-GitHub Actions ejecuta Ruff, pytest, ESLint y el build en cada push y pull request.
+GitHub Actions ejecuta Ruff, pytest sobre PostgreSQL, ESLint, Vitest, el build frontend, auditorías, el Compose completo y un smoke de la imagen monohost en cada push y pull request.
 
 ## Toolchain ML opcional
 
@@ -513,7 +545,7 @@ Solo para exportar o investigar el modelo:
 .\.venv\Scripts\python.exe tools/export_onnx.py --help
 ```
 
-No se debe reentrenar ni cambiar umbrales sin un dataset versionado, separación train/validation/test y métricas reproducibles. La identidad, métricas declaradas, límites y huecos de procedencia del bundle actual están en [MODEL_CARD.md](MODEL_CARD.md).
+La exportación necesita una copia local autorizada de `backend/model/burst_detector/model.pt`; ese checkpoint fuente no se publica ni se descarga automáticamente. No se debe reentrenar ni cambiar umbrales sin un dataset versionado, separación train/validation/test y métricas reproducibles. La identidad, métricas declaradas, límites y huecos de procedencia del bundle actual están en [MODEL_CARD.md](MODEL_CARD.md).
 
 ## Datos y limpieza
 
@@ -524,6 +556,8 @@ No se debe reentrenar ni cambiar umbrales sin un dataset versionado, separación
 - `station_coords.json` aprendido de cabeceras.
 - caché GOES.
 - artefactos de tareas.
+
+Tampoco se versionan `.venv/`, `frontend/node_modules/`, `frontend/dist/`, `.pytest_cache/` ni `.ruff_cache/`: son dependencias, builds o cachés regenerables. Los anteproyectos, roadmaps internos, handoffs, capturas, instrucciones de agentes y fuentes `.pt` se conservan solo de forma local cuando son necesarios. `Sahan/` también es una referencia local ignorada y no forma parte del runtime ni de la imagen Docker.
 
 La limpieza de FITS es dry-run por defecto:
 
@@ -555,14 +589,14 @@ Añade `--apply` únicamente después de revisar la lista. El script no borra SQ
 - Hay pruebas frontend de los paneles críticos, pero aún falta un E2E de navegador en CI y mayor cobertura de respuestas fuera de orden.
 - El bundle parcial de Plotly reduce mucho la carga, aunque su chunk principal sigue superando 1 MB sin comprimir.
 - Docker Compose y PostgreSQL están validados desde un clon limpio en Windows; sigue pendiente la prueba física de rendimiento, permisos y restauración en el NAS objetivo.
-- Falta elegir la licencia raíz y confirmar por escrito la redistribución de los pesos; véanse [MODEL_CARD.md](MODEL_CARD.md) y [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+- Falta elegir la licencia raíz y confirmar por escrito la redistribución de los pesos; ninguna mejora técnica puede sustituir esas dos decisiones legales. Véanse [MODEL_CARD.md](MODEL_CARD.md) y [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Créditos
 
-- Red e-CALLISTO y archivo ETHZ.
-- Universidad de Alcalá y proyecto AstroDoncel.
-- Herramientas y algoritmos de referencia de Sahan S. Liyanage, adaptados con cambios propios.
-- SunPy/Fido para acceso a GOES.
-- FastAPI, Astropy, NumPy, SciPy, SQLAlchemy, ONNX Runtime, React, Vite y Plotly.
+- **Alfonso Muñoz Sevillano** — autor del TFG AstroDoncel, Universidad de Alcalá.
+- **Universidad de Alcalá y portal AstroDoncel original** — referencia del producto y publicación de deARCE (v3): <https://astrodoncel.uah.es/dashboard/>.
+- **Red e-CALLISTO, Christian Monstein, observatorios participantes y archivo ETHZ/FHNW** — instrumentación y datos FITS: <https://www.e-callisto.org/Data/data.html>.
+- **Sahan S. Liyanage** — e-CALLISTO FITS Analyzer y Burst_No_Burst como referencias de procesamiento, interacción y detección. Software: <https://github.com/SaanDev/e-Callisto_FITS_Analyzer>. Artículo: <https://doi.org/10.1093/rasti/rzag056>.
+- **SunPy/Fido** para contexto GOES y **FastAPI, Astropy, NumPy, SciPy, SQLAlchemy, ONNX Runtime, React, Vite y Plotly** como ecosistema de ejecución.
 
 El registro de atribución y asuntos legales pendientes está en [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

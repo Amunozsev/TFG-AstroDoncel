@@ -13,7 +13,18 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 DEFAULT_SQLITE = "sqlite:///./data/astrodoncel.db"
-DATABASE_URL = os.environ.get("DATABASE_URL", DEFAULT_SQLITE).replace("postgres://", "postgresql+psycopg://", 1)
+
+
+def normalize_database_url(value: str) -> str:
+    """Use the installed Psycopg 3 driver for common managed-Postgres URLs."""
+    if value.startswith("postgres://"):
+        return value.replace("postgres://", "postgresql+psycopg://", 1)
+    if value.startswith("postgresql://"):
+        return value.replace("postgresql://", "postgresql+psycopg://", 1)
+    return value
+
+
+DATABASE_URL = normalize_database_url(os.environ.get("DATABASE_URL", DEFAULT_SQLITE))
 _database_url = make_url(DATABASE_URL)
 if _database_url.get_backend_name() == "sqlite" and _database_url.database not in {None, "", ":memory:"}:
     Path(_database_url.database).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)

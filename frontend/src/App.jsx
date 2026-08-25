@@ -1,7 +1,7 @@
 import { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react';
 import { API_BASE_URL, apiFetch } from './api';
+import { buildAnalysisManifest, downloadManifest } from './analysisManifest';
 import './App.css';
-import FullDayScanResult from './FullDayScanResult';
 
 const Spectrogram = lazy(() => import('./Spectrogram'));
 const StationsMap = lazy(() => import('./StationsMap'));
@@ -37,6 +37,7 @@ export default function App() {
   const [stations, setStations]             = useState(FALLBACK_STATIONS);
   const [stationsSource, setStationsSource] = useState('');
   const [stationDetails, setStationDetails] = useState({});
+  const [stationRetentionDays, setStationRetentionDays] = useState(90);
   const [stationFilter, setStationFilter]   = useState('');
   // Primary station: drives the burst-file list and the 15-min sync block.
   // No station is preselected on startup — the user must pick one.
@@ -95,6 +96,25 @@ export default function App() {
   const [taskStatus, setTaskStatus]         = useState(null);
   const taskRunRef = useRef(0);
 
+  const exportAnalysisManifest = () => downloadManifest(buildAnalysisManifest({
+    date,
+    station,
+    layers,
+    processing: {
+      rfi_enabled: useSahanFilter,
+      rfi_parameters: rfiParams,
+      intensity_scale: scaleMode,
+      background_method: 'per-channel 25th percentile',
+    },
+    display: {
+      colormap,
+      comparison_mode: compareMode,
+      manual_contrast: useCustomZ ? { zmin, zmax } : null,
+      auto_contrast_on_zoom: autoContrastZoom,
+    },
+    solarContext: { goes_xrs_overlay: showGoes, wavelength_nm: showGoes ? '0.1–0.8' : null },
+  }));
+
   useEffect(() => {
     if (!showHeaderViewer) return undefined;
     const closeOnEscape = (event) => { if (event.key === 'Escape') setShowHeaderViewer(false); };
@@ -104,29 +124,37 @@ export default function App() {
 
   // ── Load station list ─────────────────────────────────────────────────────
   useEffect(() => {
+    let disposed = false;
     async function loadStations() {
       try {
         const res = await apiFetch('/api/stations');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        if (data.stations?.length > 0) {
-          setStations(data.stations);
+        if (!disposed && data.stations?.length > 0) {
+          const nextStations = data.stations;
+          setStations(nextStations);
           setStationsSource(data.source);
+          setStationRetentionDays(data.retention_days ?? 90);
           setStationDetails(Object.fromEntries(
             (data.details ?? []).map((item) => [item.station, item]),
           ));
-          if (station && !data.stations.includes(station)) {
-            setStation(null);
-            setSelectedStations([]);
-          }
+          setStation((current) => current && nextStations.includes(current) ? current : null);
+          setSelectedStations((current) => current.filter((item) => nextStations.includes(item)));
         }
       } catch (err) {
-        console.warn('Station list from API failed, using fallback:', err.message);
-        setStationsSource('static');
+        if (!disposed) {
+          console.warn('Station list from API failed, using the last available inventory:', err.message);
+          setStationsSource((current) => current || 'static');
+        }
       }
     }
     loadStations();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    const refreshId = window.setInterval(loadStations, 15 * 60 * 1000);
+    return () => {
+      disposed = true;
+      window.clearInterval(refreshId);
+    };
+  }, []);
 
   // ── Reload burst list when primary station or date changes ────────────────
   const loadFiles = useCallback(async (st, dt, signal) => {
@@ -699,17 +727,6 @@ export default function App() {
             >
               {burstDetecting ? 'Detecting…' : 'Detect current file (ML)'}
             </button>
-            <button
-              className="btn-tool"
-              onClick={() => startTask('burst_detect_day')}
-              disabled={!station || ['submitting', 'queued', 'running'].includes(taskStatus?.status)}
-              title="Scan every FITS block for the primary station and selected UTC date"
-            >
-              {taskStatus?.type === 'burst_detect_day' && ['submitting', 'queued', 'running'].includes(taskStatus.status)
-                ? `Scanning full day · ${Math.round((taskStatus.progress ?? 0) * 100)}%`
-                : 'Scan selected station · full day'}
-            </button>
-            <p className="tool-help">Runs CNN+MIL over every block for the primary station and selected UTC date. ML candidates are saved; visual heuristics remain experimental and are excluded by default.</p>
             <fieldset className="overview-task-controls">
               <legend>Spectral overview interval (UTC)</legend>
               <label>
@@ -743,13 +760,10 @@ export default function App() {
             {layers[0] && <>
               <a className="btn-tool" href={`${API_BASE_URL}/api/files/download?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename })}`}>Download FITS</a>
               <a className="btn-tool" href={`${API_BASE_URL}/api/spectrogram/export?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename, rfi: useSahanFilter, rfi_z_thresh: rfiParams.zThresh, rfi_occupancy: rfiParams.occupancy, rfi_min_component: rfiParams.minComponent, rfi_impulsive: rfiParams.impulsive })}`}>Export processed FITS</a>
+              <button className="btn-tool" type="button" onClick={exportAnalysisManifest}>Export analysis manifest</button>
             </>}
-            {taskStatus && taskStatus.type !== 'burst_detect_day' && <span className={`task-status ${taskStatus.status}`} role="status">Job: {taskStatus.status}{Number.isFinite(taskStatus.progress) ? ` · ${Math.round(taskStatus.progress * 100)}%` : ''}{taskStatus.error ? ` · ${taskStatus.error}` : ''}{taskStatus.result?.artifact_url ? <a href={`${API_BASE_URL}${taskStatus.result.artifact_url}`}>Open result</a> : null}</span>}
-            <FullDayScanResult
-              key={taskStatus?.id ?? `${taskStatus?.type ?? 'idle'}:${station ?? 'none'}:${date}`}
-              task={taskStatus}
-              onOpenEvent={handleOpenEvent}
-            />
+            <p className="tool-help">The analysis manifest records selected FITS identifiers, units, processing settings, display configuration and scientific provenance without exposing local paths.</p>
+            {taskStatus && <span className={`task-status ${taskStatus.status}`} role="status">Job: {taskStatus.status}{Number.isFinite(taskStatus.progress) ? ` · ${Math.round(taskStatus.progress * 100)}%` : ''}{taskStatus.error ? ` · ${taskStatus.error}` : ''}{taskStatus.result?.artifact_url ? <a href={`${API_BASE_URL}${taskStatus.result.artifact_url}`}>Open result</a> : null}</span>}
             {Object.entries(burstResults).map(([st, r]) => (
               <span
                 key={st}
@@ -829,10 +843,10 @@ export default function App() {
             Stations
             {stationsSource && (
               <span
-                title={stationsSource.includes('ethz') ? 'Live ETHZ inventory plus persisted stations' : 'Local bootstrap list'}
+                title={stationsSource.includes('ethz') ? `Live ETHZ inventory plus stations seen in the last ${stationRetentionDays} days` : 'Local bootstrap list'}
                 style={{ marginLeft: '0.4rem', fontSize: '0.65rem', color: stationsSource.includes('ethz') ? '#38bdf8' : '#f59e0b', verticalAlign: 'middle' }}
               >
-                {stationsSource.includes('ethz') ? '● live + known' : '● local'}
+                {stationsSource.includes('ethz') ? '● live + recent' : '● local'}
               </span>
             )}
             {selectedStations.length > 0 && (
