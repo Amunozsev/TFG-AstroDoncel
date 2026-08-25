@@ -146,7 +146,7 @@ const GEO_BASE = {
   framecolor: 'rgba(0,0,0,0)',
 };
 
-export default function StationsMap({ onOpenStation }) {
+export default function StationsMap({ onOpenStation, theme = 'dark' }) {
   const [data, setData]         = useState(null);
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState(null);
@@ -246,7 +246,7 @@ export default function StationsMap({ onOpenStation }) {
         size: stations.map((s) => (q && match(s) ? 13 : 9)),
         color,
         opacity: stations.map((s) => (q ? (match(s) ? 1 : 0.15) : 0.95)),
-        line: { width: 1.2, color: '#0a1826' },
+        line: { width: 1.2, color: theme === 'light' ? '#ffffff' : '#0a1826' },
       },
     });
 
@@ -297,7 +297,7 @@ export default function StationsMap({ onOpenStation }) {
     }
 
     return out;
-  }, [data, filter, statusFilter, showSun, sub]);
+  }, [data, filter, statusFilter, showSun, sub, theme]);
 
   const layout = useMemo(
     () => ({
@@ -307,19 +307,23 @@ export default function StationsMap({ onOpenStation }) {
       showlegend: true,
       legend: {
         x: 0.01, y: 0.99,
-        bgcolor: 'rgba(13,27,42,0.75)',
-        bordercolor: '#1a2f46',
+        bgcolor: theme === 'light' ? 'rgba(255,255,255,0.9)' : 'rgba(13,27,42,0.85)',
+        bordercolor: theme === 'light' ? '#cbd7e2' : '#1a2f46',
         borderwidth: 1,
-        font: { color: '#c8d6e5', size: 12 },
+        font: { color: theme === 'light' ? '#26384a' : '#c8d6e5', size: 12 },
       },
       geo: {
         ...GEO_BASE,
+        landcolor: theme === 'light' ? '#dce8f1' : GEO_BASE.landcolor,
+        oceancolor: theme === 'light' ? '#f3f8fb' : GEO_BASE.oceancolor,
+        countrycolor: theme === 'light' ? '#9eb2c3' : GEO_BASE.countrycolor,
+        coastlinecolor: theme === 'light' ? '#7f98ab' : GEO_BASE.coastlinecolor,
         projection: isGlobe
           ? { type: 'orthographic', rotation: { lon: INITIAL_ROT_LON, lat: 18, roll: 0 } }
           : { type: 'natural earth' },
       },
     }),
-    [isGlobe],
+    [isGlobe, theme],
   );
 
   // scrollZoom enables the wheel to zoom the map; drag pans (flat) or rotates

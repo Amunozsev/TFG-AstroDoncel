@@ -71,8 +71,9 @@ Para trabajar y hacer `git pull`/`push`, usa `git clone` en vez de **Download ZI
 - Overlay GOES/XRS-B con caché.
 - Regla de deriva en MHz/s y visor de cabeceras FITS.
 - Curvas de luz de hasta ocho frecuencias simultáneas, con exportación CSV y panel cerrable.
-- Overview espectral para un intervalo UTC exacto, desde/hasta fecha y hora, sobre las estaciones seleccionadas o todas las conocidas.
-- El overview conserva todos los grupos de receptor/eje de frecuencia compatibles, informa los ficheros omitidos y permite cambiar la escala de color.
+- Overview espectral para un intervalo UTC exacto, desde/hasta fecha y hora, sobre las estaciones seleccionadas.
+- El overview conserva todos los grupos de receptor/eje de frecuencia compatibles, informa los ficheros omitidos y permite usar la escala por defecto u otras escalas de color.
+- Interfaz clara u oscura (oscura por defecto), con las herramientas y controles científicos en paneles laterales que no reducen el espectrograma.
 - Manifiesto JSON reproducible con FITS seleccionados, unidades, procesamiento, configuración visual y procedencia científica; nunca incluye rutas locales.
 - Cálculo conjunto de percentiles de visualización, adaptado de la optimización de estadísticas de e-CALLISTO FITS Analyzer v2.8.0.
 

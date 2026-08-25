@@ -179,6 +179,8 @@ describe('analysis panels', () => {
     }));
     render(<DailyOverview artifactUrl="/api/tasks/example/artifact" />);
     await waitFor(() => expect(screen.getAllByRole('article')).toHaveLength(2));
+    expect(screen.getByLabelText('Colour scale')).toHaveValue('default');
+    expect(screen.getByRole('option', { name: 'Default' })).toBeInTheDocument();
     expect(screen.getByText('45–80 MHz')).toBeInTheDocument();
     expect(screen.getByText('No observations in interval')).toBeInTheDocument();
   });

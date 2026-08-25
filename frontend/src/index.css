@@ -16,7 +16,8 @@
 body {
   margin: 0;
   padding: 0;
-  background: #080d12;
+  background: var(--surface-0, #070b12);
+  color: var(--text, #e5edf5);
 }
 
 #root {
