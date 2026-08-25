@@ -77,3 +77,17 @@ def test_list_events_matches_case_insensitive_station_fragment():
 
     assert len(events) == 1
     assert "GLASGOW" in events[0]["stations"]
+
+
+def test_event_key_fits_the_column_for_a_widely_observed_burst():
+    stations = ", ".join(f"STATION-{index:03d}" for index in range(60))
+    event = parse_burst_list(f"20260501\t15:26-15:29\tV/3\t{stations}\n")[0]
+    assert len(event["stations"]) == 60
+    assert len(event["event_key"]) <= BurstEvent.__table__.c.event_key.type.length
+
+
+def test_event_key_still_separates_different_station_sets():
+    shared_row = "20260501\t15:26-15:29\tV/3\t"
+    first = parse_burst_list(shared_row + "BIR, GLASGOW\n")[0]
+    second = parse_burst_list(shared_row + "BIR, HUMAIN\n")[0]
+    assert first["event_key"] != second["event_key"]
