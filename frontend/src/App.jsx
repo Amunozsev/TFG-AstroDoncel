@@ -18,12 +18,37 @@ const FALLBACK_STATIONS = [
 ];
 
 const TABS = [
-  { id: 'processing', label: 'Processing' },
-  { id: 'display',    label: 'Display' },
-  { id: 'context',    label: 'Solar context' },
-  { id: 'layers',     label: 'Layers' },
-  { id: 'tools',      label: 'Tools' },
+  { id: 'processing', label: 'Processing', icon: 'sliders' },
+  { id: 'display', label: 'Display', icon: 'display' },
+  { id: 'layers', label: 'Layers', icon: 'layers' },
+  { id: 'lightcurve', label: 'Light curve', icon: 'curve' },
+  { id: 'tools', label: 'Tools', icon: 'tools' },
 ];
+
+const PANEL_TITLES = Object.fromEntries(TABS.map((item) => [item.id, item.label]));
+
+const ICON_PATHS = {
+  sliders: 'M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6',
+  display: 'M4 5h16v11H4zM8 20h8M12 16v4',
+  layers: 'M12 3 3 8l9 5 9-5-9-5Zm-7 9 7 4 7-4M5 16l7 4 7-4',
+  curve: 'M3 17c3-7 5-8 8-3s5 3 10-7M3 21h18',
+  tools: 'M4 6h16M4 12h16M4 18h16M8 3v6M16 9v6M10 15v6',
+  sun: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm0-5v2m0 14v2M3 12h2m14 0h2M5.6 5.6 7 7m10 10 1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4',
+  moon: 'M20 15.2A8.4 8.4 0 0 1 8.8 4 8.5 8.5 0 1 0 20 15.2Z',
+};
+
+function Icon({ name }) {
+  return (
+    <svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d={ICON_PATHS[name]} />
+    </svg>
+  );
+}
+
+function initialTheme() {
+  try { return localStorage.getItem('astrodoncel.theme') === 'light' ? 'light' : 'dark'; }
+  catch { return 'dark'; }
+}
 
 function nextUtcDate(value) {
   const parsed = new Date(`${value}T00:00:00Z`);
@@ -32,6 +57,7 @@ function nextUtcDate(value) {
 }
 
 export default function App() {
+  const [theme, setTheme]                   = useState(initialTheme);
   // Top-level view: the spectrogram portal or the world stations map.
   const [view, setView]                     = useState('portal');
   const [stations, setStations]             = useState(FALLBACK_STATIONS);
@@ -96,6 +122,12 @@ export default function App() {
   const [taskStatus, setTaskStatus]         = useState(null);
   const taskRunRef = useRef(0);
 
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    try { localStorage.setItem('astrodoncel.theme', theme); } catch { /* storage can be unavailable */ }
+  }, [theme]);
+
   const exportAnalysisManifest = () => downloadManifest(buildAnalysisManifest({
     date,
     station,
@@ -116,11 +148,15 @@ export default function App() {
   }));
 
   useEffect(() => {
-    if (!showHeaderViewer) return undefined;
-    const closeOnEscape = (event) => { if (event.key === 'Escape') setShowHeaderViewer(false); };
+    if (!showHeaderViewer && !activeTab) return undefined;
+    const closeOnEscape = (event) => {
+      if (event.key !== 'Escape') return;
+      if (showHeaderViewer) setShowHeaderViewer(false);
+      else setActiveTab(null);
+    };
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [showHeaderViewer]);
+  }, [activeTab, showHeaderViewer]);
 
   // ── Load station list ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -649,22 +685,6 @@ export default function App() {
             </div>
           </div>
         );
-      case 'context':
-        return (
-          <div className="tab-panel">
-            <label className="control-checkbox">
-              <input
-                type="checkbox"
-                checked={showGoes}
-                onChange={(e) => setShowGoes(e.target.checked)}
-              />
-              Overlay GOES/XRS data (0.1–0.8 nm)
-            </label>
-            <span className="tab-hint">
-              First fetch of a day downloads the NetCDF from NOAA (~10–30 s); later requests use the cache.
-            </span>
-          </div>
-        );
       case 'layers':
         return (
           <div className="tab-panel">
@@ -701,89 +721,96 @@ export default function App() {
             ))}
           </div>
         );
+      case 'lightcurve':
+        return (
+          <LightCurvePanel
+            key={layers[0] ? `${layers[0].station}:${layers[0].date}:${layers[0].filename}` : 'empty'}
+            layer={layers[0]}
+            theme={theme}
+            embedded
+          />
+        );
       case 'tools':
         return (
-          <div className="tab-panel">
-            <button
-              className={`btn-tool${rulerMode ? ' active' : ''}`}
-              onClick={() => setRulerMode((r) => !r)}
-              title="Click two points on the spectrogram to measure Δt, Δf and drift rate (MHz/s)"
-            >
-              Drift ruler {rulerMode ? 'ON' : ''}
-            </button>
-            <button
-              className="btn-tool"
-              onClick={() => { setHeaderLayerIdx(0); setShowHeaderViewer(true); }}
-              disabled={layers.length === 0}
-              title="Inspect the FITS header of a loaded layer"
-            >
-              FITS header
-            </button>
-            <button
-              className="btn-tool"
-              onClick={handleDetectBursts}
-              disabled={layers.length === 0 || burstDetecting}
-              title="Run the trained CNN+MIL classifier (Sahan's Burst_No_Burst) on every loaded layer"
-            >
-              {burstDetecting ? 'Detecting…' : 'Detect current file (ML)'}
-            </button>
-            <fieldset className="overview-task-controls">
-              <legend>Spectral overview interval (UTC)</legend>
-              <label>
-                From
-                <input type="datetime-local" value={overviewStart} onChange={(event) => setOverviewStart(event.target.value)} />
-              </label>
-              <label>
-                To
-                <input type="datetime-local" value={overviewEnd} onChange={(event) => setOverviewEnd(event.target.value)} />
-              </label>
-              <button
-                className="btn-tool"
-                onClick={() => startOverview(selectedStations)}
-                disabled={!station || selectedStations.length === 0 || ['submitting', 'queued', 'running'].includes(taskStatus?.status)}
-              >
-                Overview · selected ({selectedStations.length})
-              </button>
-              <button
-                className="btn-tool"
-                onClick={() => startOverview(stations)}
-                disabled={!station || stations.length === 0 || ['submitting', 'queued', 'running'].includes(taskStatus?.status)}
-              >
-                Overview · all known ({stations.length})
-              </button>
-            </fieldset>
-            <button className="btn-tool" onClick={() => {
-              const current = Math.max(0, files.findIndex((file) => file.filename === selectedFile));
-              startTask('combine_time', { filenames: files.slice(current, current + 4).map((file) => file.filename) });
-            }} disabled={!station || files.length < 2 || ['submitting', 'queued', 'running'].includes(taskStatus?.status)} title="Merge the current FITS block and up to three following compatible blocks into one continuous spectrogram">Combine next blocks</button>
-            <p className="tool-help">Combine next blocks joins the current time block with up to three following blocks from the same station and receiver. It does not mix stations.</p>
-            {layers[0] && <>
-              <a className="btn-tool" href={`${API_BASE_URL}/api/files/download?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename })}`}>Download FITS</a>
-              <a className="btn-tool" href={`${API_BASE_URL}/api/spectrogram/export?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename, rfi: useSahanFilter, rfi_z_thresh: rfiParams.zThresh, rfi_occupancy: rfiParams.occupancy, rfi_min_component: rfiParams.minComponent, rfi_impulsive: rfiParams.impulsive })}`}>Export processed FITS</a>
-              <button className="btn-tool" type="button" onClick={exportAnalysisManifest}>Export analysis manifest</button>
-            </>}
-            <p className="tool-help">The analysis manifest records selected FITS identifiers, units, processing settings, display configuration and scientific provenance without exposing local paths.</p>
-            {taskStatus && <span className={`task-status ${taskStatus.status}`} role="status">Job: {taskStatus.status}{Number.isFinite(taskStatus.progress) ? ` · ${Math.round(taskStatus.progress * 100)}%` : ''}{taskStatus.error ? ` · ${taskStatus.error}` : ''}{taskStatus.result?.artifact_url ? <a href={`${API_BASE_URL}${taskStatus.result.artifact_url}`}>Open result</a> : null}</span>}
-            {Object.entries(burstResults).map(([st, r]) => (
-              <span
-                key={st}
-                className={`stat-chip${r.available && (r.is_burst || r.is_candidate) ? ' burst-hit' : ''}`}
-                title={
-                  r.available
-                    ? `Model ${r.model_version} · ${r.n_windows} windows · ${r.inference_ms} ms`
-                    : r.reason
-                }
-              >
-                {r.available
-                  ? `${st}: p=${r.file_score.toFixed(2)}${r.events?.length ? ` · ${r.is_burst ? 'event' : 'candidate'} ${r.events.length}` : ' · no burst'}`
-                  : `${st}: unavailable`}
-              </span>
-            ))}
-            {rulerMode && (
-              <span className="tab-hint">
-                Click two points on the plot — the drift readout appears in the header. Toggle off to clear.
-              </span>
-            )}
+          <div className="tool-sections">
+            <section className="tool-section" aria-labelledby="inspect-tools-title">
+              <div className="tool-section-heading">
+                <div><span className="section-kicker">Current FITS</span><h3 id="inspect-tools-title">Inspect</h3></div>
+                <p>Measurements and diagnostics for the loaded block.</p>
+              </div>
+              <div className="tool-action-grid">
+                <button
+                  className={`btn-tool${rulerMode ? ' active' : ''}`}
+                  onClick={() => setRulerMode((current) => !current)}
+                  title="Click two points on the spectrogram to measure Δt, Δf and drift rate (MHz/s)"
+                >
+                  Drift ruler {rulerMode ? 'on' : ''}
+                </button>
+                <button className="btn-tool" onClick={() => { setHeaderLayerIdx(0); setShowHeaderViewer(true); }} disabled={layers.length === 0}>FITS header</button>
+                <button className="btn-tool" onClick={handleDetectBursts} disabled={layers.length === 0 || burstDetecting}>
+                  {burstDetecting ? 'Detecting…' : 'Detect current file (ML)'}
+                </button>
+              </div>
+              {rulerMode && <p className="tool-help">Select two points on the plot. The header reports Δt, Δf and drift rate.</p>}
+              {Object.entries(burstResults).map(([st, result]) => (
+                <span
+                  key={st}
+                  className={`stat-chip${result.available && (result.is_burst || result.is_candidate) ? ' burst-hit' : ''}`}
+                  title={result.available ? `Model ${result.model_version} · ${result.n_windows} windows · ${result.inference_ms} ms` : result.reason}
+                >
+                  {result.available
+                    ? `${st}: p=${result.file_score.toFixed(2)}${result.events?.length ? ` · ${result.is_burst ? 'event' : 'candidate'} ${result.events.length}` : ' · no burst'}`
+                    : `${st}: unavailable`}
+                </span>
+              ))}
+            </section>
+
+            <section className="tool-section" aria-labelledby="overview-tools-title">
+              <div className="tool-section-heading">
+                <div><span className="section-kicker">Selected stations</span><h3 id="overview-tools-title">Spectral overview</h3></div>
+                <p>Build a reduced UTC view without blocking the portal.</p>
+              </div>
+              <fieldset className="overview-task-controls">
+                <legend className="sr-only">Spectral overview interval in UTC</legend>
+                <label>From<input type="datetime-local" value={overviewStart} onChange={(event) => setOverviewStart(event.target.value)} /></label>
+                <label>To<input type="datetime-local" value={overviewEnd} onChange={(event) => setOverviewEnd(event.target.value)} /></label>
+                <button
+                  className="btn-primary tool-primary-action"
+                  onClick={() => startOverview(selectedStations)}
+                  disabled={!station || selectedStations.length === 0 || ['submitting', 'queued', 'running'].includes(taskStatus?.status)}
+                >
+                  Create overview ({selectedStations.length})
+                </button>
+              </fieldset>
+              <p className="tool-help">Uses only the stations selected in the observation sidebar. Large intervals may take several minutes.</p>
+              {taskStatus && (
+                <div className={`task-progress-card ${taskStatus.status}`} role="status">
+                  <span>Job · {taskStatus.status}</span>
+                  <strong>{Number.isFinite(taskStatus.progress) ? `${Math.round(taskStatus.progress * 100)}%` : '—'}</strong>
+                  <div className="task-progress-track"><i style={{ transform: `scaleX(${taskStatus.progress ?? 0})` }} /></div>
+                  {taskStatus.error && <p>{taskStatus.error}</p>}
+                  {taskStatus.result?.artifact_url && <a href={`${API_BASE_URL}${taskStatus.result.artifact_url}`}>Open raw result</a>}
+                </div>
+              )}
+            </section>
+
+            <details className="tool-disclosure">
+              <summary>Data &amp; exports <span>Advanced actions</span></summary>
+              <div className="tool-disclosure-body">
+                <button className="btn-tool" onClick={() => {
+                  const current = Math.max(0, files.findIndex((file) => file.filename === selectedFile));
+                  startTask('combine_time', { filenames: files.slice(current, current + 4).map((file) => file.filename) });
+                }} disabled={!station || files.length < 2 || ['submitting', 'queued', 'running'].includes(taskStatus?.status)}>
+                  Combine next blocks
+                </button>
+                {layers[0] && <>
+                  <a className="btn-tool" href={`${API_BASE_URL}/api/files/download?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename })}`}>Download original FITS</a>
+                  <a className="btn-tool" href={`${API_BASE_URL}/api/spectrogram/export?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename, rfi: useSahanFilter, rfi_z_thresh: rfiParams.zThresh, rfi_occupancy: rfiParams.occupancy, rfi_min_component: rfiParams.minComponent, rfi_impulsive: rfiParams.impulsive })}`}>Export processed FITS</a>
+                  <button className="btn-tool" type="button" onClick={exportAnalysisManifest}>Export analysis manifest</button>
+                </>}
+                <p className="tool-help">Combining joins consecutive compatible blocks from the same station. The manifest records settings and provenance without local paths.</p>
+              </div>
+            </details>
           </div>
         );
       default:
@@ -792,47 +819,56 @@ export default function App() {
   }
 
   return (
-    <div className="app-root">
+    <div className="app-root" data-theme={theme}>
       <a className="skip-link" href="#main-content">Skip to main content</a>
       <nav className="app-nav" aria-label="Primary navigation">
-        <span className="app-brand">e-CALLISTO<b>Spain</b></span>
+        <span className="app-brand"><b>AstroDoncel</b><small>e-CALLISTO solar archive</small></span>
         <div className="app-nav-tabs">
           <button
             className={view === 'portal' ? 'active' : ''}
             onClick={() => setView('portal')}
           >
-            Portal
+            Spectrograms
           </button>
           <button
             className={view === 'map' ? 'active' : ''}
             onClick={() => setView('map')}
           >
-            Stations Map
+            Stations
           </button>
           <button className={view === 'catalog' ? 'active' : ''} onClick={() => setView('catalog')}>Burst Reports</button>
           <button className={view === 'statistics' ? 'active' : ''} onClick={() => setView('statistics')}>Statistics</button>
           <button className={view === 'about' ? 'active' : ''} onClick={() => setView('about')}>About</button>
         </div>
         <span className="app-nav-spacer" />
+        <button
+          type="button"
+          className="theme-toggle"
+          onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')}
+          aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+        >
+          <Icon name={theme === 'dark' ? 'sun' : 'moon'} />
+          <span>{theme === 'dark' ? 'Light' : 'Dark'}</span>
+        </button>
       </nav>
 
       <Suspense fallback={<div className="page-shell" role="status">Loading view…</div>}>
       {view === 'catalog' ? (
         <BurstCatalog onOpenEvent={handleOpenEvent} />
       ) : view === 'statistics' ? (
-        <Statistics onOpenStation={handleOpenStation} onOpenEvent={handleOpenEvent} />
+        <Statistics onOpenStation={handleOpenStation} onOpenEvent={handleOpenEvent} theme={theme} />
       ) : view === 'about' ? (
         <About />
       ) : view === 'map' ? (
-        <StationsMap onOpenStation={handleOpenStation} />
+        <StationsMap onOpenStation={handleOpenStation} theme={theme} />
       ) : (
         <div className="dashboard">
 
       {/* ── Sidebar: observation essentials only ── */}
       <aside className={`sidebar${files.length > 0 ? ' has-files' : ''}`}>
         <div className="sidebar-header">
-          <h1>e-CALLISTO<br /><span>Spain</span></h1>
-          <p className="sidebar-subtitle">Solar Spectrogram Portal</p>
+          <h1>Observation workspace</h1>
+          <p className="sidebar-subtitle">Stations, date and FITS block</p>
         </div>
 
         <div className="sidebar-section">
@@ -999,35 +1035,61 @@ export default function App() {
           </button>
         </div>
 
-        <div className="sidebar-status">
-          <span className="status-dot" />
-          Backend · port 8000
-        </div>
-
-        <div className="sidebar-footer">
-          <div>Bachelor's Thesis — UAH · 2026</div>
-          <div>Alfonso Muñoz Sevillano</div>
-        </div>
       </aside>
 
       {/* ── Main area ── */}
       <main className="main-content" id="main-content" tabIndex="-1">
-        {/* Toolbar tabs (replaces the old crowded sidebar sections) */}
-        <div className="top-tabs">
-          {TABS.map((t) => (
+        <div className="workspace-toolbar" aria-label="Spectrogram controls">
+          <div className="workspace-toolbar-actions">
+          {TABS.slice(0, 2).map((t) => (
             <button
               key={t.id}
               className={`tab-btn${activeTab === t.id ? ' active' : ''}`}
               onClick={() => setActiveTab(activeTab === t.id ? null : t.id)}
+              aria-expanded={activeTab === t.id}
             >
+              <Icon name={t.icon} />
               {t.label}
-              {t.id === 'layers' && layers.length > 0 && (
-                <span className="tab-badge">{layers.length}</span>
-              )}
             </button>
           ))}
+          <button
+            type="button"
+            className={`tab-btn quick-toggle${showGoes ? ' active' : ''}`}
+            onClick={() => setShowGoes((current) => !current)}
+            aria-pressed={showGoes}
+            title="Overlay GOES/XRS-B solar flux (0.1–0.8 nm)"
+          >
+            <Icon name="sun" />GOES<span className="toggle-state">{showGoes ? 'On' : 'Off'}</span>
+          </button>
+          {TABS.slice(2).map((t) => (
+            <button
+              key={t.id}
+              className={`tab-btn${activeTab === t.id ? ' active' : ''}`}
+              onClick={() => setActiveTab(activeTab === t.id ? null : t.id)}
+              aria-expanded={activeTab === t.id}
+            >
+              <Icon name={t.icon} />
+              {t.label}
+              {t.id === 'layers' && layers.length > 0 && <span className="tab-badge">{layers.length}</span>}
+            </button>
+          ))}
+          </div>
+          <div className="workspace-context" title={layers[0]?.filename ?? 'No FITS loaded'}>
+            <span>{layers[0]?.station ?? 'No observation loaded'}</span>
+            {layers[0] && <small>{layers[0].date} · {layers[0].filename}</small>}
+          </div>
         </div>
-        {activeTab && renderTabPanel()}
+
+        {activeTab && <>
+          <button className="workspace-drawer-scrim" aria-label={`Close ${PANEL_TITLES[activeTab]}`} onClick={() => setActiveTab(null)} />
+          <aside className="workspace-drawer" aria-label={`${PANEL_TITLES[activeTab]} controls`}>
+            <header className="workspace-drawer-header">
+              <div><span className="section-kicker">Spectrogram controls</span><h2>{PANEL_TITLES[activeTab]}</h2></div>
+              <button type="button" className="drawer-close" onClick={() => setActiveTab(null)} autoFocus>Close</button>
+            </header>
+            <div className="workspace-drawer-body">{renderTabPanel()}</div>
+          </aside>
+        </>}
 
         <Spectrogram
           layers={layers}
@@ -1048,9 +1110,9 @@ export default function App() {
           autoContrastZoom={autoContrastZoom}
           rulerMode={rulerMode}
           burstResults={burstResults}
+          theme={theme}
         />
-        <LightCurvePanel key={layers[0] ? `${layers[0].station}:${layers[0].date}:${layers[0].filename}` : 'empty'} layer={layers[0]} />
-        {taskStatus?.status === 'succeeded' && taskStatus.type === 'spectral_overview' && taskStatus.result?.artifact_url && <DailyOverview key={taskStatus.id} artifactUrl={taskStatus.result.artifact_url} />}
+        {taskStatus?.status === 'succeeded' && taskStatus.type === 'spectral_overview' && taskStatus.result?.artifact_url && <DailyOverview key={taskStatus.id} artifactUrl={taskStatus.result.artifact_url} theme={theme} />}
       </main>
 
       {/* ── FITS header viewer modal ── */}

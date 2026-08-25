@@ -14,7 +14,7 @@ function rangeFor(period, date) {
   return { start, end: parsed.toISOString().slice(0, 10) };
 }
 
-export default function Statistics({ onOpenStation, onOpenEvent }) {
+export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' }) {
   const [activeView, setActiveView] = useState('xmatch');
   const [period, setPeriod] = useState('month');
   const [date, setDate] = useState(today);
@@ -169,21 +169,21 @@ export default function Statistics({ onOpenStation, onOpenEvent }) {
                 autosize: true,
                 height: Math.max(430, xmatchRows.length * 28 + 100),
                 margin: { l: 165, r: 28, t: 18, b: 58 },
-                paper_bgcolor: '#0b1726',
-                plot_bgcolor: '#0b1726',
-                font: { color: '#c8d9e8', size: 10 },
+                paper_bgcolor: theme === 'light' ? '#ffffff' : '#0b1726',
+                plot_bgcolor: theme === 'light' ? '#ffffff' : '#0b1726',
+                font: { color: theme === 'light' ? '#26384a' : '#c8d9e8', size: 10 },
                 showlegend: true,
                 legend: { orientation: 'h', y: 1.04 },
                 xaxis: {
                   title: 'Time (UTC)',
                   type: 'date',
                   range: [`${xmatchDate}T00:00:00Z`, `${xmatchDate}T23:59:59Z`],
-                  gridcolor: '#24384a',
+                  gridcolor: theme === 'light' ? '#dce4ec' : '#24384a',
                 },
                 yaxis: {
                   categoryorder: 'array',
                   categoryarray: xmatchRows.map((row) => row.station).reverse(),
-                  gridcolor: '#1b2d3e',
+                  gridcolor: theme === 'light' ? '#e4eaf0' : '#1b2d3e',
                 },
               }}
               config={{ responsive: true, displaylogo: false }}

@@ -86,12 +86,6 @@ const COLORSCALES = {
   ],
 };
 
-const AXIS_STYLE = {
-  tickfont: { color: '#4a7a9b', size: 10 },
-  gridcolor: '#1a2f46',
-  linecolor: '#1a2f46',
-};
-
 function hexToRgbTuple(hex) {
   const h = hex.replace('#', '');
   return [
@@ -127,6 +121,7 @@ export default function Spectrogram({
   useSahanFilter, rfiParams,
   compareMode, autoContrastZoom, rulerMode,
   burstResults,
+  theme = 'dark',
 }) {
   const [goesData, setGoesData] = useState(null);
   const [goesStatus, setGoesStatus] = useState('');
@@ -390,21 +385,35 @@ export default function Spectrogram({
 
   // ── Plotly traces ────────────────────────────────────────────────────────
   const traces = [];
+  const plotTheme = theme === 'light'
+    ? {
+        surface: '#f7f9fc', text: '#3f5870', muted: '#5f7488', grid: '#d8e1ea',
+        legend: 'rgba(255,255,255,0.92)', annotation: 'rgba(255,255,255,0.9)', colorbar: '#52687d',
+      }
+    : {
+        surface: '#080d12', text: '#7fb3d3', muted: '#4a7a9b', grid: '#1a2f46',
+        legend: 'rgba(13,27,42,0.88)', annotation: 'rgba(13,27,42,0.82)', colorbar: '#aaaaaa',
+      };
+  const axisStyle = {
+    tickfont: { color: plotTheme.muted, size: 10 },
+    gridcolor: plotTheme.grid,
+    linecolor: plotTheme.grid,
+  };
   const layout = {
-    paper_bgcolor: '#080d12',
-    plot_bgcolor: '#080d12',
+    paper_bgcolor: plotTheme.surface,
+    plot_bgcolor: plotTheme.surface,
     margin: { t: 20, r: 110, b: 60, l: 70 },
     // uirevision keeps the user's zoom across data updates (hi-res patch swaps,
     // contrast/colormap tweaks). It only resets on a new load, a comparison-mode
     // switch, or an explicit "Overview" click.
     uirevision: `${triggerLoad}-${compareMode}-${resetRev}`,
     xaxis: {
-      title: { text: 'Time (UTC)', font: { color: '#7fb3d3' } },
-      ...AXIS_STYLE,
+      title: { text: 'Time (UTC)', font: { color: plotTheme.text } },
+      ...axisStyle,
     },
     legend: {
-      font: { color: '#7fb3d3', size: 10 },
-      bgcolor: 'rgba(13,27,42,0.8)',
+      font: { color: plotTheme.text, size: 10 },
+      bgcolor: plotTheme.legend,
       x: 0.01, y: 0.99,
     },
     annotations: [],
@@ -443,7 +452,7 @@ export default function Spectrogram({
         text: `${isFallback ? 'cand ' : ''}p=${scoreText}`,
         showarrow: false,
         font: { color: '#fbbf24', size: 9 },
-        bgcolor: 'rgba(13,27,42,0.75)',
+        bgcolor: plotTheme.annotation,
       });
     }
   };
@@ -475,10 +484,10 @@ export default function Spectrogram({
 
       layout[panelAxisKey(i)] = {
         title: i === Math.floor((N - 1) / 2)
-          ? { text: 'Frequency (MHz)', font: { color: '#7fb3d3' } }
+          ? { text: 'Frequency (MHz)', font: { color: plotTheme.text } }
           : undefined,
         domain: [Math.max(0, bottom), Math.min(1, top)],
-        ...AXIS_STYLE,
+        ...axisStyle,
       };
 
       traces.push({
@@ -492,7 +501,7 @@ export default function Spectrogram({
         name: layer.station,
         showscale: true,
         colorbar: {
-          tickfont: { color: '#aaaaaa', size: 9 },
+          tickfont: { color: plotTheme.colorbar, size: 9 },
           x: 1.02,
           y: (top + bottom) / 2,
           yanchor: 'middle',
@@ -512,8 +521,8 @@ export default function Spectrogram({
         xanchor: 'left', yanchor: 'top',
         text: layer.station,
         showarrow: false,
-        font: { color: '#7fb3d3', size: 10 },
-        bgcolor: 'rgba(13,27,42,0.75)',
+        font: { color: plotTheme.text, size: 10 },
+        bgcolor: plotTheme.annotation,
       });
 
       addBurstShapes(layer, axisId);
@@ -526,8 +535,8 @@ export default function Spectrogram({
     //    layers use an alpha-graded colorscale so their low-intensity
     //    background is transparent and only bright bursts blend on top.
     layout.yaxis = {
-      title: { text: 'Frequency (MHz)', font: { color: '#7fb3d3' } },
-      ...AXIS_STYLE,
+      title: { text: 'Frequency (MHz)', font: { color: plotTheme.text } },
+      ...axisStyle,
     };
 
     let visIdx = 0;
@@ -553,8 +562,8 @@ export default function Spectrogram({
         showscale: isBase,
         colorbar: isBase ? {
           title: { text: layer.unit ?? 'relative', side: 'right' },
-          tickfont: { color: '#aaaaaa', size: 10 },
-          titlefont: { color: '#aaaaaa', size: 11 },
+          tickfont: { color: plotTheme.colorbar, size: 10 },
+          titlefont: { color: plotTheme.colorbar, size: 11 },
           x: 1.02,
           thickness: 14,
           bgcolor: 'rgba(0,0,0,0)',
@@ -743,7 +752,7 @@ export default function Spectrogram({
         {/* All layers hidden */}
         {validLayers.length > 0 && visibleLayers.length === 0 && !loading && (
           <div className="status-message">
-            <span>All layers are hidden — enable one in the Layers tab.</span>
+            <span>All layers are hidden — enable one in Layers.</span>
           </div>
         )}
 

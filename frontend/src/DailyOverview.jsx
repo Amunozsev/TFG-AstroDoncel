@@ -4,15 +4,27 @@ import _factory from 'react-plotly.js/factory';
 import { apiFetch } from './api';
 
 const Plot = (_factory.default ?? _factory)(Plotly);
-const COLOR_SCALES = ['Viridis', 'Cividis', 'Turbo', 'Greys'];
+const DEFAULT_COLOR_SCALE = [
+  [0.00, '#000000'], [0.10, '#0a0038'], [0.20, '#1a0080'],
+  [0.30, '#4a0090'], [0.40, '#7a0080'], [0.50, '#aa2050'],
+  [0.60, '#cc0000'], [0.70, '#e06000'], [0.80, '#f5a000'],
+  [0.90, '#ffcc00'], [1.00, '#ffffb0'],
+];
+const COLOR_SCALES = [
+  { value: 'default', label: 'Default' },
+  { value: 'Viridis', label: 'Viridis' },
+  { value: 'Cividis', label: 'Cividis' },
+  { value: 'Turbo', label: 'Turbo' },
+  { value: 'Greys', label: 'Greys' },
+];
 
 function utcLabel(value) {
   return value ? value.replace('T', ' ').replace('+00:00', ' UTC').replace('Z', ' UTC') : '';
 }
 
-export default function DailyOverview({ artifactUrl }) {
+export default function DailyOverview({ artifactUrl, theme = 'dark' }) {
   const [overview, setOverview] = useState(null);
-  const [colorscale, setColorscale] = useState('Viridis');
+  const [colorscale, setColorscale] = useState('default');
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -34,6 +46,10 @@ export default function DailyOverview({ artifactUrl }) {
   if (!overview?.stations) return null;
 
   const stationsWithData = overview.stations.filter((item) => item.status === 'ok').length;
+  const selectedColorscale = colorscale === 'default' ? DEFAULT_COLOR_SCALE : colorscale;
+  const plotTheme = theme === 'light'
+    ? { surface: '#ffffff', text: '#26384a', grid: '#dce4ec' }
+    : { surface: '#0b1726', text: '#c8d9e8', grid: '#1e3448' };
   return (
     <section className="daily-overview" aria-label="Spectral overview for the requested UTC interval">
       <header>
@@ -45,7 +61,7 @@ export default function DailyOverview({ artifactUrl }) {
         <label className="overview-colormap">
           Colour scale
           <select value={colorscale} onChange={(event) => setColorscale(event.target.value)}>
-            {COLOR_SCALES.map((value) => <option key={value}>{value}</option>)}
+            {COLOR_SCALES.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
         </label>
       </header>
@@ -68,7 +84,7 @@ export default function DailyOverview({ artifactUrl }) {
                     z: segment.z,
                     zmin: group.vmin,
                     zmax: group.vmax,
-                    colorscale,
+                    colorscale: selectedColorscale,
                     showscale: index === group.segments.length - 1,
                     colorbar: { title: { text: 'relative<br>digits' }, thickness: 10 },
                     hovertemplate: `${station.station}<br>%{x}<br>%{y:.3f} MHz<br>%{z:.2f} relative digits<extra></extra>`,
@@ -77,11 +93,11 @@ export default function DailyOverview({ artifactUrl }) {
                     autosize: true,
                     height: 270,
                     margin: { l: 58, r: 70, t: 12, b: 52 },
-                    paper_bgcolor: '#0b1726',
-                    plot_bgcolor: '#0b1726',
-                    font: { color: '#c8d9e8', size: 10 },
-                    xaxis: { title: 'UTC', type: 'date', gridcolor: '#1e3448' },
-                    yaxis: { title: 'Frequency (MHz)', gridcolor: '#1e3448' },
+                    paper_bgcolor: plotTheme.surface,
+                    plot_bgcolor: plotTheme.surface,
+                    font: { color: plotTheme.text, size: 10 },
+                    xaxis: { title: 'UTC', type: 'date', gridcolor: plotTheme.grid },
+                    yaxis: { title: 'Frequency (MHz)', gridcolor: plotTheme.grid },
                   }}
                   config={{ responsive: true, displaylogo: false }}
                   useResizeHandler

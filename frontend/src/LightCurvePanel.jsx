@@ -5,7 +5,7 @@ import { apiFetch } from './api';
 
 const Plot = (_factory.default ?? _factory)(Plotly);
 
-export default function LightCurvePanel({ layer }) {
+export default function LightCurvePanel({ layer, theme = 'dark', embedded = false }) {
   const [frequency, setFrequency] = useState('45');
   const [data, setData] = useState(null);
   const [status, setStatus] = useState('');
@@ -63,8 +63,15 @@ export default function LightCurvePanel({ layer }) {
     URL.revokeObjectURL(url);
   }
 
+  const plotTheme = theme === 'light'
+    ? { surface: '#ffffff', text: '#26384a', grid: '#dce4ec' }
+    : { surface: '#0b1726', text: '#c8d9e8', grid: '#1e3448' };
+
   return (
-    <section className="lightcurve-card">
+    <section className={`lightcurve-card${embedded ? ' embedded' : ''}`}>
+      <p className="lightcurve-context">
+        {layer ? `${layer.station} · ${layer.filename}` : 'Load a FITS block to plot its light curve.'}
+      </p>
       <div className="lightcurve-toolbar">
         <div className="inline-controls">
           <label>
@@ -118,11 +125,11 @@ export default function LightCurvePanel({ layer }) {
               autosize: true,
               height: 260,
               margin: { l: 55, r: 20, t: 20, b: 45 },
-              paper_bgcolor: '#0b1726',
-              plot_bgcolor: '#0b1726',
-              font: { color: '#c8d9e8' },
-              xaxis: { title: 'UTC' },
-              yaxis: { title: data.unit },
+              paper_bgcolor: plotTheme.surface,
+              plot_bgcolor: plotTheme.surface,
+              font: { color: plotTheme.text },
+              xaxis: { title: 'UTC', gridcolor: plotTheme.grid },
+              yaxis: { title: data.unit, gridcolor: plotTheme.grid },
               showlegend: true,
             }}
             config={{ responsive: true, displaylogo: false }}
