@@ -4,6 +4,7 @@ import _factory from 'react-plotly.js/factory';
 import { apiFetch } from './api';
 
 const Plot = (_factory.default ?? _factory)(Plotly);
+const OVERVIEW_PLOT_HEIGHT = 360;
 const DEFAULT_COLOR_SCALE = [
   [0.00, '#000000'], [0.10, '#0a0038'], [0.20, '#1a0080'],
   [0.30, '#4a0090'], [0.40, '#7a0080'], [0.50, '#aa2050'],
@@ -91,7 +92,7 @@ export default function DailyOverview({ artifactUrl, theme = 'dark' }) {
                   }))}
                   layout={{
                     autosize: true,
-                    height: 270,
+                    height: OVERVIEW_PLOT_HEIGHT,
                     margin: { l: 58, r: 70, t: 12, b: 52 },
                     paper_bgcolor: plotTheme.surface,
                     plot_bgcolor: plotTheme.surface,
