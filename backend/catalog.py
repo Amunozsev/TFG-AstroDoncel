@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from datetime import datetime, timedelta, timezone
@@ -45,6 +46,21 @@ CATALOG_SOURCES = {
 
 def _clean_station(token: str) -> str:
     return token.strip().strip("()[]").strip().upper().replace("_", "-")
+
+
+STATION_DIGEST_LENGTH = 16
+
+
+def _station_digest(stations: list[str]) -> str:
+    """Condense the station list into a fixed-width component of `event_key`.
+
+    A single burst can be recorded by dozens of stations, so embedding the
+    names verbatim made `event_key` outgrow its column on PostgreSQL, which
+    enforces VARCHAR limits where SQLite silently ignores them. The digest is
+    deterministic, so one key still corresponds to one distinct station set.
+    """
+    joined = ",".join(stations)
+    return hashlib.sha1(joined.encode("utf-8"), usedforsecurity=False).hexdigest()[:STATION_DIGEST_LENGTH]
 
 
 def source_label(source: str) -> str:
@@ -104,7 +120,7 @@ def parse_burst_list(text: str, source: str = DEFAULT_CATALOG_SOURCE) -> list[di
         intensity = int(burst_match.group("intensity")) if burst_match and burst_match.group("intensity") else None
         stations = [_clean_station(value) for value in station_raw.split(",")]
         stations = [value for value in stations if value]
-        key = f"{date_raw}:{normalized_time}:{type_raw}:{','.join(stations)}"
+        key = f"{date_raw}:{normalized_time}:{type_raw}:{_station_digest(stations)}"
         if key in seen_keys:
             continue
         seen_keys.add(key)
