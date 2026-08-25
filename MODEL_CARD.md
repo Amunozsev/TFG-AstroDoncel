@@ -49,4 +49,4 @@ These values are upstream-reported metadata, not independently reproduced by thi
 
 ## Provenance and licence status
 
-The architecture and original deployment bundle were supplied from Sahan S. Liyanage's `Burst_No_Burst` work and adapted for ONNX serving in AstroDoncel. Exact upstream commit, dataset licence and permission to redistribute `model.pt`/`model.onnx` are not encoded in the supplied bundle and remain to be confirmed in writing. Until then, do not assume the weights can be redistributed outside the TFG repository.
+The architecture and original deployment bundle were supplied from Sahan S. Liyanage's `Burst_No_Burst` work and adapted for ONNX serving in AstroDoncel. The source checkpoint `model.pt` is deliberately excluded from the public tree; the optional export tool requires an authorised local copy. Exact upstream commit, dataset licence and permission to redistribute the runtime `model.onnx` are not encoded in the supplied bundle and remain to be confirmed in writing. Before making a public release, obtain that permission or distribute the model separately under its applicable terms.

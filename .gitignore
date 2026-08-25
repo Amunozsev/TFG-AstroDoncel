@@ -31,6 +31,19 @@ frontend/public/datos_prueba.json
 # Configuración local de Claude Code
 .claude/
 
+# Notas internas, handoffs y material personal/local
+/AGENTS.md
+/CLAUDE.md
+/HANDOFF.md
+/ROADMAP_COMPLETO_TFG.md
+/Anteproyecto/
+/capturas_correo_*/
+/.private/
+/local-notes/
+
+# Pesos fuente para desarrollo ML; producción usa el modelo ONNX
+/backend/model/burst_detector/*.pt
+
 # Reference docs and third-party analyzer (large, not part of the project source)
 /docs/
 /e-Callisto_FITS_Analyzer-master/
@@ -42,3 +55,4 @@ frontend/public/datos_prueba.json
 .DS_Store
 Thumbs.db
 .idea/
+/.vscode/

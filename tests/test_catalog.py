@@ -50,4 +50,4 @@ def test_parse_astrodoncel_link_rows_with_longitudes_and_html():
     assert event["mid_lon"] == 73.7
     assert event["max_lon"] == 77.5
     assert event["stations"] == ["GERMANY-DLR", "POLAND-BALDY"]
-    assert event["metadata_json"]["source_label"] == "deARCE detection (v3)"
+    assert event["metadata_json"]["source_label"] == "deARCE (v3)"

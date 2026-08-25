@@ -7,7 +7,7 @@ port only the minimal algorithm with attribution and tests.
 Before opening a pull request run:
 
 ```text
-ruff check backend tests migrations tools
+ruff check backend tests migrations tools scripts/start_single_host.py
 python -m pytest
 pip-audit -r requirements-dev.txt
 cd frontend
@@ -22,8 +22,8 @@ profile because the deployment runs them before API and worker startup.
 
 Never accept an arbitrary filesystem path from an API client. Station, date and
 FITS filename must pass `backend.security`, and filenames must match the
-requested station/date. Heavy whole-day work belongs in `backend.worker` and
-must expose progress through the task API.
+requested station/date. Heavy overview and temporal-combination work belongs in
+`backend.worker` and must expose progress through the task API.
 
 Scientific changes require a reproducible fixture or synthetic test, units in
 the response and an explicit warning when the method is experimental.

@@ -1,9 +1,11 @@
 import numpy as np
+import pytest
 
 from backend.main import (
     _decimate_time,
     _focus_code_from_filename,
     _mitigate_rfi,
+    _percentile_clip_global,
     _subtract_background,
     _time_from_filename,
 )
@@ -20,6 +22,13 @@ def test_background_subtraction_centres_channels():
     data = np.array([[10, 11, 12, 13], [100, 101, 102, 103]], dtype=float)
     result = _subtract_background(data)
     assert np.allclose(np.percentile(result, 25, axis=1), 0)
+
+
+def test_percentile_clip_computes_both_bounds_and_validates_range():
+    data = np.arange(101, dtype=np.float32)
+    assert _percentile_clip_global(data, 10, 90) == pytest.approx((10, 90))
+    with pytest.raises(ValueError, match="percentile bounds"):
+        _percentile_clip_global(data, 90, 10)
 
 
 def test_decimation_limits_width_and_labels():

@@ -7,9 +7,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import DailyOverview from './DailyOverview';
 import BurstCatalog from './BurstCatalog';
-import FullDayScanResult from './FullDayScanResult';
 import LightCurvePanel from './LightCurvePanel';
 import Statistics from './Statistics';
+import { buildAnalysisManifest } from './analysisManifest';
 
 vi.mock('./plotly', () => ({ default: {} }));
 vi.mock('react-plotly.js/factory', () => ({
@@ -24,90 +24,17 @@ afterEach(() => {
 });
 
 describe('analysis panels', () => {
-  it('summarizes a full-day scan and opens a candidate spectrogram', () => {
-    const onOpenEvent = vi.fn();
-    render(<FullDayScanResult
-      task={{
-        type: 'burst_detect_day',
-        status: 'succeeded',
-        progress: 1,
-        station: 'SPAIN-SIGUENZA',
-        date: '2026-07-30',
-        result: {
-          files_discovered: 96,
-          files_processed: 94,
-          files_skipped: 2,
-          events_found: 2,
-          events_inserted: 1,
-          ml_candidates: 1,
-          heuristic_candidates: 1,
-          official_matches: 1,
-          recommended_candidates: 1,
-          candidates: [{
-            id: 42,
-            station: 'SPAIN-SIGUENZA',
-            started_at: '2026-07-30T12:00:00Z',
-            ended_at: '2026-07-30T12:01:00Z',
-            source: 'ml_cnn',
-            source_label: 'CNN+MIL model',
-            file_score: 0.87,
-            peak_score: 0.91,
-            frequency_min_mhz: 45,
-            frequency_max_mhz: 46,
-            matched_official_burst_type: 'III',
-            matched_official_event_id: 8,
-            is_burst: true,
-            is_recommended: true,
-            filename: 'SPAIN-SIGUENZA_20260730_120000.fit.gz',
-            is_new: true,
-          }, {
-            id: null,
-            station: 'SPAIN-SIGUENZA',
-            started_at: '2026-07-30T12:05:00Z',
-            ended_at: '2026-07-30T12:06:00Z',
-            source: 'heuristic_visual',
-            source_label: 'Visual heuristic',
-            file_score: 0.55,
-            peak_score: 0.55,
-            frequency_min_mhz: 47,
-            frequency_max_mhz: 52,
-            matched_official_burst_type: null,
-            matched_official_event_id: null,
-            is_burst: false,
-            is_recommended: false,
-            filename: 'SPAIN-SIGUENZA_20260730_120000.fit.gz',
-            is_new: false,
-          }],
-        },
-      }}
-      onOpenEvent={onOpenEvent}
-    />);
-
-    expect(screen.getByText('94/96')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Recommended 1' })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.queryByText('Visual heuristic')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Open spectrogram' }));
-    expect(onOpenEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ started_at: '2026-07-30T12:00:00Z' }),
-      'SPAIN-SIGUENZA',
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: 'Experimental visual 1' }));
-    expect(screen.getByText('Visual heuristic')).toBeInTheDocument();
-    expect(screen.getByText(/must not be interpreted as a confirmed burst/)).toBeInTheDocument();
-  });
-
   it('makes Xmatch the primary statistics view without losing the network summary', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url) => ({
       ok: true,
       json: async () => String(url).includes('/api/xmatch/timeline')
         ? {
-            source_label: 'deARCE detection (v3)',
+            source_label: 'deARCE (v3)',
             availability_basis: 'Archive blocks',
             rows: [],
           }
         : String(url).includes('/api/stats/stations')
-          ? { source_label: 'deARCE detection (v3)', ranking: [] }
+          ? { source_label: 'deARCE (v3)', ranking: [] }
           : { points: [] },
     })));
     render(<Statistics onOpenEvent={vi.fn()} onOpenStation={vi.fn()} />);
@@ -133,7 +60,7 @@ describe('analysis panels', () => {
       mid_lon: 11.1,
       max_lon: 73.7,
       source: 'dearce_v3',
-      source_label: 'deARCE detection (v3)',
+      source_label: 'deARCE (v3)',
     };
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
@@ -146,6 +73,25 @@ describe('analysis panels', () => {
     expect(screen.queryByRole('button', { name: 'Inspect' })).not.toBeInTheDocument();
   });
 
+  it('loads a complete month of Burst Reports with an exclusive end date', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ events: [], warnings: [], source_label: 'deARCE (v3)' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<BurstCatalog onOpenEvent={vi.fn()} />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByLabelText('Period'), { target: { value: 'month' } });
+    fireEvent.change(screen.getByLabelText('Month'), { target: { value: '2026-07' } });
+
+    await waitFor(() => {
+      const url = String(fetchMock.mock.calls.at(-1)[0]);
+      expect(url).toContain('start=2026-07-01');
+      expect(url).toContain('end=2026-08-01');
+    });
+  });
+
   it('lets the user close a loaded light curve', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
@@ -155,11 +101,36 @@ describe('analysis panels', () => {
         unit: 'relative digits',
       }),
     }));
+    const fetchMock = vi.mocked(fetch);
     render(<LightCurvePanel layer={{ station: 'MRO', date: '2024-01-01', filename: 'MRO_20240101_120000.fit' }} />);
+    fireEvent.change(screen.getByLabelText('Frequencies (MHz)'), { target: { value: '45, 55' } });
     fireEvent.click(screen.getByRole('button', { name: 'Plot light curve' }));
     expect(await screen.findByRole('button', { name: 'Close light curve' })).toBeInTheDocument();
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain('freq_mhz=45');
+    expect(url).toContain('freq_mhz=55');
     fireEvent.click(screen.getByRole('button', { name: 'Close light curve' }));
     expect(screen.queryByTestId('plotly-chart')).not.toBeInTheDocument();
+  });
+
+  it('builds a path-free reproducibility manifest', () => {
+    const manifest = buildAnalysisManifest({
+      date: '2026-08-24',
+      station: 'MRO',
+      layers: [{
+        station: 'MRO', date: '2026-08-24', filename: 'MRO_20260824_120000.fit.gz',
+        intensity_unit: 'relative digits', fits_header: { 'DATE-OBS': '2026-08-24', SECRET: 'C:/private' },
+      }],
+      processing: { rfi_enabled: true },
+      display: { colormap: 'viridis' },
+      solarContext: { goes_xrs_overlay: false },
+      generatedAt: '2026-08-24T12:00:00.000Z',
+    });
+
+    expect(manifest.schema).toBe('astrodoncel.analysis-manifest.v1');
+    expect(manifest.catalogue.label).toBe('deARCE (v3)');
+    expect(manifest.selection.layers[0].fits_provenance).toEqual({ 'DATE-OBS': '2026-08-24' });
+    expect(JSON.stringify(manifest)).not.toContain('C:/private');
   });
 
   it('renders every requested overview station and its receiver groups', async () => {

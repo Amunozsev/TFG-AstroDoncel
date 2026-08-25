@@ -23,7 +23,7 @@ LEGACY_BURSTLIST_BASE = "http://soleil.i4ds.ch/solarradio/data/BurstLists/2010-y
 DEFAULT_CATALOG_SOURCE = "dearce_v3"
 CATALOG_SOURCES = {
     "dearce_v3": {
-        "label": "deARCE detection (v3)",
+        "label": "deARCE (v3)",
         "urls": [
             f"{base}/{{year}}/NCELESTINA_{{year}}_{{month:02d}}.link"
             for base in ASTRODONCEL_REPORT_BASES
