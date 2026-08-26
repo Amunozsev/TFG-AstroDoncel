@@ -1,5 +1,9 @@
 -r requirements.txt
+
+# Test suite and FastAPI/Starlette test client
 pytest==9.0.3
 httpx2==2.7.0
+
+# Static analysis and dependency auditing
 ruff==0.12.2
 pip-audit==2.10.1

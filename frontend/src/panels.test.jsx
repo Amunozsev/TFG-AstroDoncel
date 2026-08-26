@@ -11,9 +11,9 @@ import LightCurvePanel from './LightCurvePanel';
 import Statistics from './Statistics';
 import { buildAnalysisManifest } from './analysisManifest';
 
-vi.mock('./plotly', () => ({ default: {} }));
-vi.mock('react-plotly.js/factory', () => ({
-  default: () => function PlotMock() {
+vi.mock('./plotly', () => ({
+  default: {},
+  Plot: function PlotMock() {
     return createElement('div', { 'data-testid': 'plotly-chart' });
   },
 }));

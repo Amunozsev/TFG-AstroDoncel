@@ -28,6 +28,7 @@ frontend/coverage/
 # JSON generado por el script (artefacto derivado de /data)
 frontend/public/datos_prueba.json
 
+
 # Notas internas, handoffs y material personal/local
 /HANDOFF.md
 /ROADMAP_COMPLETO_TFG.md

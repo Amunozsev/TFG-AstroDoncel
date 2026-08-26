@@ -11,12 +11,6 @@ const About = lazy(() => import('./About'));
 const LightCurvePanel = lazy(() => import('./LightCurvePanel'));
 const DailyOverview = lazy(() => import('./DailyOverview'));
 
-const FALLBACK_STATIONS = [
-  'ALASKA-HAARP', 'AUSTRIA-UNIGRAZ', 'BIR', 'HUMAIN', 'LEARMONTH',
-  'MAURITIUS', 'PERU-ICA', 'PHOENIX', 'SPAIN-PERALEJOS', 'SPAIN-SIGUENZA',
-  'SSRT', 'SWISS-LANDSCHLACHT',
-];
-
 const TABS = [
   { id: 'processing', label: 'Processing', icon: 'sliders' },
   { id: 'display', label: 'Display', icon: 'display' },
@@ -56,11 +50,34 @@ function nextUtcDate(value) {
   return parsed.toISOString().slice(0, 10);
 }
 
+function describeStationSource(source, retentionDays) {
+  if (!source) return null;
+  if (source.includes('ethz')) {
+    return {
+      label: '● live + recent',
+      title: `Live ETHZ inventory plus stations seen in the last ${retentionDays} days`,
+      live: true,
+    };
+  }
+  if (source === 'bootstrap') {
+    return {
+      label: '● bootstrap',
+      title: 'Local bootstrap list; the live archive is unavailable',
+      live: false,
+    };
+  }
+  return {
+    label: '● unavailable',
+    title: 'Station inventory is temporarily unavailable',
+    live: false,
+  };
+}
+
 export default function App() {
   const [theme, setTheme]                   = useState(initialTheme);
   // Top-level view: the spectrogram portal or the world stations map.
   const [view, setView]                     = useState('portal');
-  const [stations, setStations]             = useState(FALLBACK_STATIONS);
+  const [stations, setStations]             = useState([]);
   const [stationsSource, setStationsSource] = useState('');
   const [stationDetails, setStationDetails] = useState({});
   const [stationRetentionDays, setStationRetentionDays] = useState(90);
@@ -179,8 +196,8 @@ export default function App() {
         }
       } catch (err) {
         if (!disposed) {
-          console.warn('Station list from API failed, using the last available inventory:', err.message);
-          setStationsSource((current) => current || 'static');
+          console.warn('Station list refresh failed; keeping the last available inventory:', err.message);
+          setStationsSource((current) => current || 'unavailable');
         }
       }
     }
@@ -509,6 +526,7 @@ export default function App() {
   const filteredStations = stationFilter
     ? stations.filter((s) => s.toUpperCase().includes(stationFilter.toUpperCase()))
     : stations;
+  const stationSourceStatus = describeStationSource(stationsSource, stationRetentionDays);
 
   const rfiStats = layers[0]?.rfi_stats ?? null;
 
@@ -877,12 +895,12 @@ export default function App() {
           {/* ── Station multi-select ── */}
           <div className="control-label">
             Stations
-            {stationsSource && (
+            {stationSourceStatus && (
               <span
-                title={stationsSource.includes('ethz') ? `Live ETHZ inventory plus stations seen in the last ${stationRetentionDays} days` : 'Local bootstrap list'}
-                style={{ marginLeft: '0.4rem', fontSize: '0.65rem', color: stationsSource.includes('ethz') ? '#38bdf8' : '#f59e0b', verticalAlign: 'middle' }}
+                title={stationSourceStatus.title}
+                style={{ marginLeft: '0.4rem', fontSize: '0.65rem', color: stationSourceStatus.live ? '#38bdf8' : '#f59e0b', verticalAlign: 'middle' }}
               >
-                {stationsSource.includes('ethz') ? '● live + recent' : '● local'}
+                {stationSourceStatus.label}
               </span>
             )}
             {selectedStations.length > 0 && (
@@ -899,7 +917,9 @@ export default function App() {
             />
             <div className="station-checklist">
               {filteredStations.length === 0 && (
-                <p className="files-hint" style={{ padding: '0.3rem 0.5rem' }}>No match.</p>
+                <p className="files-hint" style={{ padding: '0.3rem 0.5rem' }}>
+                  {!stationsSource ? 'Loading stations…' : stationFilter ? 'No match.' : 'No stations available.'}
+                </p>
               )}
               {filteredStations.map((s) => (
                 <label

@@ -1,9 +1,6 @@
 import { useState } from 'react';
-import Plotly from './plotly';
-import _factory from 'react-plotly.js/factory';
+import { Plot } from './plotly';
 import { apiFetch } from './api';
-
-const Plot = (_factory.default ?? _factory)(Plotly);
 
 export default function LightCurvePanel({ layer, theme = 'dark', embedded = false }) {
   const [frequency, setFrequency] = useState('45');
