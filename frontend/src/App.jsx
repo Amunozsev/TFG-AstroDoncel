@@ -2,6 +2,7 @@ import { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react'
 import { API_BASE_URL, apiFetch } from './api';
 import { buildAnalysisManifest, downloadManifest } from './analysisManifest';
 import { describeBurstResult } from './burstResult';
+import { fileForEvent } from './eventNavigation';
 import './App.css';
 
 const Spectrogram = lazy(() => import('./Spectrogram'));
@@ -95,10 +96,11 @@ export default function App() {
 
   // Daily burst list (primary station only)
   const [files, setFiles]                   = useState([]);
+  const [filesContext, setFilesContext]     = useState(null);
   const [filesLoading, setFilesLoading]     = useState(false);
   const [selectedFile, setSelectedFile]     = useState(null);
   const [focusCode, setFocusCode]           = useState('all');
-  const [pendingEventTime, setPendingEventTime] = useState(null);
+  const [pendingEvent, setPendingEvent]     = useState(null);
   const [collapsedHours, setCollapsedHours] = useState({});
 
   const [useSahanFilter, setSahan]          = useState(false);
@@ -214,6 +216,7 @@ export default function App() {
   // ── Reload burst list when primary station or date changes ────────────────
   const loadFiles = useCallback(async (st, dt, signal) => {
     setFiles([]);
+    setFilesContext(null);
     setSelectedFile(null);
     setCollapsedHours({});
     if (!st) return;
@@ -225,9 +228,12 @@ export default function App() {
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      setFiles(data.files ?? []);
-      if (data.files?.length > 0) {
-        setSelectedFile(data.files[0].filename);
+      if (signal.aborted) return;
+      const nextFiles = data.files ?? [];
+      setFiles(nextFiles);
+      setFilesContext({ station: st, date: dt });
+      if (nextFiles.length > 0) {
+        setSelectedFile(nextFiles[0].filename);
       }
     } catch (err) {
       if (!signal.aborted) console.warn('Could not load burst list:', err.message);
@@ -248,24 +254,26 @@ export default function App() {
   }, [station, date]);
 
   useEffect(() => {
-    if (!pendingEventTime || files.length === 0) return;
-    const target = new Date(pendingEventTime);
-    const targetSeconds = target.getUTCHours() * 3600 + target.getUTCMinutes() * 60 + target.getUTCSeconds();
-    const seconds = (value) => value.time.split(':').reduce(
-      (sum, part, index) => sum + Number(part) * [3600, 60, 1][index],
-      0,
-    );
-    const ordered = [...files].sort((a, b) => seconds(a) - seconds(b));
+    if (!pendingEvent) return;
+    if (
+      filesContext?.station === pendingEvent.station
+      && filesContext?.date === pendingEvent.date
+      && files.length === 0
+    ) {
+      queueMicrotask(() => setPendingEvent(null));
+      return;
+    }
     // e-CALLISTO filenames identify the start of a time block. The event
     // belongs to the latest block that started at or before its UTC time.
-    const nearest = [...ordered].reverse().find((item) => seconds(item) <= targetSeconds) ?? ordered[0];
+    const nearest = fileForEvent(files, filesContext, pendingEvent);
+    if (!nearest) return;
     queueMicrotask(() => {
       setSelectedFile(nearest.filename);
-      setPendingEventTime(null);
+      setPendingEvent(null);
       setHasLoaded(true);
       setTriggerLoad((value) => value + 1);
     });
-  }, [files, pendingEventTime]);
+  }, [files, filesContext, pendingEvent]);
 
   // ── Fetch spectrogram layers on explicit Load ─────────────────────────────
   useEffect(() => {
@@ -372,6 +380,9 @@ export default function App() {
 
   // ── Open a station from the map: select it and load its spectrograms ───────
   function handleOpenStation(st) {
+    setFiles([]);
+    setFilesContext(null);
+    setPendingEvent(null);
     setSelectedStations([st]);
     setStation(st);
     setStationFilter('');
@@ -385,11 +396,23 @@ export default function App() {
   function handleOpenEvent(event, requestedStation = null) {
     const targetStation = requestedStation ?? event.stations?.[0];
     if (!targetStation) return;
+    const targetDate = event.started_at.slice(0, 10);
+    // Invalidate the previous observation synchronously. Otherwise the event
+    // selector can briefly pair the old station's filename with the new
+    // station/date before /api/files has returned.
+    setHasLoaded(false);
+    setFiles([]);
+    setFilesContext(null);
+    setSelectedFile(null);
+    setLayers([]);
+    setFailedStations([]);
+    setFetchError(null);
+    setTriggerLoad((value) => value + 1); // abort an in-flight layer request
     setBurstResults({});
-    changeObservationDate(event.started_at.slice(0, 10));
+    changeObservationDate(targetDate);
     setSelectedStations([targetStation]);
     setStation(targetStation);
-    setPendingEventTime(event.started_at);
+    setPendingEvent({ station: targetStation, date: targetDate, startedAt: event.started_at });
     setView('portal');
   }
 
