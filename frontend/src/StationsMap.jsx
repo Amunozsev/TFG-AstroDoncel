@@ -1,9 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import Plotly from './plotly';
-import _factory from 'react-plotly.js/factory';
+import Plotly, { Plot } from './plotly';
 import { apiFetch } from './api';
-
-const Plot = (_factory.default ?? _factory)(Plotly);
 
 // ── Solar geometry (subsolar point + terminator) ────────────────────────────
 // Approximate NOAA solar-position formulas; precision is well within what a

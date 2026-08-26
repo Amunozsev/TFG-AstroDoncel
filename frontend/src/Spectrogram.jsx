@@ -1,9 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import Plotly from './plotly';
-import _factory from 'react-plotly.js/factory';
+import { Plot } from './plotly';
 import { apiFetch } from './api';
-
-const Plot = (_factory.default ?? _factory)(Plotly);
 
 // All colorscales defined as explicit RGB arrays so they work regardless of the
 // Plotly.js bundle version. Mirrors the colormap set in Sahan's FITS Analyzer.

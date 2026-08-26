@@ -50,7 +50,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="AstroDoncel API", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="AstroDoncel API", version="0.4.0", lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
 app.include_router(feature_router)
 
@@ -2120,8 +2120,8 @@ async def detect_burst(
     bag pooling. Returns the file-level burst probability, the calibrated
     threshold and the candidate event intervals (time + frequency band).
 
-    torch is optional: when it is not installed the endpoint answers with
-    available=false and a reason instead of failing.
+    ONNX Runtime is optional: when it or the model bundle is unavailable, the
+    endpoint answers with ``available=false`` and a reason instead of failing.
     """
     try:
         station = validate_station(station)

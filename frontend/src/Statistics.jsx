@@ -1,9 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import Plotly from './plotly';
-import _factory from 'react-plotly.js/factory';
+import { Plot } from './plotly';
 import { apiFetch } from './api';
-
-const Plot = (_factory.default ?? _factory)(Plotly);
 const today = () => new Date().toISOString().slice(0, 10);
 
 function rangeFor(period, date) {

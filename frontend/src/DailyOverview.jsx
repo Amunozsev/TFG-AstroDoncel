@@ -1,9 +1,7 @@
 import { useEffect, useState } from 'react';
-import Plotly from './plotly';
-import _factory from 'react-plotly.js/factory';
+import { Plot } from './plotly';
 import { apiFetch } from './api';
 
-const Plot = (_factory.default ?? _factory)(Plotly);
 const OVERVIEW_PLOT_HEIGHT = 360;
 const DEFAULT_COLOR_SCALE = [
   [0.00, '#000000'], [0.10, '#0a0038'], [0.20, '#1a0080'],

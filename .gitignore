@@ -28,8 +28,10 @@ frontend/coverage/
 # JSON generado por el script (artefacto derivado de /data)
 frontend/public/datos_prueba.json
 
-# Configuración local de Claude Code
-.claude/
+# Configuración local de asistentes
+/.agents/
+/.claude/
+/.codex/
 
 # Notas internas, handoffs y material personal/local
 /AGENTS.md
