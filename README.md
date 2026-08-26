@@ -20,8 +20,9 @@ del proyecto.
   contraste y distintos mapas de color.
 - Medir deriva frecuencia-tiempo, consultar cabeceras FITS, trazar curvas de luz
   y superponer el flujo GOES/XRS-B.
-- Crear resúmenes espectrales de intervalos, combinar bloques consecutivos y
-  exportar FITS procesados, CSV y manifiestos reproducibles.
+- Crear resúmenes espectrales de intervalos y unir bloques consecutivos en un
+  espectrograma continuo, que se dibuja bajo la observación actual.
+- Exportar FITS procesados, CSV y manifiestos reproducibles.
 - Ejecutar detección experimental de bursts mediante CNN+MIL con ONNX Runtime.
 - Consultar **Burst Reports**, estadísticas y Xmatch con el catálogo
   **deARCE (v3)**.
@@ -110,6 +111,10 @@ que todavía no han terminado.
 
 - **Drift ruler:** dos clics sobre el espectrograma miden `Δt`, `Δf` y la tasa
   de deriva en MHz/s.
+- **Light curve:** traza la intensidad frente al tiempo en hasta ocho
+  frecuencias. La curva aparece **bajo el espectrograma y comparte su eje
+  temporal**, con los mismos márgenes, de modo que cada pico se lee sobre la
+  misma escala UTC. Se puede exportar a CSV o cerrar sin perder la observación.
 - **Detect current file (ML):** clasifica el FITS principal cargado con el
   modelo CNN+MIL experimental. Muestra siempre probabilidad, umbral y resultado;
   una clasificación positiva puede no producir un intervalo localizado y debe
@@ -128,6 +133,21 @@ que todavía no han terminado.
 La misma ayuda aparece dentro de **Tools** y cada acción tiene una explicación
 al mantener el puntero encima.
 
+**Spectral overview y Combine se confunden con facilidad**, pero sirven para
+cosas opuestas:
+
+| | Combine current + next blocks | Spectral overview |
+|---|---|---|
+| Resolución | nativa, sin reducir | como máximo 120 columnas por fichero |
+| Estaciones | una | varias a la vez |
+| Intervalo | bloques consecutivos de un día | cualquier ventana UTC, hasta 72 h |
+| Línea base | la misma del espectrograma normal | mediana por grupo de receptor |
+| Salida | un mapa de calor continuo | un segmento por fichero, con huecos visibles |
+| Para qué | **medir** un evento que cruza el corte entre bloques | **localizar** dónde ocurrió algo |
+
+Combine exige que los bloques compartan eje de frecuencia; si no, la tarea
+falla indicando el fichero incompatible.
+
 ## Arquitectura
 
 AstroDoncel tiene un único repositorio y admite dos formas de ejecución:
@@ -135,7 +155,7 @@ AstroDoncel tiene un único repositorio y admite dos formas de ejecución:
 | Entorno | Componentes | Uso recomendado |
 |---|---|---|
 | `Dockerfile` | React estático + FastAPI + worker en un contenedor; PostgreSQL gestionado aparte | Railway u otro host sencillo |
-| `docker-compose.yml` | Nginx, API, worker, migraciones y PostgreSQL en servicios separados | Servidor propio, NAS o UAH |
+| `docker-compose.yml` | Nginx, API, worker, migraciones y PostgreSQL en servicios separados | Servidor propio, NAS o infraestructura institucional |
 
 El backend descarga bajo demanda desde e-CALLISTO, mantiene una caché local y
 guarda inventario, catálogo, tareas y metadatos en SQLAlchemy. PostgreSQL es la
@@ -145,10 +165,18 @@ navegador.
 
 Los FITS se resuelven en este orden: caché de `/data`, archivo local/NAS opcional
 y, si no existe una copia, descarga bajo demanda del archivo público de
-FHNW/ETHZ. Los **Burst Reports** no consultan directamente una base de datos
-privada o preexistente: AstroDoncel obtiene los listados mensuales publicados
-por el portal UAH, los normaliza como **deARCE (v3)** y mantiene su propia copia
-en PostgreSQL —o en SQLite durante un desarrollo local— con refresco periódico.
+FHNW/ETHZ.
+
+Los **Burst Reports** no consultan la base de datos de AstroDoncel UAH.
+AstroDoncel descarga los ficheros mensuales publicados con el patrón
+`NCELESTINA_<año>_<mes>.link` —por ejemplo,
+`NCELESTINA_2026_08.link`—, los parsea como **deARCE (v3)** y guarda una copia
+propia en PostgreSQL —o en SQLite durante el desarrollo local—. La copia se
+intenta refrescar cada 12 horas. En **Xmatch**, los marcadores rojos son esos
+mismos eventos; las bandas grises de disponibilidad se infieren del listado
+diario de ficheros de FHNW/ETHZ a partir de la hora del nombre y una duración
+nominal de 15 minutos. Estas bandas son una heurística, no una medida leída del
+interior del FITS.
 
 ```text
 Navegador
@@ -305,10 +333,10 @@ puede conectar más adelante cuando exista acceso al DNS de la UAH. Para un
 alojamiento permanente en la universidad se recomienda el stack Compose, una
 ruta persistente para `/data`, PostgreSQL, HTTPS y copias de seguridad externas.
 
-## Despliegue en un NAS o servidor UAH
+## Despliegue en un NAS o servidor propio
 
-Sí: el procedimiento parte del inicio rápido con Docker Compose, pero antes de
-abrirlo a alumnos conviene completar esta lista.
+El procedimiento parte del inicio rápido con Docker Compose. Antes de publicar
+la instalación conviene completar esta lista.
 
 1. Comprueba que el NAS dispone de Docker Engine, Compose v2, acceso saliente a
    FHNW/ETHZ, al portal UAH y a NOAA, y recursos suficientes. La construcción de
@@ -328,10 +356,11 @@ abrirlo a alumnos conviene completar esta lista.
    El directorio de datos debe poder escribirlo el UID/GID `10001`; el archivo
    e-CALLISTO solo necesita permisos de lectura y se monta como `ro`.
 4. Publica únicamente el servicio `web`. En producción, colócalo detrás del
-   proxy inverso del NAS con HTTPS y limita el acceso a la red UAH/VPN o añade
-   autenticación en el proxy: la aplicación no incorpora cuentas de usuario.
+   proxy inverso del NAS con HTTPS y limita el acceso a una red privada/VPN o
+   añade autenticación en el proxy: la aplicación no incorpora cuentas de
+   usuario.
 5. Verifica `https://<host>/ready`, abre un espectrograma, ejecuta una detección,
-   comprueba Burst Reports/Xmatch y lanza una tarea corta antes del curso.
+   comprueba Burst Reports/Xmatch y lanza una tarea corta del worker.
 6. Programa `scripts/backup.sh` o `scripts/backup.ps1`, copia `backups/` a otro
    almacenamiento y ensaya una restauración. Vigila además espacio de `/data`,
    memoria del worker y logs rotados.
@@ -348,6 +377,34 @@ curl --fail http://127.0.0.1:8080/ready
 Las migraciones se ejecutan antes de arrancar la API. Mantén una sola instancia
 del servicio `worker` salvo que se valide expresamente el consumo de CPU y el
 comportamiento de la cola en el NAS.
+
+El stack se ha validado con Docker Compose y PostgreSQL, pero la prueba en el
+NAS físico sigue dependiendo de su arquitectura, memoria, permisos y rutas.
+Antes de ponerlo en producción hay que hacer allí una instalación completa y
+ensayar también reinicio, copia de seguridad y restauración.
+
+### Consideraciones operativas
+
+AstroDoncel descarga los FITS **bajo demanda**: la primera vez que alguien abre
+un bloque se baja del archivo de FHNW/ETHZ y queda en la caché de `/data`; a
+partir de ahí se reutiliza sin volver a descargarlo. Si se dispone de una copia
+del archivo e-CALLISTO, se puede montar en `ECALLISTO_HOST_DIR`: se lee como
+solo lectura y tiene prioridad sobre la descarga remota.
+
+La caché FITS no sustituye por completo la conexión a internet:
+
+- **Burst Reports** y Statistics conservan en la base propia los meses ya
+  consultados e intentan actualizarlos cada `CATALOG_REFRESH_HOURS`.
+- Las bandas grises de **Xmatch** se construyen desde el índice diario vivo de
+  FHNW/ETHZ; sin acceso a ese índice pueden faltar aunque el catálogo esté
+  guardado.
+- La superposición **GOES** depende de NOAA/SunPy y puede no estar disponible
+  sin conexión.
+- *Spectral overview* y *Combine* comparten un único worker y se ejecutan en
+  cola. El resto del portal sigue disponible mientras terminan.
+
+Vigila el espacio de `/data`. `tools/prune_cache.py` permite limpiar FITS por
+antigüedad y tamaño; por defecto solo simula y necesita `--apply` para borrar.
 
 ## Comprobaciones antes de publicar
 
@@ -409,6 +466,16 @@ sh scripts/backup.sh
 Los backups se guardan en `backups/`, fuera de Git, con sumas SHA-256. Hay que
 copiarlos después a almacenamiento externo y probar periódicamente su
 restauración.
+
+## Solución de problemas
+
+| Síntoma | Causa habitual | Qué hacer |
+|---|---|---|
+| Una tarea se queda siempre en `queued` | el worker no está en marcha | en Compose, `docker compose ps` debe mostrar el servicio `worker`; en desarrollo local hay que lanzarlo aparte con `python -m backend.worker` |
+| `/ready` no responde tras arrancar | migraciones o PostgreSQL aún iniciando | `docker compose logs -f migrate api` |
+| Una estación no muestra ficheros ese día | no hay observaciones publicadas o el archivo remoto no responde | prueba otra fecha y revisa los logs de la API |
+| **Burst Reports** está vacío | el fichero mensual de la fuente elegida no está disponible | revisa el aviso de la interfaz o usa **deARCE (v3)**, la fuente predeterminada |
+| *Combine* falla con «Incompatible frequency axis» | los bloques no comparten la misma configuración de receptor | selecciona otro bloque o limita la combinación al mismo `focus_code` |
 
 ## Créditos y procedencia
 
