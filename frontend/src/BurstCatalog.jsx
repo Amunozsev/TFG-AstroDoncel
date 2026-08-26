@@ -25,7 +25,7 @@ export default function BurstCatalog({ onOpenEvent }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (signal) => {
     setLoading(true);
     setError('');
     const range = dateRange(date, period);
@@ -33,20 +33,29 @@ export default function BurstCatalog({ onOpenEvent }) {
     if (type) query.set('type', type);
     if (station) query.set('station', station);
     try {
-      const response = await apiFetch(`/api/bursts?${query}`);
+      const response = await apiFetch(`/api/bursts?${query}`, { signal });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
+      if (signal?.aborted) return;
       setEvents(data.events ?? []);
       setWarnings(data.warnings ?? []);
       setSourceLabel(data.source_label ?? 'deARCE (v3)');
     } catch (cause) {
-      setError(`Could not load the burst catalogue: ${cause.message}`);
+      if (!signal?.aborted) setError(`Could not load the burst catalogue: ${cause.message}`);
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, [date, period, station, type]);
 
-  useEffect(() => { queueMicrotask(load); }, [load]);
+  useEffect(() => {
+    const controller = new AbortController();
+    const delay = station ? 250 : 0;
+    const timer = window.setTimeout(() => load(controller.signal), delay);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [load, station]);
 
   const formatLongitude = (value) => Number.isFinite(value) ? `${value.toFixed(1)}°` : '—';
 
@@ -86,11 +95,11 @@ export default function BurstCatalog({ onOpenEvent }) {
         <label>{period === 'month' ? 'Month' : 'Date'}<input type={period === 'month' ? 'month' : 'date'} value={period === 'month' ? date.slice(0, 7) : date} onChange={(event) => setDate(period === 'month' ? `${event.target.value}-01` : event.target.value)} /></label>
         <label>Type<select value={type} onChange={(event) => setType(event.target.value)}><option value="">All types</option>{['II', 'III', 'IIIG', 'V', 'VI', 'U', 'J', 'CTM', 'RBR'].map((value) => <option key={value}>{value}</option>)}</select></label>
         <label>Station<input value={station} onChange={(event) => setStation(event.target.value)} placeholder="Search stations…" /></label>
-        <button className="btn-primary" onClick={load} disabled={loading}>{loading ? 'Loading…' : 'Refresh'}</button>
+        <button className="btn-primary" onClick={() => load()} disabled={loading}>{loading ? 'Loading…' : 'Refresh'}</button>
         <button type="button" onClick={exportCsv} disabled={loading || events.length === 0}>Export CSV</button>
       </section>
       <div className="live-region" aria-live="polite">{loading ? 'Loading burst reports' : `${events.length} events found for the selected ${period}`}</div>
-      {error && <div className="page-error" role="alert">{error}<button onClick={load}>Retry</button></div>}
+      {error && <div className="page-error" role="alert">{error}<button onClick={() => load()}>Retry</button></div>}
       {warnings.length > 0 && <p className="page-warning">Some source months were unavailable. Cached results are shown.</p>}
       {!loading && !error && events.length === 0 ? (
         <div className="empty-card"><h2>No events found</h2><p>Try another date or remove filters.</p></div>

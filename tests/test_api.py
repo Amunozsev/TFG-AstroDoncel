@@ -1,3 +1,6 @@
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
@@ -142,6 +145,40 @@ def test_xmatch_timeline_builds_clickable_station_events(monkeypatch):
     assert row["positive"] is True
     assert row["events"] == [event]
     assert row["availability"][0]["start_at"].startswith("2026-07-24T12:00:00")
+
+
+def test_archive_inventory_fetch_is_single_flight_per_day(monkeypatch):
+    date = "2042-01-01"
+    calls = 0
+    calls_lock = threading.Lock()
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'<a href="MRO_20420101_120000_01.fit.gz">file</a>'
+
+    def fake_urlopen(*_args, **_kwargs):
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        time.sleep(0.03)
+        return Response()
+
+    monkeypatch.setattr(core, "urlopen", fake_urlopen)
+    with core._ARCHIVE_DAY_CACHE_LOCK:
+        core._ARCHIVE_DAY_CACHE.pop(date, None)
+        core._ARCHIVE_DAY_FETCH_LOCKS.pop(date, None)
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        inventories = list(executor.map(core._archive_inventory_for_date, [date] * 3))
+
+    assert calls == 1
+    assert all(inventory == {"MRO": ["MRO_20420101_120000_01.fit.gz"]} for inventory in inventories)
 
 
 def test_station_inventory_hides_stale_rows_but_preserves_recent_and_live(monkeypatch):
