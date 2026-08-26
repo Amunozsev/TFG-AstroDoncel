@@ -15,8 +15,14 @@ import { fileForEvent } from './eventNavigation';
 
 vi.mock('./plotly', () => ({
   default: {},
-  Plot: function PlotMock() {
-    return createElement('div', { 'data-testid': 'plotly-chart' });
+  Plot: function PlotMock(props) {
+    const customdata = props.data?.find((trace) => trace.customdata?.length)?.customdata?.[0];
+    return createElement('button', {
+      'aria-label': 'Mock Plotly event marker',
+      'data-testid': 'plotly-chart',
+      disabled: !customdata,
+      onClick: () => props.onClick?.({ points: [{ customdata }] }),
+    });
   },
 }));
 
@@ -50,6 +56,31 @@ describe('analysis panels', () => {
     fireEvent.click(screen.getByRole('tab', { name: /Network summary/ }));
     expect(await screen.findByRole('heading', { name: 'Bursts observed' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /Network summary/ })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('opens the station event represented by an Xmatch red marker', async () => {
+    const onOpenEvent = vi.fn();
+    const report = {
+      id: 9,
+      started_at: '2026-08-26T06:32:00+00:00',
+      ended_at: '2026-08-26T06:35:00+00:00',
+      burst_type: 'III',
+      stations: ['HUMAIN'],
+    };
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url) => ({
+      ok: true,
+      json: async () => String(url).includes('/api/xmatch/timeline')
+        ? {
+            source_label: 'deARCE (v3)',
+            availability_basis: 'Archive blocks',
+            rows: [{ station: 'HUMAIN', positive: true, availability: [], events: [report] }],
+          }
+        : { ranking: [], points: [] },
+    })));
+
+    render(<Statistics onOpenEvent={onOpenEvent} onOpenStation={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Mock Plotly event marker' }));
+    expect(onOpenEvent).toHaveBeenCalledWith(report, 'HUMAIN');
   });
 
   it('opens the clicked report station and renders catalogue longitudes', async () => {
