@@ -14,6 +14,7 @@
   --text-subtle: #64778c;
   --primary: #55b8f6;
   --primary-strong: #178bc1;
+  --on-primary: #ffffff;
   --primary-soft: #12364c;
   --warning: #e5a23b;
   --danger: #f87171;
@@ -1769,6 +1770,67 @@ button:disabled { cursor: not-allowed; }
 .lightcurve-close { border-color: var(--border); color: var(--text); background: var(--surface-2); }
 .lightcurve-close:hover { border-color: var(--primary); color: var(--text-strong); }
 
+.lightcurve-result,
+.combined-result {
+  flex: 0 0 auto;
+  min-width: 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-0);
+}
+
+.lightcurve-result > header,
+.combined-result > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 1rem 0.35rem;
+}
+
+.lightcurve-result h2,
+.combined-result h2 {
+  margin: 0.12rem 0 0;
+  color: var(--text-strong);
+  font-size: 0.92rem;
+}
+
+.lightcurve-result header p,
+.combined-result header p {
+  margin: 0.3rem 0 0;
+  color: var(--text-muted);
+  font: 0.68rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.lightcurve-result .lightcurve-actions { justify-content: flex-end; }
+.lightcurve-result .lightcurve-actions button,
+.task-result-action {
+  min-height: 40px;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: var(--surface-2);
+  cursor: pointer;
+}
+
+.lightcurve-result .lightcurve-actions button:hover,
+.task-result-action:hover { color: var(--text-strong); border-color: var(--primary); }
+.lightcurve-result .lightcurve-plot { margin: 0; }
+.combined-result > .js-plotly-plot { display: block; }
+.result-loading { flex: 0 0 auto; padding: 1.25rem; color: var(--text-muted); text-align: center; }
+
+.task-result-action {
+  grid-column: 1 / -1;
+  width: 100%;
+  color: var(--on-primary);
+  border-color: var(--primary-strong);
+  background: var(--primary-strong);
+  font-weight: 750;
+}
+
+.task-result-action:hover { color: var(--on-primary); filter: brightness(1.1); }
+
 .daily-overview { margin: 1rem; padding: 1rem; }
 .daily-overview h2,
 .page-header h1,
@@ -1853,4 +1915,8 @@ button:disabled { cursor: not-allowed; }
   .overview-task-controls .tool-primary-action { grid-column: 1; }
   .plot-area { flex-basis: 390px; min-height: 390px; }
   .daily-overview { margin: 0.65rem; }
+  .lightcurve-result > header,
+  .combined-result > header { align-items: stretch; flex-direction: column; }
+  .lightcurve-result .lightcurve-actions { justify-content: flex-start; }
+  .combined-result header .btn-tool { width: 100%; }
 }
