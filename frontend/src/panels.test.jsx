@@ -10,6 +10,7 @@ import BurstCatalog from './BurstCatalog';
 import LightCurvePanel from './LightCurvePanel';
 import Statistics from './Statistics';
 import { buildAnalysisManifest } from './analysisManifest';
+import { describeBurstResult } from './burstResult';
 
 vi.mock('./plotly', () => ({
   default: {},
@@ -42,6 +43,8 @@ describe('analysis panels', () => {
     expect(screen.getByRole('tab', { name: /Xmatch timeline/ })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('heading', { name: 'Xmatch timeline' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Bursts observed' })).not.toBeInTheDocument();
+    await waitFor(() => expect(fetch).toHaveBeenCalled());
+    expect(vi.mocked(fetch).mock.calls.every(([url]) => !String(url).includes('/api/stats/'))).toBe(true);
 
     fireEvent.click(screen.getByRole('tab', { name: /Network summary/ }));
     expect(await screen.findByRole('heading', { name: 'Bursts observed' })).toBeInTheDocument();
@@ -108,6 +111,51 @@ describe('analysis panels', () => {
       expect(url).toContain('station=glas');
     });
     expect(screen.getByLabelText('Station')).toHaveValue('glas');
+  });
+
+  it('ignores an obsolete Burst Reports response after the filters change', async () => {
+    const pending = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((url) => new Promise((resolve) => {
+      pending.push({ url: String(url), resolve });
+    })));
+    render(<BurstCatalog onOpenEvent={vi.fn()} />);
+    await waitFor(() => expect(pending).toHaveLength(1));
+
+    fireEvent.change(screen.getByLabelText('Station'), { target: { value: 'glas' } });
+    await waitFor(() => expect(pending).toHaveLength(2));
+    pending[1].resolve({
+      ok: true,
+      json: async () => ({
+        events: [{
+          id: 2, started_at: '2026-08-26T06:00:00Z', ended_at: '2026-08-26T06:01:00Z',
+          stations: ['GLASGOW'], burst_type: 'III', source_label: 'deARCE (v3)',
+        }],
+        warnings: [], source_label: 'deARCE (v3)',
+      }),
+    });
+    expect(await screen.findByRole('button', { name: 'GLASGOW' })).toBeInTheDocument();
+
+    pending[0].resolve({
+      ok: true,
+      json: async () => ({
+        events: [{
+          id: 1, started_at: '2026-08-26T05:00:00Z', ended_at: '2026-08-26T05:01:00Z',
+          stations: ['MRO'], burst_type: 'III', source_label: 'deARCE (v3)',
+        }],
+        warnings: [], source_label: 'deARCE (v3)',
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByRole('button', { name: 'MRO' })).not.toBeInTheDocument();
+  });
+
+  it('reports a positive file even when event localization is empty', () => {
+    const summary = describeBurstResult({
+      available: true, is_burst: true, is_candidate: false,
+      file_score: 0.81, threshold: 0.6, events: [],
+    });
+    expect(summary.label).toBe('Burst detected');
+    expect(summary.detail).toMatch(/no reliable time-frequency interval/i);
   });
 
   it('lets the user close a loaded light curve', async () => {

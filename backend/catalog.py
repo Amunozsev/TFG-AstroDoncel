@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import threading
 from datetime import datetime, timedelta, timezone
 from html import unescape
 from urllib.request import Request, urlopen
@@ -49,6 +50,8 @@ def _clean_station(token: str) -> str:
 
 
 STATION_DIGEST_LENGTH = 16
+_CATALOG_INGEST_LOCKS: dict[str, threading.Lock] = {}
+_CATALOG_INGEST_LOCKS_GUARD = threading.Lock()
 
 
 def _station_digest(stations: list[str]) -> str:
@@ -142,6 +145,26 @@ def ingest_month(
     source: str = DEFAULT_CATALOG_SOURCE,
     force: bool = False,
 ) -> int:
+    """Refresh one catalogue month without racing concurrent API requests.
+
+    Burst Reports, station statistics and Xmatch can request the same month at
+    the same time.  Serialising the refresh prevents duplicate remote fetches
+    and conflicting PostgreSQL upserts while still letting cached reads return
+    immediately after the first request completes.
+    """
+    cache_key = f"{source}:{year:04d}-{month:02d}"
+    with _CATALOG_INGEST_LOCKS_GUARD:
+        ingest_lock = _CATALOG_INGEST_LOCKS.setdefault(cache_key, threading.Lock())
+    with ingest_lock:
+        return _ingest_month_locked(year, month, source=source, force=force)
+
+
+def _ingest_month_locked(
+    year: int,
+    month: int,
+    source: str = DEFAULT_CATALOG_SOURCE,
+    force: bool = False,
+) -> int:
     if not 1 <= month <= 12:
         raise ValueError("month must be between 1 and 12")
     if source not in CATALOG_SOURCES:
@@ -159,11 +182,12 @@ def ingest_month(
                 return 0
     errors = []
     text = None
+    fetch_timeout = max(1.0, float(os.environ.get("CATALOG_FETCH_TIMEOUT_SECONDS", "12")))
     for template in CATALOG_SOURCES[source]["urls"]:
         url = template.format(year=year, month=month)
         request = Request(url, headers={"User-Agent": "AstroDoncel/1.0"})
         try:
-            with urlopen(request, timeout=20) as response:
+            with urlopen(request, timeout=fetch_timeout) as response:
                 text = response.read().decode("utf-8", errors="replace")
             break
         except Exception as exc:
@@ -175,9 +199,15 @@ def ingest_month(
     events = parse_burst_list(text, source)
     inserted = 0
     with session_scope() as session:
+        month_start = datetime(year, month, 1, tzinfo=timezone.utc)
+        month_end = (month_start + timedelta(days=32)).replace(day=1)
         existing = {
             row.event_key: row
-            for row in session.scalars(select(BurstEvent).where(BurstEvent.source == source))
+            for row in session.scalars(select(BurstEvent).where(
+                BurstEvent.source == source,
+                BurstEvent.started_at >= month_start,
+                BurstEvent.started_at < month_end,
+            ))
         }
         for event in events:
             stored = existing.get(event["event_key"])

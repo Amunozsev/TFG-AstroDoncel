@@ -1,5 +1,9 @@
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
+from backend import catalog
 from backend.catalog import DEFAULT_CATALOG_SOURCE, list_events, parse_burst_list
 from backend.db import BurstEvent, session_scope
 
@@ -91,3 +95,26 @@ def test_event_key_still_separates_different_station_sets():
     first = parse_burst_list(shared_row + "BIR, GLASGOW\n")[0]
     second = parse_burst_list(shared_row + "BIR, HUMAIN\n")[0]
     assert first["event_key"] != second["event_key"]
+
+
+def test_catalog_month_refresh_is_single_flight(monkeypatch):
+    active = 0
+    max_active = 0
+    state_lock = threading.Lock()
+
+    def fake_ingest(*_args, **_kwargs):
+        nonlocal active, max_active
+        with state_lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.03)
+        with state_lock:
+            active -= 1
+        return 1
+
+    monkeypatch.setattr(catalog, "_ingest_month_locked", fake_ingest)
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(lambda _: catalog.ingest_month(2026, 8), range(4)))
+
+    assert results == [1, 1, 1, 1]
+    assert max_active == 1

@@ -90,6 +90,10 @@ deliberadamente `-v`.
 5. Usa **Processing**, **Display**, **Layers**, **Light curve** y **Tools** para
    ajustar o ampliar el análisis.
 
+Se pueden comparar **hasta seis estaciones a la vez**. La interfaz bloquea
+nuevas selecciones al alcanzar ese límite, que coincide con la validación del
+backend.
+
 El inventario se refresca automáticamente. Combina las estaciones activas del
 archivo con las vistas durante los últimos 90 días; ese plazo se puede cambiar
 con `STATION_RETENTION_DAYS`. Una estación nueva aparece al publicarse en el
@@ -101,6 +105,27 @@ Los trabajos costosos, como un resumen espectral largo o la combinación de
 bloques, se envían a una cola persistente. La interfaz muestra sus estados
 `queued`, `running`, `succeeded`, `failed` o `cancelled` y permite cancelar los
 que todavía no han terminado.
+
+### Guía breve de herramientas
+
+- **Drift ruler:** dos clics sobre el espectrograma miden `Δt`, `Δf` y la tasa
+  de deriva en MHz/s.
+- **Detect current file (ML):** clasifica el FITS principal cargado con el
+  modelo CNN+MIL experimental. Muestra siempre probabilidad, umbral y resultado;
+  una clasificación positiva puede no producir un intervalo localizado y debe
+  revisarse visualmente.
+- **Spectral overview:** crea en el worker una vista reducida de un intervalo
+  UTC más largo para las estaciones seleccionadas.
+- **Combine next blocks:** une el bloque actual con hasta tres bloques
+  posteriores, siempre de la misma estación y de un receptor compatible. Sirve
+  para analizar un tramo continuo más largo; no mezcla estaciones.
+- **Download original FITS / Export processed FITS:** descargan respectivamente
+  la observación intacta y una copia con el procesamiento elegido y sus ejes.
+- **Export analysis manifest:** guarda en JSON los FITS seleccionados, unidades,
+  ajustes y procedencia científica, sin rutas locales.
+
+La misma ayuda aparece dentro de **Tools** y cada acción tiene una explicación
+al mantener el puntero encima.
 
 ## Arquitectura
 
@@ -116,6 +141,13 @@ guarda inventario, catálogo, tareas y metadatos en SQLAlchemy. PostgreSQL es la
 opción de producción; SQLite funciona como alternativa local. El worker reclama
 las tareas desde la base de datos, por lo que no dependen de la pestaña del
 navegador.
+
+Los FITS se resuelven en este orden: caché de `/data`, archivo local/NAS opcional
+y, si no existe una copia, descarga bajo demanda del archivo público de
+FHNW/ETHZ. Los **Burst Reports** no consultan directamente una base de datos
+privada o preexistente: AstroDoncel obtiene los listados mensuales publicados
+por el portal UAH, los normaliza como **deARCE (v3)** y mantiene su propia copia
+en PostgreSQL —o en SQLite durante un desarrollo local— con refresco periódico.
 
 ```text
 Navegador
@@ -231,6 +263,7 @@ principales son:
 | `STATION_REFRESH_MINUTES` | `60` | cadencia del inventario remoto |
 | `STATION_RETENTION_DAYS` | `90` | tiempo que se conserva una estación conocida |
 | `CATALOG_REFRESH_HOURS` | `12` | cadencia de actualización del catálogo |
+| `CATALOG_FETCH_TIMEOUT_SECONDS` | `12` | espera máxima por cada origen mensual del catálogo |
 | `MAX_ACTIVE_TASKS` | `100` | límite de trabajos activos |
 | `TASK_STALE_MINUTES` | `15` | recuperación de trabajos interrumpidos |
 | `TASK_RETENTION_DAYS` | `30` | retención de tareas terminadas |
@@ -270,6 +303,50 @@ Railway proporciona `PORT` y el dominio `*.up.railway.app`. Un dominio propio se
 puede conectar más adelante cuando exista acceso al DNS de la UAH. Para un
 alojamiento permanente en la universidad se recomienda el stack Compose, una
 ruta persistente para `/data`, PostgreSQL, HTTPS y copias de seguridad externas.
+
+## Despliegue en un NAS o servidor UAH
+
+Sí: el procedimiento parte del inicio rápido con Docker Compose, pero antes de
+abrirlo a alumnos conviene completar esta lista.
+
+1. Comprueba que el NAS dispone de Docker Engine, Compose v2, acceso saliente a
+   FHNW/ETHZ, al portal UAH y a NOAA, y recursos suficientes. La construcción de
+   la imagen es la prueba definitiva de que la CPU del NAS dispone de un wheel
+   compatible de ONNX Runtime.
+2. Clona el repositorio por SSH y ejecuta `scripts/docker-up.sh`. El script crea
+   `.env`, genera la contraseña de PostgreSQL, construye las imágenes, aplica
+   migraciones y espera a `/ready`.
+3. Para usar directorios persistentes del NAS, cambia en `.env`:
+
+   ```dotenv
+   APP_DATA_SOURCE=/ruta/astrodoncel/data
+   ECALLISTO_HOST_DIR=/ruta/opcional/ecallistodata
+   WEB_PORT=8080
+   ```
+
+   El directorio de datos debe poder escribirlo el UID/GID `10001`; el archivo
+   e-CALLISTO solo necesita permisos de lectura y se monta como `ro`.
+4. Publica únicamente el servicio `web`. En producción, colócalo detrás del
+   proxy inverso del NAS con HTTPS y limita el acceso a la red UAH/VPN o añade
+   autenticación en el proxy: la aplicación no incorpora cuentas de usuario.
+5. Verifica `https://<host>/ready`, abre un espectrograma, ejecuta una detección,
+   comprueba Burst Reports/Xmatch y lanza una tarea corta antes del curso.
+6. Programa `scripts/backup.sh` o `scripts/backup.ps1`, copia `backups/` a otro
+   almacenamiento y ensaya una restauración. Vigila además espacio de `/data`,
+   memoria del worker y logs rotados.
+
+Para actualizar después:
+
+```bash
+git pull --ff-only
+docker compose up --build -d
+docker compose ps
+curl --fail http://127.0.0.1:8080/ready
+```
+
+Las migraciones se ejecutan antes de arrancar la API. Mantén una sola instancia
+del servicio `worker` salvo que se valide expresamente el consumo de CPU y el
+comportamiento de la cola en el NAS.
 
 ## Comprobaciones antes de publicar
 

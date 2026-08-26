@@ -477,6 +477,7 @@ class BurstDetectResponse(BaseModel):
     reason: str = ""
     model_version: str | None = None
     threshold: float | None = None
+    candidate_threshold: float | None = None
     file_score: float | None = None
     is_burst: bool | None = None
     is_candidate: bool | None = None
@@ -623,6 +624,7 @@ def _list_local_fits_files(station: str, date: str) -> list[str]:
 
 _ARCHIVE_DAY_CACHE: dict[str, tuple[float, dict[str, list[str]]]] = {}
 _ARCHIVE_DAY_CACHE_LOCK = threading.Lock()
+_ARCHIVE_DAY_FETCH_LOCKS: dict[str, threading.Lock] = {}
 
 
 def _archive_inventory_for_date(date: str) -> dict[str, list[str]]:
@@ -639,29 +641,41 @@ def _archive_inventory_for_date(date: str) -> dict[str, list[str]]:
     if cached and now - cached[0] < ttl:
         return cached[1]
 
-    dir_url = f"{ETHZ_BASE_URL}/{dt.strftime('%Y/%m/%d')}/"
-    try:
-        req = Request(dir_url, headers={"User-Agent": "AstroDoncel/1.0"})
-        with urlopen(req, timeout=15) as resp:
-            page = resp.read().decode("utf-8", errors="replace")
-    except Exception:
-        return cached[1] if cached else {}
-
-    expected_date = dt.strftime("%Y%m%d")
-    inventory: dict[str, list[str]] = {}
-    for raw_name in re.findall(r'href="([^"]+\.fits?(?:\.gz)?)"', page, re.IGNORECASE):
-        filename = os.path.basename(html.unescape(raw_name))
-        station = _station_from_filename(filename)
-        if station is None or f"_{expected_date}_" not in filename.upper():
-            continue
-        inventory.setdefault(station, []).append(filename)
-    inventory = {
-        station: sorted(set(filenames))
-        for station, filenames in inventory.items()
-    }
+    # Several views can need the same daily index at once (station list,
+    # Burst Reports navigation and Xmatch). Fetch it once and let the other
+    # requests reuse the result instead of opening duplicate remote requests.
     with _ARCHIVE_DAY_CACHE_LOCK:
-        _ARCHIVE_DAY_CACHE[date] = (now, inventory)
-    return inventory
+        fetch_lock = _ARCHIVE_DAY_FETCH_LOCKS.setdefault(date, threading.Lock())
+    with fetch_lock:
+        now = datetime.now(timezone.utc).timestamp()
+        with _ARCHIVE_DAY_CACHE_LOCK:
+            cached = _ARCHIVE_DAY_CACHE.get(date)
+        if cached and now - cached[0] < ttl:
+            return cached[1]
+
+        dir_url = f"{ETHZ_BASE_URL}/{dt.strftime('%Y/%m/%d')}/"
+        try:
+            req = Request(dir_url, headers={"User-Agent": "AstroDoncel/1.0"})
+            with urlopen(req, timeout=15) as resp:
+                page = resp.read().decode("utf-8", errors="replace")
+        except Exception:
+            return cached[1] if cached else {}
+
+        expected_date = dt.strftime("%Y%m%d")
+        inventory: dict[str, list[str]] = {}
+        for raw_name in re.findall(r'href="([^"]+\.fits?(?:\.gz)?)"', page, re.IGNORECASE):
+            filename = os.path.basename(html.unescape(raw_name))
+            station = _station_from_filename(filename)
+            if station is None or f"_{expected_date}_" not in filename.upper():
+                continue
+            inventory.setdefault(station, []).append(filename)
+        inventory = {
+            station: sorted(set(filenames))
+            for station, filenames in inventory.items()
+        }
+        with _ARCHIVE_DAY_CACHE_LOCK:
+            _ARCHIVE_DAY_CACHE[date] = (now, inventory)
+        return inventory
 
 
 def _list_ethz_files(station: str, date: str) -> list[str]:

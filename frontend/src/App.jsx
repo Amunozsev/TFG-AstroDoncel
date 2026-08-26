@@ -1,6 +1,7 @@
 import { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react';
 import { API_BASE_URL, apiFetch } from './api';
 import { buildAnalysisManifest, downloadManifest } from './analysisManifest';
+import { describeBurstResult } from './burstResult';
 import './App.css';
 
 const Spectrogram = lazy(() => import('./Spectrogram'));
@@ -20,6 +21,7 @@ const TABS = [
 ];
 
 const PANEL_TITLES = Object.fromEntries(TABS.map((item) => [item.id, item.label]));
+const MAX_SPECTROGRAM_LAYERS = 6;
 
 const ICON_PATHS = {
   sliders: 'M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6',
@@ -391,31 +393,26 @@ export default function App() {
     setView('portal');
   }
 
-  // ── Automatic burst detection on every loaded layer ───────────────────────
+  // ── Automatic burst detection on the primary (current) FITS block ─────────
   async function handleDetectBursts() {
     if (layers.length === 0 || burstDetecting) return;
     setBurstDetecting(true);
+    setBurstResults({});
+    const layer = layers[0];
     try {
-      const results = await Promise.all(
-        layers.map(async (l) => {
-          const params = new URLSearchParams({
-            station: l.station,
-            date: l.date,
-            filename: l.filename,
-          });
-          try {
-            const res = await apiFetch(`/api/burst/detect?${params}`);
-            if (!res.ok) {
-              const body = await res.json().catch(() => ({}));
-              return [l.station, { available: false, reason: body.detail ?? `Error ${res.status}` }];
-            }
-            return [l.station, await res.json()];
-          } catch (err) {
-            return [l.station, { available: false, reason: err.message }];
-          }
-        })
-      );
-      setBurstResults(Object.fromEntries(results));
+      const params = new URLSearchParams({
+        station: layer.station,
+        date: layer.date,
+        filename: layer.filename,
+      });
+      const res = await apiFetch(`/api/burst/detect?${params}`, { timeoutMs: 90_000 });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail ?? `Error ${res.status}`);
+      }
+      setBurstResults({ [layer.station]: await res.json() });
+    } catch (err) {
+      setBurstResults({ [layer.station]: { available: false, reason: err.message } });
     } finally {
       setBurstDetecting(false);
     }
@@ -479,6 +476,7 @@ export default function App() {
       setSelectedStations(next);
       if (station === s) setStation(next[0] ?? null); // keep primary valid after removal
     } else {
+      if (selectedStations.length >= MAX_SPECTROGRAM_LAYERS) return;
       setSelectedStations([...selectedStations, s]);
       if (!station) setStation(s); // first pick becomes primary; later picks don't steal it
     }
@@ -764,23 +762,34 @@ export default function App() {
                 >
                   Drift ruler {rulerMode ? 'on' : ''}
                 </button>
-                <button className="btn-tool" onClick={() => { setHeaderLayerIdx(0); setShowHeaderViewer(true); }} disabled={layers.length === 0}>FITS header</button>
-                <button className="btn-tool" onClick={handleDetectBursts} disabled={layers.length === 0 || burstDetecting}>
+                <button className="btn-tool" onClick={() => { setHeaderLayerIdx(0); setShowHeaderViewer(true); }} disabled={layers.length === 0} title="Show scientific metadata stored in the current FITS header">FITS header</button>
+                <button
+                  className="btn-tool"
+                  onClick={handleDetectBursts}
+                  disabled={layers.length === 0 || burstDetecting}
+                  title="Classify the primary FITS block with the experimental CNN+MIL model"
+                >
                   {burstDetecting ? 'Detecting…' : 'Detect current file (ML)'}
                 </button>
               </div>
               {rulerMode && <p className="tool-help">Select two points on the plot. The header reports Δt, Δf and drift rate.</p>}
-              {Object.entries(burstResults).map(([st, result]) => (
-                <span
-                  key={st}
-                  className={`stat-chip${result.available && (result.is_burst || result.is_candidate) ? ' burst-hit' : ''}`}
-                  title={result.available ? `Model ${result.model_version} · ${result.n_windows} windows · ${result.inference_ms} ms` : result.reason}
-                >
-                  {result.available
-                    ? `${st}: p=${result.file_score.toFixed(2)}${result.events?.length ? ` · ${result.is_burst ? 'event' : 'candidate'} ${result.events.length}` : ' · no burst'}`
-                    : `${st}: unavailable`}
-                </span>
-              ))}
+              {burstDetecting && <p className="detection-pending" role="status">Running experimental inference on the current FITS block…</p>}
+              {Object.entries(burstResults).map(([st, result]) => {
+                const summary = describeBurstResult(result);
+                return (
+                  <article key={st} className={`detection-result ${summary.status}`} aria-live="polite">
+                    <header><strong>{st}</strong><span>{summary.label}</span></header>
+                    <p>{summary.detail}</p>
+                    {result.available && (
+                      <dl>
+                        <div><dt>Probability</dt><dd>{result.file_score.toFixed(3)}</dd></div>
+                        <div><dt>Burst threshold</dt><dd>{result.threshold.toFixed(3)}</dd></div>
+                        <div><dt>Model</dt><dd>{result.model_version}</dd></div>
+                      </dl>
+                    )}
+                  </article>
+                );
+              })}
             </section>
 
             <section className="tool-section" aria-labelledby="overview-tools-title">
@@ -796,6 +805,7 @@ export default function App() {
                   className="btn-primary tool-primary-action"
                   onClick={() => startOverview(selectedStations)}
                   disabled={!station || selectedStations.length === 0 || ['submitting', 'queued', 'running'].includes(taskStatus?.status)}
+                  title="Build a reduced long-interval spectrogram for the selected stations"
                 >
                   Create overview ({selectedStations.length})
                 </button>
@@ -818,16 +828,26 @@ export default function App() {
                 <button className="btn-tool" onClick={() => {
                   const current = Math.max(0, files.findIndex((file) => file.filename === selectedFile));
                   startTask('combine_time', { filenames: files.slice(current, current + 4).map((file) => file.filename) });
-                }} disabled={!station || files.length < 2 || ['submitting', 'queued', 'running'].includes(taskStatus?.status)}>
+                }} disabled={!station || files.length < 2 || ['submitting', 'queued', 'running'].includes(taskStatus?.status)} title="Join the current FITS block with up to three following compatible blocks from the same station and receiver">
                   Combine next blocks
                 </button>
                 {layers[0] && <>
-                  <a className="btn-tool" href={`${API_BASE_URL}/api/files/download?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename })}`}>Download original FITS</a>
-                  <a className="btn-tool" href={`${API_BASE_URL}/api/spectrogram/export?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename, rfi: useSahanFilter, rfi_z_thresh: rfiParams.zThresh, rfi_occupancy: rfiParams.occupancy, rfi_min_component: rfiParams.minComponent, rfi_impulsive: rfiParams.impulsive })}`}>Export processed FITS</a>
-                  <button className="btn-tool" type="button" onClick={exportAnalysisManifest}>Export analysis manifest</button>
+                  <a className="btn-tool" title="Download the unmodified source observation" href={`${API_BASE_URL}/api/files/download?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename })}`}>Download original FITS</a>
+                  <a className="btn-tool" title="Export the displayed processing result and its scientific axes as FITS" href={`${API_BASE_URL}/api/spectrogram/export?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename, rfi: useSahanFilter, rfi_z_thresh: rfiParams.zThresh, rfi_occupancy: rfiParams.occupancy, rfi_min_component: rfiParams.minComponent, rfi_impulsive: rfiParams.impulsive })}`}>Export processed FITS</a>
+                  <button className="btn-tool" type="button" onClick={exportAnalysisManifest} title="Save selected files, units, processing settings and provenance as JSON">Export analysis manifest</button>
                 </>}
                 <p className="tool-help">Combining joins consecutive compatible blocks from the same station. The manifest records settings and provenance without local paths.</p>
               </div>
+            </details>
+
+            <details className="tool-disclosure">
+              <summary>Tool guide <span>Short explanations</span></summary>
+              <dl className="tool-guide">
+                <div><dt>Drift ruler</dt><dd>Two plot clicks measure elapsed time, frequency change and drift rate in MHz/s.</dd></div>
+                <div><dt>ML detection</dt><dd>Classifies the current primary FITS block; it is experimental and always requires scientific review.</dd></div>
+                <div><dt>Spectral overview</dt><dd>Reduces a longer UTC interval into an exploratory view and runs it in the persistent worker.</dd></div>
+                <div><dt>Combine next blocks</dt><dd>Joins the current block and up to three following blocks only when station and receiver are compatible.</dd></div>
+              </dl>
             </details>
           </div>
         );
@@ -905,7 +925,7 @@ export default function App() {
             )}
             {selectedStations.length > 0 && (
               <span style={{ fontSize: '0.65rem', color: '#38bdf8', marginLeft: '0.3rem' }}>
-                {selectedStations.length} selected
+                {selectedStations.length}/{MAX_SPECTROGRAM_LAYERS} selected
               </span>
             )}
             <input
@@ -929,6 +949,7 @@ export default function App() {
                   <input
                     type="checkbox"
                     checked={selectedStations.includes(s)}
+                    disabled={!selectedStations.includes(s) && selectedStations.length >= MAX_SPECTROGRAM_LAYERS}
                     onChange={() => toggleStation(s)}
                   />
                   <i
@@ -939,6 +960,7 @@ export default function App() {
                 </label>
               ))}
             </div>
+            {selectedStations.length >= MAX_SPECTROGRAM_LAYERS && <p className="files-hint">Maximum: {MAX_SPECTROGRAM_LAYERS} simultaneous layers.</p>}
           </div>
 
           <label className="control-label">
