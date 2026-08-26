@@ -11,6 +11,7 @@ import LightCurvePanel from './LightCurvePanel';
 import Statistics from './Statistics';
 import { buildAnalysisManifest } from './analysisManifest';
 import { describeBurstResult } from './burstResult';
+import { fileForEvent } from './eventNavigation';
 
 vi.mock('./plotly', () => ({
   default: {},
@@ -156,6 +157,35 @@ describe('analysis panels', () => {
     });
     expect(summary.label).toBe('Burst detected');
     expect(summary.detail).toMatch(/no reliable time-frequency interval/i);
+  });
+
+  it('never reuses the previous station filename for a catalogue event', () => {
+    const previousFiles = [{
+      filename: 'SPAIN-SIGUENZA_20260826_063000_02.fit.gz',
+      time: '06:30:00',
+    }];
+    const pendingEvent = {
+      station: 'HUMAIN',
+      date: '2026-08-26',
+      startedAt: '2026-08-26T06:32:00+00:00',
+    };
+
+    expect(fileForEvent(
+      previousFiles,
+      { station: 'SPAIN-SIGUENZA', date: '2026-08-26' },
+      pendingEvent,
+    )).toBeNull();
+
+    const currentFiles = [
+      { filename: 'HUMAIN_20260826_061500_59.fit.gz', time: '06:15:00' },
+      { filename: 'HUMAIN_20260826_063000_59.fit.gz', time: '06:30:00' },
+      { filename: 'HUMAIN_20260826_064500_59.fit.gz', time: '06:45:00' },
+    ];
+    expect(fileForEvent(
+      currentFiles,
+      { station: 'HUMAIN', date: '2026-08-26' },
+      pendingEvent,
+    )?.filename).toBe('HUMAIN_20260826_063000_59.fit.gz');
   });
 
   it('lets the user close a loaded light curve', async () => {
