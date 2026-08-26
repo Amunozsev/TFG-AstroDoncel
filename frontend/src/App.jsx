@@ -681,25 +681,6 @@ export default function App() {
                 <option value="bone_r">Bone (inverted)</option>
               </select>
             </label>
-            <label className="tab-field">
-              Comparison mode
-              <div className="segmented">
-                <button
-                  className={compareMode === 'panels' ? 'active' : ''}
-                  onClick={() => setCompareMode('panels')}
-                  title="One synchronised panel per station (recommended)"
-                >
-                  Panels
-                </button>
-                <button
-                  className={compareMode === 'overlay' ? 'active' : ''}
-                  onClick={() => setCompareMode('overlay')}
-                  title="Translucent blend: upper layers fade out at low intensity"
-                >
-                  Overlay
-                </button>
-              </div>
-            </label>
             <div className="tab-group">
               <label className="control-checkbox">
                 <input
@@ -753,6 +734,25 @@ export default function App() {
       case 'layers':
         return (
           <div className="tab-panel">
+            <label className="tab-field">
+              Comparison mode
+              <div className="segmented">
+                <button
+                  className={compareMode === 'panels' ? 'active' : ''}
+                  onClick={() => setCompareMode('panels')}
+                  title="One synchronised panel per station (recommended)"
+                >
+                  Panels
+                </button>
+                <button
+                  className={compareMode === 'overlay' ? 'active' : ''}
+                  onClick={() => setCompareMode('overlay')}
+                  title="Translucent blend: upper layers fade out at low intensity"
+                >
+                  Overlay
+                </button>
+              </div>
+            </label>
             {layers.length === 0 && failedStations.length === 0 && (
               <span className="tab-hint">Load one or more stations to manage layers.</span>
             )}
