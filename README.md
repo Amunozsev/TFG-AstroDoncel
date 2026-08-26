@@ -116,9 +116,10 @@ que todavía no han terminado.
   revisarse visualmente.
 - **Spectral overview:** crea en el worker una vista reducida de un intervalo
   UTC más largo para las estaciones seleccionadas.
-- **Combine next blocks:** une el bloque actual con hasta tres bloques
-  posteriores, siempre de la misma estación y de un receptor compatible. Sirve
-  para analizar un tramo continuo más largo; no mezcla estaciones.
+- **Combine current + next blocks:** parte del FITS seleccionado y une hasta
+  tres bloques posteriores de la misma estación cuando sus ejes de frecuencia
+  son compatibles. Al terminar muestra automáticamente un espectrograma
+  continuo bajo la observación actual; no mezcla estaciones.
 - **Download original FITS / Export processed FITS:** descargan respectivamente
   la observación intacta y una copia con el procesamiento elegido y sus ejes.
 - **Export analysis manifest:** guarda en JSON los FITS seleccionados, unidades,

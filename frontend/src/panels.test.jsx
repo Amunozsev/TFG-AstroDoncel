@@ -7,7 +7,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import DailyOverview from './DailyOverview';
 import BurstCatalog from './BurstCatalog';
-import LightCurvePanel from './LightCurvePanel';
+import CombinedSpectrogram from './CombinedSpectrogram';
+import LightCurvePanel, { LightCurveResult } from './LightCurvePanel';
 import Statistics from './Statistics';
 import { buildAnalysisManifest } from './analysisManifest';
 import { describeBurstResult } from './burstResult';
@@ -20,6 +21,7 @@ vi.mock('./plotly', () => ({
     return createElement('button', {
       'aria-label': 'Mock Plotly event marker',
       'data-testid': 'plotly-chart',
+      'data-x-range': props.layout?.xaxis?.range?.join('|') ?? '',
       disabled: !customdata,
       onClick: () => props.onClick?.({ points: [{ customdata }] }),
     });
@@ -238,6 +240,64 @@ describe('analysis panels', () => {
     expect(url).toContain('freq_mhz=55');
     fireEvent.click(screen.getByRole('button', { name: 'Close light curve' }));
     expect(screen.queryByTestId('plotly-chart')).not.toBeInTheDocument();
+  });
+
+  it('sends an embedded light curve to the full-width result area', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        times: ['2024-01-01T12:00:00Z', '2024-01-01T12:15:00Z'],
+        curves: [{ frequency_mhz: 45, intensity: [1, 2] }],
+        unit: 'relative digits',
+      }),
+    }));
+    const onCurve = vi.fn();
+    const layer = { station: 'MRO', date: '2024-01-01', filename: 'MRO_20240101_120000.fit' };
+    render(<LightCurvePanel layer={layer} embedded onCurve={onCurve} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Plot light curve' }));
+    await waitFor(() => expect(onCurve).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId('plotly-chart')).not.toBeInTheDocument();
+
+    cleanup();
+    const result = onCurve.mock.calls[0][0];
+    render(
+      <LightCurveResult
+        result={result}
+        timeRange={['2024-01-01T12:00:00Z', '2024-01-01T12:15:00Z']}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText('Light curve aligned with the spectrogram')).toBeInTheDocument();
+    expect(screen.getByTestId('plotly-chart')).toHaveAttribute(
+      'data-x-range',
+      '2024-01-01T12:00:00Z|2024-01-01T12:15:00Z',
+    );
+  });
+
+  it('renders a combine-time artifact as a continuous spectrogram', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        station: 'MRO',
+        date: '2024-01-01',
+        filenames: ['MRO_20240101_120000.fit', 'MRO_20240101_121500.fit'],
+        time_axis: ['2024-01-01T12:00:00Z', '2024-01-01T12:30:00Z'],
+        freq_axis: [45, 80],
+        z: [[1, 2], [3, 4]],
+        vmin: 1,
+        vmax: 4,
+      }),
+    }));
+    render(<CombinedSpectrogram artifactUrl="/api/tasks/combine/artifact" />);
+
+    expect(await screen.findByRole('heading', { name: 'Combined spectrogram' })).toBeInTheDocument();
+    expect(screen.getByText(/2 consecutive blocks/)).toBeInTheDocument();
+    expect(screen.getByText(/45\.000–80\.000 MHz/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'View combined data (JSON)' })).toHaveAttribute(
+      'href',
+      '/api/tasks/combine/artifact',
+    );
+    expect(screen.getByTestId('plotly-chart')).toBeInTheDocument();
   });
 
   it('builds a path-free reproducibility manifest', () => {

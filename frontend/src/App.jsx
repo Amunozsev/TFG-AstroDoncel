@@ -11,7 +11,9 @@ const BurstCatalog = lazy(() => import('./BurstCatalog'));
 const Statistics = lazy(() => import('./Statistics'));
 const About = lazy(() => import('./About'));
 const LightCurvePanel = lazy(() => import('./LightCurvePanel'));
+const LightCurveResult = lazy(() => import('./LightCurvePanel').then((module) => ({ default: module.LightCurveResult })));
 const DailyOverview = lazy(() => import('./DailyOverview'));
+const CombinedSpectrogram = lazy(() => import('./CombinedSpectrogram'));
 
 const TABS = [
   { id: 'processing', label: 'Processing', icon: 'sliders' },
@@ -141,6 +143,7 @@ export default function App() {
   const [burstResults, setBurstResults]     = useState({});
   const [burstDetecting, setBurstDetecting] = useState(false);
   const [taskStatus, setTaskStatus]         = useState(null);
+  const [lightCurveResult, setLightCurveResult] = useState(null);
   const taskRunRef = useRef(0);
 
   useEffect(() => {
@@ -539,10 +542,33 @@ export default function App() {
     });
   }
 
+  function showResult(id) {
+    setActiveTab(null);
+    window.setTimeout(() => {
+      document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 0);
+  }
+
   const loadDisabled =
     !date ||
     selectedStations.length === 0 ||
     (files.length > 0 && !selectedFile);
+
+  const selectedFileIndex = files.findIndex((file) => file.filename === selectedFile);
+  const combineFilenames = selectedFileIndex < 0
+    ? []
+    : files.slice(selectedFileIndex, selectedFileIndex + 4).map((file) => file.filename);
+
+  const currentLightCurve = lightCurveResult
+    && layers[0]
+    && lightCurveResult.source.station === layers[0].station
+    && lightCurveResult.source.date === layers[0].date
+    && lightCurveResult.source.filename === layers[0].filename
+    ? lightCurveResult
+    : null;
+  const primaryTimeRange = layers[0]?.time_axis?.length > 1
+    ? [layers[0].time_axis[0], layers[0].time_axis.at(-1)]
+    : undefined;
 
   const filteredStations = stationFilter
     ? stations.filter((s) => s.toUpperCase().includes(stationFilter.toUpperCase()))
@@ -767,6 +793,10 @@ export default function App() {
             layer={layers[0]}
             theme={theme}
             embedded
+            onCurve={(result) => {
+              setLightCurveResult(result);
+              setActiveTab(null);
+            }}
           />
         );
       case 'tools':
@@ -840,7 +870,19 @@ export default function App() {
                   <strong>{Number.isFinite(taskStatus.progress) ? `${Math.round(taskStatus.progress * 100)}%` : '—'}</strong>
                   <div className="task-progress-track"><i style={{ transform: `scaleX(${taskStatus.progress ?? 0})` }} /></div>
                   {taskStatus.error && <p>{taskStatus.error}</p>}
-                  {taskStatus.result?.artifact_url && <a href={`${API_BASE_URL}${taskStatus.result.artifact_url}`}>Open raw result</a>}
+                  {taskStatus.status === 'succeeded' && taskStatus.type === 'combine_time' && (
+                    <>
+                      <p>{taskStatus.result?.files ?? combineFilenames.length} blocks combined into one continuous spectrogram.</p>
+                      <button type="button" className="task-result-action" onClick={() => showResult('combined-spectrogram-result')}>
+                        Show combined spectrogram
+                      </button>
+                    </>
+                  )}
+                  {taskStatus.result?.artifact_url && (
+                    <a href={`${API_BASE_URL}${taskStatus.result.artifact_url}`}>
+                      View {taskStatus.type === 'combine_time' ? 'combined' : 'overview'} data (JSON)
+                    </a>
+                  )}
                 </div>
               )}
             </section>
@@ -849,17 +891,16 @@ export default function App() {
               <summary>Data &amp; exports <span>Advanced actions</span></summary>
               <div className="tool-disclosure-body">
                 <button className="btn-tool" onClick={() => {
-                  const current = Math.max(0, files.findIndex((file) => file.filename === selectedFile));
-                  startTask('combine_time', { filenames: files.slice(current, current + 4).map((file) => file.filename) });
-                }} disabled={!station || files.length < 2 || ['submitting', 'queued', 'running'].includes(taskStatus?.status)} title="Join the current FITS block with up to three following compatible blocks from the same station and receiver">
-                  Combine next blocks
+                  startTask('combine_time', { filenames: combineFilenames });
+                }} disabled={!station || combineFilenames.length < 2 || ['submitting', 'queued', 'running'].includes(taskStatus?.status)} title="Join the current FITS block with up to three following blocks when their frequency axes are compatible">
+                  Combine current + next blocks
                 </button>
                 {layers[0] && <>
                   <a className="btn-tool" title="Download the unmodified source observation" href={`${API_BASE_URL}/api/files/download?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename })}`}>Download original FITS</a>
                   <a className="btn-tool" title="Export the displayed processing result and its scientific axes as FITS" href={`${API_BASE_URL}/api/spectrogram/export?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename, rfi: useSahanFilter, rfi_z_thresh: rfiParams.zThresh, rfi_occupancy: rfiParams.occupancy, rfi_min_component: rfiParams.minComponent, rfi_impulsive: rfiParams.impulsive })}`}>Export processed FITS</a>
                   <button className="btn-tool" type="button" onClick={exportAnalysisManifest} title="Save selected files, units, processing settings and provenance as JSON">Export analysis manifest</button>
                 </>}
-                <p className="tool-help">Combining joins consecutive compatible blocks from the same station. The manifest records settings and provenance without local paths.</p>
+                <p className="tool-help">Combining starts at the selected block and joins up to three following blocks from the same station when their frequency axes are compatible. The result appears as one continuous spectrogram below the current observation.</p>
               </div>
             </details>
 
@@ -1177,6 +1218,17 @@ export default function App() {
           burstResults={burstResults}
           theme={theme}
         />
+        {currentLightCurve && (
+          <LightCurveResult
+            result={currentLightCurve}
+            theme={theme}
+            timeRange={primaryTimeRange}
+            onClose={() => setLightCurveResult(null)}
+          />
+        )}
+        {taskStatus?.status === 'succeeded' && taskStatus.type === 'combine_time' && taskStatus.result?.artifact_url && (
+          <CombinedSpectrogram key={taskStatus.id} artifactUrl={taskStatus.result.artifact_url} theme={theme} />
+        )}
         {taskStatus?.status === 'succeeded' && taskStatus.type === 'spectral_overview' && taskStatus.result?.artifact_url && <DailyOverview key={taskStatus.id} artifactUrl={taskStatus.result.artifact_url} theme={theme} />}
       </main>
 
