@@ -13,8 +13,17 @@ export function fileForEvent(files, filesContext, pendingEvent) {
     || files.length === 0
   ) return null;
 
+  if (pendingEvent.filename) {
+    const exact = files.find((item) => item.filename === pendingEvent.filename);
+    if (exact) return exact;
+  }
+
   const target = new Date(pendingEvent.startedAt);
   const targetSeconds = target.getUTCHours() * 3600 + target.getUTCMinutes() * 60 + target.getUTCSeconds();
-  const ordered = [...files].sort((a, b) => secondsOfDay(a.time) - secondsOfDay(b.time));
+  const candidates = pendingEvent.focusCode
+    ? files.filter((item) => item.focus_code === pendingEvent.focusCode)
+    : files;
+  const ordered = [...candidates].sort((a, b) => secondsOfDay(a.time) - secondsOfDay(b.time));
+  if (ordered.length === 0) return null;
   return [...ordered].reverse().find((item) => secondsOfDay(item.time) <= targetSeconds) ?? ordered[0];
 }

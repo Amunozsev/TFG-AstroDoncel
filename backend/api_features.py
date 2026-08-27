@@ -204,15 +204,8 @@ def get_xmatch_timeline(
         stations.update(event["stations"])
 
     nominal_minutes = int(os.environ.get("XMATCH_NOMINAL_BLOCK_MINUTES", "15"))
-    rows = []
-    for station in sorted(stations):
-        starts: list[datetime] = []
-        for filename in inventory.get(station, []):
-            raw_time = core._time_from_filename(filename)
-            try:
-                starts.append(datetime.fromisoformat(f"{date}T{raw_time}+00:00"))
-            except ValueError:
-                continue
+
+    def merged_availability(starts: list[datetime]) -> list[dict[str, str]]:
         merged: list[list[datetime]] = []
         for started in sorted(set(starts)):
             ended = min(started + timedelta(minutes=nominal_minutes), end_at)
@@ -220,17 +213,49 @@ def get_xmatch_timeline(
                 merged[-1][1] = max(merged[-1][1], ended)
             else:
                 merged.append([started, ended])
+        return [
+            {"start_at": started.isoformat(), "end_at": ended.isoformat()}
+            for started, ended in merged
+        ]
+
+    rows = []
+    for station in sorted(stations):
+        starts: list[datetime] = []
+        receiver_blocks: dict[str, list[tuple[datetime, datetime, str]]] = {}
+        for filename in inventory.get(station, []):
+            raw_time = core._time_from_filename(filename)
+            try:
+                started = datetime.fromisoformat(f"{date}T{raw_time}+00:00")
+            except ValueError:
+                continue
+            ended = min(started + timedelta(minutes=nominal_minutes), end_at)
+            starts.append(started)
+            focus_code = core._focus_code_from_filename(filename) or "unknown"
+            receiver_blocks.setdefault(focus_code, []).append((started, ended, filename))
         station_events = [
             event for event in events
             if station in event["stations"]
         ]
+        receivers = []
+        for focus_code, blocks in sorted(receiver_blocks.items()):
+            ordered_blocks = sorted(blocks, key=lambda block: (block[0], block[2]))
+            receivers.append({
+                "focus_code": focus_code,
+                "availability": merged_availability([block[0] for block in ordered_blocks]),
+                "blocks": [
+                    {
+                        "filename": filename,
+                        "start_at": started.isoformat(),
+                        "end_at": ended.isoformat(),
+                    }
+                    for started, ended, filename in ordered_blocks
+                ],
+            })
         rows.append({
             "station": station,
             "positive": bool(station_events),
-            "availability": [
-                {"start_at": started.isoformat(), "end_at": ended.isoformat()}
-                for started, ended in merged
-            ],
+            "availability": merged_availability(starts),
+            "receivers": receivers,
             "events": station_events,
         })
     return {
@@ -239,10 +264,12 @@ def get_xmatch_timeline(
         "source_label": source_label(source),
         "rows": rows,
         "station_count": len(rows),
+        "receiver_count": sum(len(row["receivers"]) for row in rows),
         "positive_count": sum(row["positive"] for row in rows),
         "availability_basis": (
             "Heuristic intervals inferred from live archive filename start times "
-            f"using a nominal {nominal_minutes}-minute block duration."
+            f"using a nominal {nominal_minutes}-minute block duration. "
+            "Focus codes are kept as separate receiver rows."
         ),
         "warnings": warnings,
     }

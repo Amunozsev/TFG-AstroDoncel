@@ -103,6 +103,7 @@ export default function App() {
   const [selectedFile, setSelectedFile]     = useState(null);
   const [focusCode, setFocusCode]           = useState('all');
   const [pendingEvent, setPendingEvent]     = useState(null);
+  const [filesReloadKey, setFilesReloadKey] = useState(0);
   const [collapsedHours, setCollapsedHours] = useState({});
 
   const [useSahanFilter, setSahan]          = useState(false);
@@ -249,7 +250,7 @@ export default function App() {
     const controller = new AbortController();
     queueMicrotask(() => loadFiles(station, date, controller.signal));
     return () => controller.abort();
-  }, [station, date, loadFiles]);
+  }, [station, date, filesReloadKey, loadFiles]);
 
   useEffect(() => {
     taskRunRef.current += 1;
@@ -259,24 +260,39 @@ export default function App() {
   useEffect(() => {
     if (!pendingEvent) return;
     if (
-      filesContext?.station === pendingEvent.station
-      && filesContext?.date === pendingEvent.date
-      && files.length === 0
+      filesContext?.station !== pendingEvent.station
+      || filesContext?.date !== pendingEvent.date
+    ) return;
+    if (
+      files.length === 0
     ) {
-      queueMicrotask(() => setPendingEvent(null));
+      if (filesLoading) return;
+      queueMicrotask(() => {
+        setPendingEvent(null);
+        setFetchError('No FITS blocks are available for this station and date.');
+      });
       return;
     }
     // e-CALLISTO filenames identify the start of a time block. The event
     // belongs to the latest block that started at or before its UTC time.
     const nearest = fileForEvent(files, filesContext, pendingEvent);
-    if (!nearest) return;
+    if (!nearest) {
+      queueMicrotask(() => {
+        setPendingEvent(null);
+        setFetchError(pendingEvent.focusCode
+          ? `No FITS block is available for focus code ${pendingEvent.focusCode} at this event time.`
+          : 'No FITS block is available at this event time.');
+      });
+      return;
+    }
     queueMicrotask(() => {
       setSelectedFile(nearest.filename);
+      setFocusCode(nearest.focus_code ?? 'all');
       setPendingEvent(null);
       setHasLoaded(true);
       setTriggerLoad((value) => value + 1);
     });
-  }, [files, filesContext, pendingEvent]);
+  }, [files, filesContext, filesLoading, pendingEvent]);
 
   // ── Fetch spectrogram layers on explicit Load ─────────────────────────────
   useEffect(() => {
@@ -396,7 +412,7 @@ export default function App() {
     setTriggerLoad((n) => n + 1);
   }
 
-  function handleOpenEvent(event, requestedStation = null) {
+  function handleOpenEvent(event, requestedStation = null, requestedFile = null) {
     const targetStation = requestedStation ?? event.stations?.[0];
     if (!targetStation) return;
     const targetDate = event.started_at.slice(0, 10);
@@ -415,7 +431,18 @@ export default function App() {
     changeObservationDate(targetDate);
     setSelectedStations([targetStation]);
     setStation(targetStation);
-    setPendingEvent({ station: targetStation, date: targetDate, startedAt: event.started_at });
+    setFocusCode(requestedFile?.focusCode ?? 'all');
+    setPendingEvent({
+      station: targetStation,
+      date: targetDate,
+      startedAt: event.started_at,
+      filename: requestedFile?.filename ?? null,
+      focusCode: requestedFile?.focusCode ?? null,
+    });
+    // A station/date pair can be selected repeatedly from Xmatch. Its values do
+    // not change in that case, so use an explicit run key to reload the file
+    // inventory and complete every navigation request.
+    setFilesReloadKey((value) => value + 1);
     setView('portal');
   }
 

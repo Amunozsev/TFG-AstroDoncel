@@ -145,6 +145,48 @@ def test_xmatch_timeline_builds_clickable_station_events(monkeypatch):
     assert row["positive"] is True
     assert row["events"] == [event]
     assert row["availability"][0]["start_at"].startswith("2026-07-24T12:00:00")
+    assert row["receivers"] == [{
+        "focus_code": "01",
+        "availability": row["availability"],
+        "blocks": [{
+            "filename": "MRO_20260724_120000_01.fit.gz",
+            "start_at": row["availability"][0]["start_at"],
+            "end_at": row["availability"][0]["end_at"],
+        }],
+    }]
+
+
+def test_xmatch_timeline_keeps_simultaneous_focus_codes_separate(monkeypatch):
+    event = {
+        "id": 8,
+        "started_at": "2026-08-25T10:25:00+00:00",
+        "ended_at": "2026-08-25T10:28:00+00:00",
+        "stations": ["GERMANY-DLR"],
+    }
+    monkeypatch.setattr(api_features, "_ensure_months", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(api_features, "list_events", lambda *_args, **_kwargs: [event])
+    monkeypatch.setattr(
+        core,
+        "_archive_inventory_for_date",
+        lambda _date: {
+            "GERMANY-DLR": [
+                "GERMANY-DLR_20260825_101500_01.fit.gz",
+                "GERMANY-DLR_20260825_101500_02.fit.gz",
+                "GERMANY-DLR_20260825_101500_03.fit.gz",
+                "GERMANY-DLR_20260825_101500_62.fit.gz",
+                "GERMANY-DLR_20260825_101501_63.fit.gz",
+            ],
+        },
+    )
+
+    result = api_features.get_xmatch_timeline("2026-08-25")
+
+    row = result["rows"][0]
+    assert [receiver["focus_code"] for receiver in row["receivers"]] == [
+        "01", "02", "03", "62", "63",
+    ]
+    assert result["receiver_count"] == 5
+    assert all(len(receiver["blocks"]) == 1 for receiver in row["receivers"])
 
 
 def test_archive_inventory_fetch_is_single_flight_per_day(monkeypatch):

@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Plot } from './plotly';
 import { apiFetch } from './api';
+import { expandXmatchRows } from './xmatch';
 const today = () => new Date().toISOString().slice(0, 10);
 
 function rangeFor(period, date) {
@@ -25,6 +26,7 @@ export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' 
   const [xmatchFilter, setXmatchFilter] = useState('all');
   const [xmatchLoading, setXmatchLoading] = useState(false);
   const [xmatchError, setXmatchError] = useState('');
+  const openEventPointRef = useRef(null);
   const range = useMemo(() => rangeFor(period, date), [date, period]);
 
   const load = useCallback(async (signal) => {
@@ -86,13 +88,13 @@ export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' 
 
   const max = Math.max(1, ...ranking.map((item) => item.count));
   const timelineMax = Math.max(1, ...timeline.map((item) => item.count));
-  const xmatchRows = (xmatch?.rows ?? []).filter((row) => xmatchFilter === 'all' || row.positive);
+  const xmatchRows = expandXmatchRows(xmatch?.rows, xmatchFilter);
   const availabilityTraces = xmatchRows.map((row) => {
     const x = [];
     const y = [];
     row.availability.forEach((interval) => {
       x.push(interval.start_at, interval.end_at, null);
-      y.push(row.station, row.station, null);
+      y.push(row.label, row.label, null);
     });
     return {
       type: 'scatter',
@@ -104,18 +106,37 @@ export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' 
       showlegend: false,
     };
   });
-  const eventPoints = xmatchRows.flatMap((row) => row.events.map((event) => ({
-    station: row.station,
-    event,
-  })));
+  const eventPoints = xmatchRows.flatMap((row) => row.eventPoints);
+  const openEventPoint = (item) => {
+    if (item.filename) {
+      onOpenEvent(item.event, item.station, {
+        filename: item.filename,
+        focusCode: item.focusCode,
+      });
+    } else {
+      onOpenEvent(item.event, item.station);
+    }
+  };
+  useEffect(() => {
+    openEventPointRef.current = openEventPoint;
+  });
+  const onXmatchClick = useCallback((click) => {
+    const selected = click.points?.[0]?.customdata;
+    if (selected?.event) openEventPointRef.current?.(selected);
+  }, []);
+  const bindXmatchClick = useCallback((_figure, graphDiv) => {
+    if (!graphDiv?.on) return;
+    graphDiv.removeListener?.('plotly_click', onXmatchClick);
+    graphDiv.on('plotly_click', onXmatchClick);
+  }, [onXmatchClick]);
   const eventTrace = {
     type: 'scatter',
     mode: 'markers',
     x: eventPoints.map((item) => item.event.started_at),
-    y: eventPoints.map((item) => item.station),
+    y: eventPoints.map((item) => item.label),
     customdata: eventPoints,
     marker: { color: '#ff3b30', size: 15, symbol: 'line-ns-open', line: { color: '#ff3b30', width: 3 } },
-    text: eventPoints.map((item) => `${item.station} · ${item.event.burst_type ?? 'burst'}`),
+    text: eventPoints.map((item) => `${item.station}${item.focusCode ? ` · FC ${item.focusCode}` : ''} · ${item.event.burst_type ?? 'burst'}`),
     hovertemplate: '%{text}<br>%{x|%H:%M:%S} UTC<br>Click to open spectrogram<extra></extra>',
     name: 'deARCE (v3)',
   };
@@ -175,7 +196,7 @@ export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' 
           <div>
             <p className="eyebrow">Cross-station context</p>
             <h2 id="xmatch-title">Xmatch timeline</h2>
-            <p>Grey bands are archive availability. Red markers are {xmatch?.source_label ?? 'deARCE (v3)'}; select one to open that station at the event time.</p>
+            <p>Each row is one receiver (focus code). Grey bands are archive availability; select a red {xmatch?.source_label ?? 'deARCE (v3)'} marker to open that exact FITS block.</p>
           </div>
           <div className="stats-controls">
             <label>Date<input type="date" value={xmatchDate} onChange={(event) => setXmatchDate(event.target.value)} /></label>
@@ -183,9 +204,9 @@ export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' 
             <button type="button" onClick={() => loadXmatch()} disabled={xmatchLoading}>{xmatchLoading ? 'Loading…' : 'Refresh'}</button>
           </div>
         </header>
-        <div className="live-region" aria-live="polite">{xmatchLoading ? 'Loading Xmatch timeline' : `${xmatchRows.length} stations shown in Xmatch`}</div>
+        <div className="live-region" aria-live="polite">{xmatchLoading ? 'Loading Xmatch timeline' : `${xmatchRows.length} receiver rows shown in Xmatch`}</div>
         {xmatchError && <div className="page-error" role="alert">{xmatchError}<button onClick={() => loadXmatch()}>Retry</button></div>}
-        {!xmatchLoading && !xmatchError && xmatchRows.length === 0 && <p className="empty-inline">No stations match this filter for the selected day.</p>}
+        {!xmatchLoading && !xmatchError && xmatchRows.length === 0 && <p className="empty-inline">No receiver rows match this filter for the selected day.</p>}
         {xmatchRows.length > 0 && (
           <>
             <Plot
@@ -207,24 +228,22 @@ export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' 
                 },
                 yaxis: {
                   categoryorder: 'array',
-                  categoryarray: xmatchRows.map((row) => row.station).reverse(),
+                  categoryarray: xmatchRows.map((row) => row.label).reverse(),
                   gridcolor: theme === 'light' ? '#e4eaf0' : '#1b2d3e',
                 },
               }}
               config={{ responsive: true, displaylogo: false }}
-              onClick={(click) => {
-                const selected = click.points?.[0]?.customdata;
-                if (selected?.event) onOpenEvent(selected.event, selected.station);
-              }}
+              onInitialized={bindXmatchClick}
+              onUpdate={bindXmatchClick}
               useResizeHandler
               style={{ width: '100%' }}
             />
             <p className="xmatch-basis">{xmatch.availability_basis}</p>
             <details className="xmatch-data">
-              <summary>Event list ({eventPoints.length})</summary>
+              <summary>Receiver matches ({eventPoints.length})</summary>
               <div className="data-table-wrap">
-                <table className="data-table"><thead><tr><th>UTC</th><th>Station</th><th>Type</th><th>Action</th></tr></thead><tbody>
-                  {eventPoints.map((item) => <tr key={`${item.station}-${item.event.id}`}><td>{item.event.started_at.slice(11, 19)}</td><td>{item.station}</td><td>{item.event.burst_type ?? 'Burst'}</td><td><button className="station-link" onClick={() => onOpenEvent(item.event, item.station)}>Open spectrogram</button></td></tr>)}
+                <table className="data-table"><thead><tr><th>UTC</th><th>Station</th><th>FC</th><th>Type</th><th>Action</th></tr></thead><tbody>
+                  {eventPoints.map((item) => <tr key={`${item.station}-${item.focusCode ?? 'none'}-${item.event.id}-${item.filename ?? 'fallback'}`}><td>{item.event.started_at.slice(11, 19)}</td><td>{item.station}</td><td>{item.focusCode ?? '—'}</td><td>{item.event.burst_type ?? 'Burst'}</td><td><button className="station-link" onClick={() => openEventPoint(item)}>Open spectrogram</button></td></tr>)}
                 </tbody></table>
               </div>
             </details>

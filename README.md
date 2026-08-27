@@ -173,10 +173,12 @@ AstroDoncel descarga los ficheros mensuales publicados con el patrón
 `NCELESTINA_2026_08.link`—, los parsea como **deARCE (v3)** y guarda una copia
 propia en PostgreSQL —o en SQLite durante el desarrollo local—. La copia se
 intenta refrescar cada 12 horas. En **Xmatch**, los marcadores rojos son esos
-mismos eventos; las bandas grises de disponibilidad se infieren del listado
-diario de ficheros de FHNW/ETHZ a partir de la hora del nombre y una duración
-nominal de 15 minutos. Estas bandas son una heurística, no una medida leída del
-interior del FITS.
+mismos eventos. Cada fila separa un receptor o `focus_code`; el marcador aparece
+en todos los receptores que tienen un bloque asociado a ese instante y abre el
+FITS exacto de la fila seleccionada. Las bandas grises de disponibilidad se
+infieren del listado diario de ficheros de FHNW/ETHZ a partir de la hora del
+nombre y una duración nominal de 15 minutos. Estas bandas son una heurística,
+no una medida leída del interior del FITS.
 
 ```text
 Navegador
@@ -395,9 +397,9 @@ La caché FITS no sustituye por completo la conexión a internet:
 
 - **Burst Reports** y Statistics conservan en la base propia los meses ya
   consultados e intentan actualizarlos cada `CATALOG_REFRESH_HOURS`.
-- Las bandas grises de **Xmatch** se construyen desde el índice diario vivo de
-  FHNW/ETHZ; sin acceso a ese índice pueden faltar aunque el catálogo esté
-  guardado.
+- Las filas por `focus_code` y las bandas grises de **Xmatch** se construyen
+  desde el índice diario vivo de FHNW/ETHZ; sin acceso a ese índice pueden
+  faltar aunque el catálogo esté guardado.
 - La superposición **GOES** depende de NOAA/SunPy y puede no estar disponible
   sin conexión.
 - *Spectral overview* y *Combine* comparten un único worker y se ejecutan en
