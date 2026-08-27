@@ -13,17 +13,25 @@ import Statistics from './Statistics';
 import { buildAnalysisManifest } from './analysisManifest';
 import { describeBurstResult } from './burstResult';
 import { fileForEvent } from './eventNavigation';
+import { blockForEvent, expandXmatchRows } from './xmatch';
 
 vi.mock('./plotly', () => ({
   default: {},
   Plot: function PlotMock(props) {
     const customdata = props.data?.find((trace) => trace.customdata?.length)?.customdata?.[0];
+    const handlers = new Map();
+    const graphDiv = {
+      on: (name, handler) => handlers.set(name, handler),
+      removeListener: (name) => handlers.delete(name),
+    };
+    props.onInitialized?.({}, graphDiv);
+    props.onUpdate?.({}, graphDiv);
     return createElement('button', {
       'aria-label': 'Mock Plotly event marker',
       'data-testid': 'plotly-chart',
       'data-x-range': props.layout?.xaxis?.range?.join('|') ?? '',
       disabled: !customdata,
-      onClick: () => props.onClick?.({ points: [{ customdata }] }),
+      onClick: () => (handlers.get('plotly_click') ?? props.onClick)?.({ points: [{ customdata }] }),
     });
   },
 }));
@@ -83,6 +91,64 @@ describe('analysis panels', () => {
     render(<Statistics onOpenEvent={onOpenEvent} onOpenStation={vi.fn()} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Mock Plotly event marker' }));
     expect(onOpenEvent).toHaveBeenCalledWith(report, 'HUMAIN');
+  });
+
+  it('shows every matching focus code and opens its exact FITS block', async () => {
+    const onOpenEvent = vi.fn();
+    const report = {
+      id: 10,
+      started_at: '2026-08-25T10:25:00+00:00',
+      ended_at: '2026-08-25T10:28:00+00:00',
+      burst_type: 'V',
+      stations: ['GERMANY-DLR'],
+    };
+    const receiver = (focusCode) => ({
+      focus_code: focusCode,
+      availability: [{
+        start_at: '2026-08-25T10:15:00+00:00',
+        end_at: '2026-08-25T10:30:00+00:00',
+      }],
+      blocks: [{
+        filename: `GERMANY-DLR_20260825_101500_${focusCode}.fit.gz`,
+        start_at: '2026-08-25T10:15:00+00:00',
+        end_at: '2026-08-25T10:30:00+00:00',
+      }],
+    });
+    const rows = expandXmatchRows([{
+      station: 'GERMANY-DLR',
+      positive: true,
+      availability: [],
+      receivers: ['01', '02', '03', '62', '63'].map(receiver),
+      events: [report],
+    }]);
+
+    expect(rows.map((row) => row.label)).toEqual([
+      'GERMANY-DLR · FC 01',
+      'GERMANY-DLR · FC 02',
+      'GERMANY-DLR · FC 03',
+      'GERMANY-DLR · FC 62',
+      'GERMANY-DLR · FC 63',
+    ]);
+    expect(rows.every((row) => row.eventPoints.length === 1)).toBe(true);
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        source_label: 'deARCE (v3)',
+        availability_basis: 'Archive blocks by focus code',
+        rows: [{
+          station: 'GERMANY-DLR', positive: true, availability: [],
+          receivers: ['01', '02', '03', '62', '63'].map(receiver), events: [report],
+        }],
+      }),
+    }));
+    render(<Statistics onOpenEvent={onOpenEvent} onOpenStation={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Mock Plotly event marker' }));
+    expect(onOpenEvent).toHaveBeenCalledWith(report, 'GERMANY-DLR', {
+      filename: 'GERMANY-DLR_20260825_101500_01.fit.gz',
+      focusCode: '01',
+    });
   });
 
   it('opens the clicked report station and renders catalogue longitudes', async () => {
@@ -219,6 +285,45 @@ describe('analysis panels', () => {
       { station: 'HUMAIN', date: '2026-08-26' },
       pendingEvent,
     )?.filename).toBe('HUMAIN_20260826_063000_59.fit.gz');
+  });
+
+  it('uses the exact Xmatch focus-code file instead of filename ordering', () => {
+    const files = ['01', '02', '03', '62', '63'].map((focusCode) => ({
+      filename: `GERMANY-DLR_20260825_101500_${focusCode}.fit.gz`,
+      time: '10:15:00',
+      focus_code: focusCode,
+    }));
+
+    expect(fileForEvent(
+      files,
+      { station: 'GERMANY-DLR', date: '2026-08-25' },
+      {
+        station: 'GERMANY-DLR',
+        date: '2026-08-25',
+        startedAt: '2026-08-25T10:25:00+00:00',
+        filename: 'GERMANY-DLR_20260825_101500_02.fit.gz',
+        focusCode: '02',
+      },
+    )?.filename).toBe('GERMANY-DLR_20260825_101500_02.fit.gz');
+  });
+
+  it('prefers the new block when adjacent archive files overlap by one second', () => {
+    const event = { started_at: '2026-08-25T11:15:00+00:00' };
+    const blocks = [
+      {
+        filename: 'GERMANY-DLR_20260825_110001_63.fit.gz',
+        start_at: '2026-08-25T11:00:01+00:00',
+        end_at: '2026-08-25T11:15:01+00:00',
+      },
+      {
+        filename: 'GERMANY-DLR_20260825_111500_63.fit.gz',
+        start_at: '2026-08-25T11:15:00+00:00',
+        end_at: '2026-08-25T11:30:00+00:00',
+      },
+    ];
+
+    expect(blockForEvent(blocks, event)?.filename)
+      .toBe('GERMANY-DLR_20260825_111500_63.fit.gz');
   });
 
   it('lets the user close a loaded light curve', async () => {

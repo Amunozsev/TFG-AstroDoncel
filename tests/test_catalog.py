@@ -118,3 +118,41 @@ def test_catalog_month_refresh_is_single_flight(monkeypatch):
 
     assert results == [1, 1, 1, 1]
     assert max_active == 1
+
+
+def test_catalog_refresh_replaces_stale_rows_from_older_parser_versions(monkeypatch):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return (
+                "20430101\t10:25-10:28\tV/2\t-7.9\t13.5\t77.5\t"
+                "GERMANY-DLR, SPAIN-SIGUENZA\n"
+            ).encode()
+
+    monkeypatch.setattr(catalog, "urlopen", lambda *_args, **_kwargs: Response())
+    with session_scope() as session:
+        session.add(BurstEvent(
+            source=DEFAULT_CATALOG_SOURCE,
+            event_key="20430101:10:25-10:28:---:old-parser-key",
+            started_at=datetime(2043, 1, 1, 10, 25, tzinfo=timezone.utc),
+            ended_at=datetime(2043, 1, 1, 10, 28, tzinfo=timezone.utc),
+            burst_type="---",
+            stations=["GERMANY-DLR", "SPAIN-SIGUENZA"],
+            metadata_json={"raw_type": "---"},
+        ))
+
+    assert catalog.ingest_month(2043, 1, force=True) == 1
+    events = list_events(
+        datetime(2043, 1, 1, tzinfo=timezone.utc),
+        datetime(2043, 2, 1, tzinfo=timezone.utc),
+        source=DEFAULT_CATALOG_SOURCE,
+    )
+
+    assert len(events) == 1
+    assert events[0]["burst_type"] == "V"
+    assert events[0]["metadata"]["raw_type"] == "V/2"
