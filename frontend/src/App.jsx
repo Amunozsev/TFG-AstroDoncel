@@ -100,6 +100,7 @@ export default function App() {
   const [files, setFiles]                   = useState([]);
   const [filesContext, setFilesContext]     = useState(null);
   const [filesLoading, setFilesLoading]     = useState(false);
+  const [filesError, setFilesError]         = useState(null);
   const [selectedFile, setSelectedFile]     = useState(null);
   const [focusCode, setFocusCode]           = useState('all');
   const [pendingEvent, setPendingEvent]     = useState(null);
@@ -221,6 +222,7 @@ export default function App() {
   const loadFiles = useCallback(async (st, dt, signal) => {
     setFiles([]);
     setFilesContext(null);
+    setFilesError(null);
     setSelectedFile(null);
     setCollapsedHours({});
     if (!st) return;
@@ -240,7 +242,10 @@ export default function App() {
         setSelectedFile(nextFiles[0].filename);
       }
     } catch (err) {
-      if (!signal.aborted) console.warn('Could not load burst list:', err.message);
+      if (!signal.aborted) {
+        console.warn('Could not load burst list:', err.message);
+        setFilesError({ station: st, date: dt, message: err.message });
+      }
     } finally {
       if (!signal.aborted) setFilesLoading(false);
     }
@@ -259,6 +264,21 @@ export default function App() {
 
   useEffect(() => {
     if (!pendingEvent) return;
+    // Without this the request would stay pending for ever and the workspace
+    // would fall back to its "press Load" placeholder with no reason given.
+    if (
+      filesError?.station === pendingEvent.station
+      && filesError?.date === pendingEvent.date
+    ) {
+      queueMicrotask(() => {
+        setPendingEvent(null);
+        setFetchError(
+          `The FITS block list for ${pendingEvent.station} on ${pendingEvent.date} `
+          + `could not be loaded: ${filesError.message}`,
+        );
+      });
+      return;
+    }
     if (
       filesContext?.station !== pendingEvent.station
       || filesContext?.date !== pendingEvent.date
@@ -292,7 +312,7 @@ export default function App() {
       setHasLoaded(true);
       setTriggerLoad((value) => value + 1);
     });
-  }, [files, filesContext, filesLoading, pendingEvent]);
+  }, [files, filesContext, filesError, filesLoading, pendingEvent]);
 
   // ── Fetch spectrogram layers on explicit Load ─────────────────────────────
   useEffect(() => {

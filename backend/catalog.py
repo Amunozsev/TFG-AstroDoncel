@@ -50,7 +50,6 @@ def _clean_station(token: str) -> str:
 
 
 STATION_DIGEST_LENGTH = 16
-CATALOG_CACHE_VERSION = "v2"
 _CATALOG_INGEST_LOCKS: dict[str, threading.Lock] = {}
 _CATALOG_INGEST_LOCKS_GUARD = threading.Lock()
 
@@ -153,7 +152,7 @@ def ingest_month(
     and conflicting PostgreSQL upserts while still letting cached reads return
     immediately after the first request completes.
     """
-    cache_key = f"{source}:{CATALOG_CACHE_VERSION}:{year:04d}-{month:02d}"
+    cache_key = f"{source}:{year:04d}-{month:02d}"
     with _CATALOG_INGEST_LOCKS_GUARD:
         ingest_lock = _CATALOG_INGEST_LOCKS.setdefault(cache_key, threading.Lock())
     with ingest_lock:
@@ -171,7 +170,7 @@ def _ingest_month_locked(
     if source not in CATALOG_SOURCES:
         raise ValueError(f"unsupported catalogue source: {source}")
     year_month = f"{year:04d}-{month:02d}"
-    cache_key = f"{source}:{CATALOG_CACHE_VERSION}:{year_month}"
+    cache_key = f"{source}:{year_month}"
     max_age = timedelta(hours=float(os.environ.get("CATALOG_REFRESH_HOURS", "12")))
     with session_scope() as session:
         cached = session.get(CatalogMonth, cache_key)
@@ -210,11 +209,6 @@ def _ingest_month_locked(
                 BurstEvent.started_at < month_end,
             ))
         }
-        current_keys = {event["event_key"] for event in events}
-        for event_key, stored in list(existing.items()):
-            if event_key not in current_keys:
-                session.delete(stored)
-                del existing[event_key]
         for event in events:
             stored = existing.get(event["event_key"])
             if stored is not None:
