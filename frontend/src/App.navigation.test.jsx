@@ -43,8 +43,13 @@ vi.mock('./Statistics', () => ({
 }));
 
 vi.mock('./Spectrogram', () => ({
-  default: function SpectrogramMock({ layers }) {
-    return <output aria-label="Loaded FITS file">{layers[0]?.filename ?? 'none'}</output>;
+  default: function SpectrogramMock({ layers, error }) {
+    return (
+      <>
+        <output aria-label="Loaded FITS file">{layers[0]?.filename ?? 'none'}</output>
+        <output aria-label="Layer error">{error ?? ''}</output>
+      </>
+    );
   },
 }));
 vi.mock('./StationsMap', () => ({ default: () => null }));
@@ -148,6 +153,29 @@ describe('catalogue navigation', () => {
       && String(path).includes('filename=GERMANY-DLR_20260825_110000_02.fit.gz')
     ));
     expect(repeatedSpectrogramRequests).toHaveLength(2);
+  });
+
+  it('reports a failed file-list request instead of showing the empty workspace', async () => {
+    vi.mocked(apiFetch).mockImplementation(async (path) => {
+      if (path === '/api/stations') {
+        return response({
+          stations: ['SPAIN-SIGUENZA', 'GERMANY-DLR'],
+          source: 'ethz',
+          details: [],
+        });
+      }
+      const url = new URL(path, 'http://astrodoncel.test');
+      if (url.pathname === '/api/files') throw new Error('Network unreachable');
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Statistics' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open first DLR event' }));
+
+    await waitFor(() => expect(screen.getByLabelText('Layer error')).toHaveTextContent(
+      'The FITS block list for GERMANY-DLR on 2026-08-25 could not be loaded: Network unreachable',
+    ));
   });
 
   it('ignores an older file-list response after a newer Xmatch click', async () => {
