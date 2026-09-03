@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Plot } from './plotly';
+import { OBSERVATORY_COLOR_SCALE, Plot } from './plotly';
 import { apiFetch } from './api';
 
 // All colorscales defined as explicit RGB arrays so they work regardless of the
@@ -12,12 +12,7 @@ const COLORSCALES = {
   ],
   // Observatory standard: the colormap used across e-CALLISTO tools and viewer pages.
   // dark navy → blue/indigo → purple → red → orange → golden yellow → light yellow
-  observatory: [
-    [0.00, '#000000'], [0.10, '#0a0038'], [0.20, '#1a0080'],
-    [0.30, '#4a0090'], [0.40, '#7a0080'], [0.50, '#aa2050'],
-    [0.60, '#cc0000'], [0.70, '#e06000'], [0.80, '#f5a000'],
-    [0.90, '#ffcc00'], [1.00, '#ffffb0'],
-  ],
+  observatory: OBSERVATORY_COLOR_SCALE,
   // Exact matplotlib samples (11 stops each)
   viridis: [
     [0.0, '#440154'], [0.1, '#482374'], [0.2, '#404387'],

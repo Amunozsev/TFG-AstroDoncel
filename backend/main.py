@@ -576,15 +576,6 @@ class FilesResponse(BaseModel):
 
 # ── I/O helpers ──────────────────────────────────────────────────────────────
 
-def _open_fits(path: str):
-    """Open a FITS file (supports .fit, .fits, .fit.gz, .fits.gz)."""
-    try:
-        return fits.open(path, memmap=False)
-    except Exception as exc:
-        logger.error("Failed to open %s: %s", path, exc)
-        raise HTTPException(status_code=500, detail=f"Could not open FITS file: {exc}")
-
-
 def _find_local_fits_file(station: str, date: str) -> str | None:
     """Search the local cache by exact station token and observation date."""
     if not os.path.isdir(DATA_DIR_LOCAL):

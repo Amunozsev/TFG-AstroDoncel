@@ -507,6 +507,14 @@ docker build -t astrodoncel-single .
 GitHub Actions ejecuta estas comprobaciones y además prueba migraciones hacia
 delante/atrás y arranca tanto el stack Compose como la imagen monolítica.
 
+Las pruebas se agrupan en cinco archivos backend: API/seguridad, catálogo/bases
+de datos, worker/combinación, procesamiento/exportación y limpieza de caché.
+El frontend tiene dos: `App.navigation.test.jsx` para navegación, enlaces y
+selección de bloques, y `panels.test.jsx` para paneles y resultados. La prueba
+del worker con FITS del archivo público solo se activa expresamente con
+`ASTRODONCEL_LIVE_COMBINE=1`; la de MariaDB requiere una base de pruebas indicada
+en `ASTRODONCEL_TEST_MYSQL_URL`.
+
 ## Datos, seguridad y mantenimiento
 
 - Los clientes nunca envían rutas locales arbitrarias. Estación, fecha y nombre

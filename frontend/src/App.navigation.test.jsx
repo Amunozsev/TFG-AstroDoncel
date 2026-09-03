@@ -64,6 +64,8 @@ vi.mock('./LightCurvePanel', () => ({
 
 import App from './App';
 import { apiFetch } from './api';
+import { displayBlockTime, selectCombineBlocks } from './fileBlocks';
+import { observationPath, parseObservationSearch } from './observationUrl';
 
 function response(data) {
   return { ok: true, status: 200, json: async () => data };
@@ -353,6 +355,104 @@ describe('catalogue navigation', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(screen.getByLabelText('Loaded FITS file')).toHaveTextContent(
       'GERMANY-DLR_20260825_110000_02.fit.gz',
+    );
+  });
+});
+
+const file = (time, focus = '62', station = 'MEXICO-LANCE', ext = 'fit.gz') => ({
+  filename: `${station}_20260903_${time.replaceAll(':', '')}${focus ? `_${focus}` : ''}.${ext}`,
+  time, focus_code: focus, label: time,
+});
+
+describe('nominal block labels', () => {
+  it.each([
+    ['16:44:59', '16:45:00', true, 0],
+    ['17:14:58', '17:15:00', true, 0],
+    ['16:15:01', '16:15:00', true, 0],
+    ['16:14:57', '16:14:57', false, 0],
+    ['16:42:59', '16:42:59', false, 0],
+    ['16:45:00', '16:45:00', false, 0],
+    ['16:59:59', '17:00:00', true, 0],
+    ['23:59:59', '00:00:00', true, 1],
+  ])('%s displays as %s without mutating source time', (time, display, approximate, dayOffset) => {
+    expect(displayBlockTime(time)).toEqual({ time: display, approximate, dayOffset });
+  });
+});
+
+describe('combine selection', () => {
+  it('selects an hour from one Mexico receiver, not two times from two receivers', () => {
+    const files = ['16:14:59', '16:29:59', '16:44:59', '16:59:59'].flatMap((time) => [file(time), file(time, '63')]);
+    expect(selectCombineBlocks(files, files[0].filename)).toEqual({
+      filenames: files.filter((f) => f.focus_code === '62').map((f) => f.filename),
+      focusCode: '62', notice: '',
+    });
+  });
+
+  it('keeps Siguenza FC 02 even when FC 01 files interleave', () => {
+    const files = ['16:15', '16:30', '16:45', '17:00'].flatMap((t) => [
+      file(`${t}:00`, '01', 'SPAIN-SIGUENZA'), file(`${t}:01`, '02', 'SPAIN-SIGUENZA'),
+    ]);
+    expect(selectCombineBlocks(files, files[1].filename).filenames).toEqual(
+      files.filter((f) => f.focus_code === '02').map((f) => f.filename),
+    );
+  });
+
+  it('preserves the selected compressed copy without double-counting other extensions', () => {
+    const files = ['16:00:00', '16:15:00', '16:30:00', '16:45:00'].flatMap((t) => [file(t, null), file(t, null, 'MEXICO-LANCE', 'fits')]);
+    const result = selectCombineBlocks(files.toReversed(), files[0].filename);
+    expect(result.filenames).toHaveLength(4);
+    expect(result.filenames[0]).toBe(files[0].filename);
+    expect(result.focusCode).toBeNull();
+  });
+
+  it('stops at missing or overlapping blocks and never hides a partial interval', () => {
+    const files = ['16:00:00', '16:15:00', '16:45:00', '17:00:00'].map((t) => file(t));
+    const result = selectCombineBlocks(files, files[0].filename);
+    expect(result.filenames).toHaveLength(2);
+    expect(result.notice).toMatch(/gap/);
+    const end = selectCombineBlocks(files, files.at(-1).filename);
+    expect(end.filenames).toHaveLength(1);
+    expect(end.notice).toMatch(/Only 1 consecutive block/);
+  });
+});
+
+describe('observation links', () => {
+  it('parses canonical and legacy parameter names', () => {
+    const canonical = parseObservationSearch(
+      '?station=GLASGOW&date=2026-08-25&filename=GLASGOW_20260825_123001_01.fit.gz',
+    );
+    const legacy = parseObservationSearch(
+      '?estacion=GLASGOW&fecha=2026-08-25&archivo=GLASGOW_20260825_123001_01.fit.gz',
+    );
+
+    expect(canonical.error).toBeNull();
+    expect(legacy.observation).toEqual(canonical.observation);
+    expect(canonical.observation).toMatchObject({
+      station: 'GLASGOW',
+      date: '2026-08-25',
+      filename: 'GLASGOW_20260825_123001_01.fit.gz',
+      focusCode: '01',
+      startedAt: '2026-08-25T12:30:01Z',
+    });
+  });
+
+  it('rejects incomplete, traversing and mismatched observations', () => {
+    expect(parseObservationSearch('?station=MRO').error).toMatch(/station, date and filename/);
+    expect(parseObservationSearch(
+      '?station=MRO&date=2026-08-25&filename=../secret.fit',
+    ).error).toMatch(/invalid FITS filename/);
+    expect(parseObservationSearch(
+      '?station=MRO&date=2026-08-25&filename=BIR_20260825_120000_01.fit.gz',
+    ).error).toMatch(/does not belong/);
+  });
+
+  it('writes only canonical parameters into shared paths', () => {
+    expect(observationPath({
+      station: 'MRO',
+      date: '2026-08-25',
+      filename: 'MRO_20260825_120000_01.fit.gz',
+    }, { pathname: '/studio/', hash: '' })).toBe(
+      '/studio/?station=MRO&date=2026-08-25&filename=MRO_20260825_120000_01.fit.gz',
     );
   });
 });
