@@ -299,7 +299,11 @@ def test_uah_database_sync_updates_and_removes_stale_events(monkeypatch):
 
     rows = [_row("one"), _row("two", date="20440102", time="12:00-12:01")]
     monkeypatch.setattr(catalog_mysql, "read_rows", lambda: rows)
-    assert catalog.ingest_month(2044, 1, source=source, force=True) == 2
+    inserted = catalog.ingest_month(2044, 1, source=source, force=True)
+    with session_scope() as session:
+        assert session.query(BurstEvent).filter(BurstEvent.source == source).count() == 2
+    assert inserted == 2
+    assert catalog.ingest_month(2044, 1, source=source, force=True) == 0
 
     rows = [_row("one", intensity=3, remarks="corrected")]
     assert catalog.ingest_month(2044, 1, source=source, force=True) == 0

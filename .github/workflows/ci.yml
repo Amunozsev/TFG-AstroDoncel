@@ -56,11 +56,28 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm, cache-dependency-path: frontend/package-lock.json }
-      - run: npm ci
+      - run: npm ci --no-audit
       - run: npm run lint
       - run: npm run test
       - run: npm run build
-      - run: npm audit --audit-level=high
+      - name: Audit frontend dependencies
+        timeout-minutes: 5
+        env:
+          AUDIT_REPORT: ${{ runner.temp }}/npm-audit.json
+        run: |
+          # Fail on real advisories, but never on an unreachable advisory
+          # endpoint: a red run here blocks the Railway deploy of the public
+          # demo for a reason that has nothing to do with the commit.
+          for attempt in 1 2 3; do
+            status=0
+            npm audit --audit-level=high --json --fetch-retries=0 --fetch-timeout=60000 > "$AUDIT_REPORT" || status=$?
+            if node -e "const r=require(process.env.AUDIT_REPORT); if (!r.metadata) process.exit(1); console.log('advisories:', JSON.stringify(r.metadata.vulnerabilities));"; then
+              exit $status
+            fi
+            echo "::warning::npm audit could not reach the advisory endpoint (attempt ${attempt}/3)."
+            if [ "$attempt" -lt 3 ]; then sleep 15; fi
+          done
+          echo "::warning::Dependency audit skipped: the npm advisory endpoint stayed unreachable."
 
   docker:
     runs-on: ubuntu-latest

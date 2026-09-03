@@ -22,6 +22,13 @@ from backend.version import APP_NAME, APP_VERSION
 
 USER_AGENT = f"{APP_NAME.replace(' ', '-')}/{APP_VERSION}"
 
+# ``INSERT ... ON CONFLICT DO NOTHING`` builders for the dialects that support
+# them.  Any other backend falls back to a savepoint per row.
+CONFLICT_INSERTS = {
+    "postgresql": postgresql_insert,
+    "sqlite": sqlite_insert,
+}
+
 ASTRODONCEL_REPORT_BASES = (
     "https://astrodoncel.uah.es/ecallistodata/burst_reports",
     "http://astrodoncel.uah.es/ecallistodata/burst_reports",
@@ -352,18 +359,18 @@ def _store_month_events(
                 stored.stations = event["stations"]
                 stored.metadata_json = event["metadata_json"]
                 continue
-            if engine.dialect.name == "sqlite":
-                statement = sqlite_insert(BurstEvent).values(**event).on_conflict_do_nothing(
+            conflict_insert = CONFLICT_INSERTS.get(engine.dialect.name)
+            if conflict_insert is not None:
+                # ``rowcount`` cannot count this insert: the ORM appends RETURNING
+                # for the generated primary key, and PostgreSQL then reports -1
+                # whether or not the row was written.  The returned key is the
+                # reliable signal, because ON CONFLICT DO NOTHING returns no row
+                # when a concurrent writer already stored the same event.
+                statement = conflict_insert(BurstEvent).values(**event).on_conflict_do_nothing(
                     index_elements=["source", "event_key"]
-                )
-                result = session.execute(statement)
-                inserted += max(0, result.rowcount or 0)
-            elif engine.dialect.name == "postgresql":
-                statement = postgresql_insert(BurstEvent).values(**event).on_conflict_do_nothing(
-                    index_elements=["source", "event_key"]
-                )
-                result = session.execute(statement)
-                inserted += max(0, result.rowcount or 0)
+                ).returning(BurstEvent.id)
+                if session.execute(statement).first() is not None:
+                    inserted += 1
             else:
                 try:
                     with session.begin_nested():
