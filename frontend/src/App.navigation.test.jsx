@@ -96,6 +96,68 @@ afterEach(() => {
   window.history.replaceState({}, '', '/');
 });
 
+describe('combine blocks controls', () => {
+  const mexicoFiles = ['161459', '162959', '164459', '165959'].flatMap((stamp) => ['62', '63'].map((code) => ({
+    filename: `MEXICO-LANCE_20260903_${stamp}_${code}.fit.gz`,
+    time: `${stamp.slice(0, 2)}:${stamp.slice(2, 4)}:${stamp.slice(4, 6)}`,
+    label: stamp, focus_code: code,
+  })));
+
+  function setup(taskResponse = response({ id: 'combine', status: 'succeeded', result: { files: 4 } })) {
+    window.history.replaceState({}, '', `/?station=MEXICO-LANCE&date=2026-09-03&filename=${mexicoFiles[0].filename}`);
+    vi.mocked(apiFetch).mockImplementation(async (path) => {
+      const url = new URL(path, 'http://astrodoncel.test');
+      if (url.pathname === '/api/stations') return response({ stations: ['MEXICO-LANCE'], details: [] });
+      if (url.pathname === '/api/files') return response({ files: mexicoFiles });
+      if (url.pathname === '/api/spectrogram') return response({
+        station: 'MEXICO-LANCE', date: '2026-09-03', filename: url.searchParams.get('filename'), vmin: -2, vmax: 8,
+      });
+      if (url.pathname === '/api/tasks') return taskResponse;
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    render(<App />);
+  }
+
+  it('posts four times from FC 62 with All receivers selected, showing nominal labels and exact tooltips', async () => {
+    setup();
+    await waitFor(() => expect(screen.getByLabelText('Loaded FITS file')).toHaveTextContent(mexicoFiles[0].filename));
+    fireEvent.change(screen.getByLabelText('Focus code'), { target: { value: 'all' } });
+    const chip = screen.getAllByRole('button').find((button) => button.title.startsWith(mexicoFiles[4].filename));
+    expect(chip).toHaveTextContent('≈45:00');
+    expect(chip).toHaveAttribute('title', expect.stringContaining('16:44:59 UTC'));
+    fireEvent.click(screen.getByRole('button', { name: 'Tools' }));
+    fireEvent.click(screen.getByText('Data & exports'));
+    fireEvent.click(screen.getByRole('button', { name: 'Combine 4 blocks · FC 62' }));
+    await screen.findByText('4 blocks combined into one continuous spectrogram.');
+    const [, options] = vi.mocked(apiFetch).mock.calls.find(([path]) => path === '/api/tasks');
+    expect(JSON.parse(options.body).options.filenames).toEqual(
+      mexicoFiles.filter((file) => file.focus_code === '62').map((file) => file.filename),
+    );
+  });
+
+  it('changing focus keeps selection and keyboard navigation on that receiver', async () => {
+    setup();
+    await waitFor(() => expect(screen.getByLabelText('Loaded FITS file')).toHaveTextContent(mexicoFiles[0].filename));
+    fireEvent.change(screen.getByLabelText('Focus code'), { target: { value: '63' } });
+    await waitFor(() => expect(screen.getByLabelText('Loaded FITS file')).toHaveTextContent(mexicoFiles[1].filename));
+    fireEvent.keyDown(window, { key: 'ArrowRight' });
+    await waitFor(() => expect(screen.getByLabelText('Loaded FITS file')).toHaveTextContent(mexicoFiles[3].filename));
+    fireEvent.click(screen.getByRole('button', { name: 'Tools' }));
+    fireEvent.click(screen.getByText('Data & exports'));
+    expect(screen.getByRole('button', { name: 'Combine 3 blocks · FC 63' })).toBeEnabled();
+    expect(screen.getByText(/Only 3 consecutive blocks/)).toBeInTheDocument();
+  });
+
+  it('shows the API explanation rather than only HTTP 422', async () => {
+    setup({ ok: false, status: 422, json: async () => ({ detail: 'Cannot combine different receivers. Select consecutive blocks from the same focus code.' }) });
+    await waitFor(() => expect(screen.getByLabelText('Loaded FITS file')).toHaveTextContent(mexicoFiles[0].filename));
+    fireEvent.click(screen.getByRole('button', { name: 'Tools' }));
+    fireEvent.click(screen.getByText('Data & exports'));
+    fireEvent.click(screen.getByRole('button', { name: 'Combine 4 blocks · FC 62' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Cannot combine different receivers.');
+  });
+});
+
 describe('catalogue navigation', () => {
   it('opens the exact FITS from a shared observation URL', async () => {
     window.history.replaceState(

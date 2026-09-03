@@ -15,6 +15,7 @@ import numpy as np
 from sqlalchemy import select
 
 from backend.db import TaskRecord, init_db, session_scope
+from backend.security import fits_focus_code, validate_combine_filenames
 
 RESULT_DIR = os.environ.get("TASK_RESULT_DIR", os.path.join("data", "task_results"))
 logger = logging.getLogger(__name__)
@@ -245,30 +246,80 @@ def _combine_time(task: TaskRecord) -> dict:
     from backend import main as core
 
     station, date = task.payload["station"], task.payload["date"]
-    filenames = task.payload.get("options", {}).get("filenames", [])
-    if not 2 <= len(filenames) <= 16:
-        raise ValueError("combine_time needs 2 to 16 filenames")
+    filenames = validate_combine_filenames(
+        task.payload.get("options", {}).get("filenames"), station, date,
+    )
     matrices, labels = [], []
     reference_freqs = None
+    previous_end = None
+    previous_cadence = None
+    overlap_samples_dropped = 0
     for index, filename in enumerate(filenames):
         _check_cancelled(task.id)
         path = core._download_from_ethz(station, date, filename)
-        raw, freqs, time_values, header = core._load_raw_cached(path)
+        if not path:
+            raise ValueError(f"Could not retrieve {filename}. Check archive availability and retry.")
+        try:
+            raw, freqs, time_values, header = core._load_raw_cached(path)
+        except Exception as exc:
+            # Do not return the local cache/NAS path in a public task error.
+            raise ValueError(f"Could not read FITS data in {filename}. Check the source file and retry.") from exc
         if reference_freqs is None:
             reference_freqs = np.asarray(freqs)
-        elif len(freqs) != len(reference_freqs) or not np.allclose(freqs, reference_freqs, atol=1e-3):
-            raise ValueError(f"Incompatible frequency axis in {filename}")
+        elif len(freqs) != len(reference_freqs) or not np.allclose(freqs, reference_freqs, rtol=0, atol=1e-3):
+            raise ValueError(
+                f"Incompatible frequency axis in {filename}. The receiver configuration changed; "
+                "choose another starting block or use Spectral overview to view separate groups."
+            )
+        block_labels = core._times_to_utc(time_values, header)
+        instants = np.array([
+            datetime.fromisoformat(label.replace("Z", "+00:00")).timestamp()
+            for label in block_labels
+        ])
+        if raw.shape != (len(freqs), len(instants)) or len(instants) < 2 or not np.all(np.diff(instants) > 0):
+            raise ValueError(f"Invalid or non-increasing time axis in {filename}; cannot build a continuous observation.")
+        cadence = float(np.median(np.diff(instants)))
+        if previous_end is not None:
+            # Recorder boundaries can jitter by a second or two. Do not shift
+            # measured UTC times, bridge missing blocks, or keep duplicate time.
+            tolerance = max(2.0, 1.5 * max(cadence, previous_cadence))
+            gap = float(instants[0] - (previous_end + previous_cadence))
+            if gap > tolerance:
+                raise ValueError(
+                    f"Missing observations before {filename} (gap {gap:.1f} s). "
+                    "Choose consecutive blocks or use Spectral overview to display gaps."
+                )
+            if gap < -tolerance:
+                raise ValueError(
+                    f"Overlapping observations in {filename}. Select consecutive blocks from one receiver."
+                )
+            first = int(np.searchsorted(instants, previous_end, side="right"))
+            if first == len(instants):
+                raise ValueError(f"No new time samples in {filename}.")
+            overlap_samples_dropped += first
+            raw, block_labels = raw[:, first:], block_labels[first:]
+        previous_end, previous_cadence = instants[-1], cadence
         matrices.append(raw)
-        labels.extend(core._times_to_utc(time_values, header))
+        labels.extend(block_labels)
         _update(task.id, progress=(index + 1) / len(filenames) * 0.8)
+    _check_cancelled(task.id)
     processed = core._subtract_background(np.concatenate(matrices, axis=1))
     vmin, vmax = core._percentile_clip_global(processed)
+    start_instant = datetime.fromisoformat(labels[0].replace("Z", "+00:00")).timestamp()
+    metadata = {
+        "focus_code": fits_focus_code(filenames[0]),
+        "start_at": labels[0], "end_at": labels[-1],
+        "duration_seconds": round((previous_end + previous_cadence) - start_instant, 3),
+        "overlap_samples_dropped": overlap_samples_dropped,
+        "time_basis": "FITS DATE-OBS/TIME-OBS and time axis; no clock rounding",
+    }
     artifact = _write_artifact(task.id, {
         "station": station, "date": date, "filenames": filenames, "time_axis": labels,
         "freq_axis": np.round(reference_freqs, 3).tolist(),
         "z": np.round(np.nan_to_num(processed), 4).tolist(), "vmin": vmin, "vmax": vmax,
+        **metadata,
     })
-    return {"files": len(filenames), "artifact_url": f"/api/tasks/{task.id}/artifact", "artifact": artifact}
+    return {"files": len(filenames), "artifact_url": f"/api/tasks/{task.id}/artifact", "artifact": artifact, **metadata}
 
 
 HANDLERS = {

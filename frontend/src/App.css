@@ -490,6 +490,8 @@ button:disabled { cursor: not-allowed; }
   transition: color 0.1s;
 }
 
+.burst-chip-receiver { margin-left: 0.35rem; color: var(--text-muted); font-size: 0.65rem; }
+
 .station-status-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; }
 .station-status-dot.active { background: #22c55e; box-shadow: 0 0 5px #22c55e88; }
 .station-status-dot.inactive { background: #64748b; }

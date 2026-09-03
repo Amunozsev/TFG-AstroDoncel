@@ -3,6 +3,7 @@ import { API_BASE_URL, apiFetch } from './api';
 import { buildAnalysisManifest, downloadManifest } from './analysisManifest';
 import { describeBurstResult } from './burstResult';
 import { fileForEvent } from './eventNavigation';
+import { displayBlockTime, selectCombineBlocks } from './fileBlocks';
 import { observationPath, parseObservationSearch, writeObservationUrl } from './observationUrl';
 import './App.css';
 
@@ -575,8 +576,13 @@ export default function App() {
       const response = await apiFetch('/api/tasks', {
         method: 'POST', body: JSON.stringify({ type, station, date, options }),
       });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(typeof body.detail === 'string' ? body.detail : `HTTP ${response.status}`);
+      }
       const created = await response.json();
+      if (taskRunRef.current !== runId) return;
+      setTaskStatus({ ...created, type, ...context });
       let current = created;
       while (['queued', 'running', 'cancel_requested'].includes(current.status)) {
         await new Promise((resolve) => window.setTimeout(resolve, 1500));
@@ -584,7 +590,7 @@ export default function App() {
         const poll = await apiFetch(`/api/tasks/${created.id}`);
         if (!poll.ok) throw new Error(`HTTP ${poll.status}`);
         current = await poll.json();
-        if (taskRunRef.current === runId) setTaskStatus({ ...current, ...context });
+        if (taskRunRef.current === runId) setTaskStatus({ ...current, type, ...context });
       }
     } catch (cause) {
       if (taskRunRef.current === runId) {
@@ -601,6 +607,20 @@ export default function App() {
     if (station) writeObservationUrl({ station, date, filename });
   }, [date, station]);
 
+  function changeFocusCode(nextCode) {
+    setFocusCode(nextCode);
+    if (nextCode === 'all') return;
+    const selected = files.find((file) => file.filename === selectedFile);
+    if (selected?.focus_code === nextCode) return;
+    const instant = (file) => new Date(`${date}T${file.time}Z`).getTime();
+    const matching = files.filter((file) => file.focus_code === nextCode);
+    if (selected) matching.sort((a, b) => Math.abs(instant(a) - instant(selected)) - Math.abs(instant(b) - instant(selected)));
+    if (matching[0]) {
+      if (hasLoaded) handleChipClick(matching[0].filename);
+      else setSelectedFile(matching[0].filename);
+    }
+  }
+
   async function copyObservationLink() {
     if (!station || !selectedFile) return;
     const path = observationPath({ station, date, filename: selectedFile });
@@ -615,20 +635,21 @@ export default function App() {
   // ── Keyboard navigation: ←/→ steps through the burst list ─────────────────
   useEffect(() => {
     function onKey(e) {
-      if (files.length === 0) return;
+      const visibleFiles = files.filter((file) => focusCode === 'all' || file.focus_code === focusCode);
+      if (visibleFiles.length === 0) return;
       const tag = e.target?.tagName;
       if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
       e.preventDefault();
-      const idx = files.findIndex((f) => f.filename === selectedFile);
+      const idx = visibleFiles.findIndex((f) => f.filename === selectedFile);
       const next = e.key === 'ArrowRight'
-        ? Math.min(files.length - 1, idx + 1)
+        ? Math.min(visibleFiles.length - 1, idx + 1)
         : Math.max(0, idx - 1);
-      if (next !== idx && files[next]) handleChipClick(files[next].filename);
+      if (next !== idx && visibleFiles[next]) handleChipClick(visibleFiles[next].filename);
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [files, handleChipClick, selectedFile]);
+  }, [files, focusCode, handleChipClick, selectedFile]);
 
   function toggleStation(s) {
     if (selectedStations.includes(s)) {
@@ -688,10 +709,10 @@ export default function App() {
     selectedStations.length === 0 ||
     (files.length > 0 && !selectedFile);
 
-  const selectedFileIndex = files.findIndex((file) => file.filename === selectedFile);
-  const combineFilenames = selectedFileIndex < 0
-    ? []
-    : files.slice(selectedFileIndex, selectedFileIndex + 4).map((file) => file.filename);
+  const combineSelection = selectCombineBlocks(
+    filesContext?.station === station && filesContext?.date === date ? files : [], selectedFile,
+  );
+  const combineFilenames = combineSelection.filenames;
 
   const currentLightCurve = lightCurveResult
     && layers[0]
@@ -1003,7 +1024,7 @@ export default function App() {
                   <span>Job · {taskStatus.status}</span>
                   <strong>{Number.isFinite(taskStatus.progress) ? `${Math.round(taskStatus.progress * 100)}%` : '—'}</strong>
                   <div className="task-progress-track"><i style={{ transform: `scaleX(${taskStatus.progress ?? 0})` }} /></div>
-                  {taskStatus.error && <p>{taskStatus.error}</p>}
+                  {taskStatus.error && <p role="alert">{taskStatus.error}</p>}
                   {taskStatus.status === 'succeeded' && taskStatus.type === 'combine_time' && (
                     <>
                       <p>{taskStatus.result?.files ?? combineFilenames.length} blocks combined into one continuous spectrogram.</p>
@@ -1026,9 +1047,10 @@ export default function App() {
               <div className="tool-disclosure-body">
                 <button className="btn-tool" onClick={() => {
                   startTask('combine_time', { filenames: combineFilenames });
-                }} disabled={!station || combineFilenames.length < 2 || ['submitting', 'queued', 'running'].includes(taskStatus?.status)} title="Join the current FITS block with up to three following blocks when their frequency axes are compatible">
-                  Combine current + next blocks
+                }} disabled={!station || combineFilenames.length < 2 || ['submitting', 'queued', 'running'].includes(taskStatus?.status)} title="Join up to four consecutive FITS blocks from the selected file's receiver">
+                  Combine {combineFilenames.length} blocks{combineSelection.focusCode ? ` · FC ${combineSelection.focusCode}` : ''}
                 </button>
+                {combineSelection.notice && <p className="tool-help" role="status">{combineSelection.notice}</p>}
                 {layers[0] && <>
                   <a className="btn-tool" title="Download the unmodified source observation" href={`${API_BASE_URL}/api/files/download?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename })}`}>Download original FITS</a>
                   <a className="btn-tool" title="Export the displayed processing result and its scientific axes as FITS" href={`${API_BASE_URL}/api/spectrogram/export?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename, rfi: useSahanFilter, rfi_z_thresh: rfiParams.zThresh, rfi_occupancy: rfiParams.occupancy, rfi_min_component: rfiParams.minComponent, rfi_impulsive: rfiParams.impulsive })}`}>Export processed FITS</a>
@@ -1036,7 +1058,7 @@ export default function App() {
                   <button className="btn-tool" type="button" onClick={exportAnalysisManifest} title="Save selected files, units, processing settings and provenance as JSON">Export analysis manifest</button>
                 </>}
                 {shareStatus && <p className="tool-help" role="status">{shareStatus}</p>}
-                <p className="tool-help">Combining starts at the selected block and joins up to three following blocks from the same station when their frequency axes are compatible. The result appears as one continuous spectrogram below the current observation.</p>
+                <p className="tool-help">Starts at the selected file and uses only its receiver, even with “All receivers” selected. Four 15-minute blocks cover about one hour. Actual FITS times and frequency compatibility are checked by the worker.</p>
               </div>
             </details>
 
@@ -1209,7 +1231,7 @@ export default function App() {
             {files.length > 0 && (
               <label className="control-label focus-filter">
                 Focus code
-                <select className="control-input" value={focusCode} onChange={(event) => setFocusCode(event.target.value)}>
+                <select className="control-input" value={focusCode} onChange={(event) => changeFocusCode(event.target.value)}>
                   <option value="all">All receivers</option>
                   {[...new Set(files.map((file) => file.focus_code).filter(Boolean))].sort().map((code) => (
                     <option key={code} value={code}>{code}</option>
@@ -1222,38 +1244,45 @@ export default function App() {
               <div className="burst-list">
                 {Object.entries(
                   files.filter((file) => focusCode === 'all' || file.focus_code === focusCode).reduce((acc, f) => {
-                    const h = f.time.slice(0, 2);
+                    const display = displayBlockTime(f.time);
+                    const h = `${display.dayOffset}:${display.time.slice(0, 2)}`;
                     if (!acc[h]) acc[h] = [];
                     acc[h].push(f);
                     return acc;
                   }, {})
                 )
-                  .sort(([a], [b]) => Number(a) - Number(b))
-                  .map(([hour, bursts]) => {
-                    const collapsed = collapsedHours[hour] ?? false;
+                  .sort(([a], [b]) => a.localeCompare(b))
+                  .map(([group, bursts]) => {
+                    const [dayOffset, hour] = group.split(':');
+                    const collapsed = collapsedHours[group] ?? false;
                     return (
-                      <div key={hour} className="burst-hour-group">
+                      <div key={group} className="burst-hour-group">
                         <div
                           className="burst-hour-header collapsible"
                           onClick={() =>
-                            setCollapsedHours((prev) => ({ ...prev, [hour]: !collapsed }))
+                            setCollapsedHours((prev) => ({ ...prev, [group]: !collapsed }))
                           }
                         >
                           <span className="chevron">{collapsed ? '▸' : '▾'}</span>
                           {hour}:xx UTC
+                          {dayOffset !== '0' && ' (+1 day)'}
                           <span className="hour-count">({bursts.length})</span>
                         </div>
                         {!collapsed && bursts.map((f) => {
                           const isCached = f.label.startsWith('★');
-                          const displayLabel = isCached ? `★ ${f.time.slice(3)}` : f.time.slice(3);
+                          const display = displayBlockTime(f.time);
+                          const displayLabel = `${isCached ? '★ ' : ''}${display.approximate ? '≈' : ''}${display.time.slice(3)}`;
                           return (
                             <button
                               key={f.filename}
                               className={`burst-chip ${selectedFile === f.filename ? 'active' : ''}`}
                               onClick={() => handleChipClick(f.filename)}
-                              title={f.filename}
+                              aria-pressed={selectedFile === f.filename}
+                              aria-label={`${display.approximate ? 'Approximately ' : ''}${display.time} UTC${display.dayOffset ? ' next day' : ''}${f.focus_code ? `, receiver ${f.focus_code}` : ''}`}
+                              title={`${f.filename}\nArchive start: ${f.time} UTC${display.approximate ? '\nLabel shows the nearest 15-minute boundary (within 2 seconds); data times are unchanged.' : ''}`}
                             >
                               {displayLabel}
+                              {focusCode === 'all' && f.focus_code && <small className="burst-chip-receiver" aria-hidden="true">{f.focus_code}</small>}
                             </button>
                           );
                         })}
@@ -1263,7 +1292,12 @@ export default function App() {
               </div>
             )}
             {files.length > 0 && (
-              <p className="files-hint" style={{ marginTop: '0.3rem' }}>← → to step through files</p>
+              <>
+                <p className="files-hint" style={{ marginTop: '0.3rem' }}>← → to step through files</p>
+                {files.some((file) => displayBlockTime(file.time).approximate) && (
+                  <p className="files-hint">≈ nominal block time (±2 s). Hover for the exact archive time; plots retain FITS timestamps.</p>
+                )}
+              </>
             )}
         </div>
 

@@ -160,8 +160,20 @@ cosas opuestas:
 | Salida | un mapa de calor continuo | un segmento por fichero, con huecos visibles |
 | Para qué | **medir** un evento que cruza el corte entre bloques | **localizar** dónde ocurrió algo |
 
-Combine exige que los bloques compartan eje de frecuencia; si no, la tarea
-falla indicando el fichero incompatible.
+Combine toma el fichero seleccionado y hasta tres bloques siguientes del
+**mismo receptor (`focus_code`)**, incluso con «All receivers» seleccionado.
+El botón indica el número real de bloques: cuatro bloques de 15 minutos cubren
+aproximadamente una hora. Si faltan bloques al final del día o hay un hueco,
+la interfaz avisa y no cuenta ficheros de otros receptores como tiempo adicional.
+El worker verifica los ejes de frecuencia y los tiempos reales de los FITS:
+rechaza huecos importantes, solapamientos y cambios de configuración, explicando
+el motivo. Los pequeños solapamientos de frontera se recortan sin desplazar
+las horas originales; el resultado informa de las muestras omitidas.
+
+En el selector, `≈45:00` significa que el inicio publicado está a un máximo de
+dos segundos del cuarto de hora. La hora exacta del archivo aparece al mantener
+el cursor encima. Los gráficos y las exportaciones conservan los tiempos FITS,
+sin redondearlos. Los números junto a los horarios distinguen los receptores.
 
 ## Arquitectura
 
