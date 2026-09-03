@@ -109,6 +109,20 @@ def test_spectral_overview_rejects_backwards_interval():
     assert response.status_code == 422
 
 
+def test_combine_task_rejects_mixed_receivers_and_duplicate_copies():
+    for filenames, message in [
+        (["MRO_20240101_120000_01.fit.gz", "MRO_20240101_121500_02.fit.gz"], "different receivers"),
+        (["MRO_20240101_120000_01.fit.gz", "MRO_20240101_120000_01.fits"], "unique observations"),
+        (["MRO_20240101_120000_01.fit.gz", 42], "strings"),
+    ]:
+        response = client.post("/api/tasks", json={
+            "type": "combine_time", "station": "MRO", "date": "2024-01-01",
+            "options": {"filenames": filenames},
+        })
+        assert response.status_code == 422
+        assert message in response.json()["detail"]
+
+
 def test_removed_full_day_scan_task_is_rejected():
     response = client.post("/api/tasks", json={
         "type": "burst_detect_day", "station": "MRO", "date": "2024-01-01",

@@ -46,6 +46,28 @@ def validate_filename_context(filename: str, station: str, date: str) -> str:
     return clean
 
 
+def fits_focus_code(filename: str) -> str | None:
+    """Read the optional receiver token, never the six-digit observation time."""
+    match = re.search(r"_\d{8}_\d{6}(?:_([A-Za-z0-9-]+))?\.fits?(?:\.gz)?$", filename, re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def validate_combine_filenames(filenames: object, station: str, date: str) -> list[str]:
+    """Validate and order a temporal sequence without mixing receivers/copies."""
+    if not isinstance(filenames, list) or not 2 <= len(filenames) <= 16:
+        raise ValueError("combine_time needs 2 to 16 filenames")
+    if not all(isinstance(item, str) for item in filenames):
+        raise ValueError("combine_time filenames must be strings")
+    validated = sorted(validate_filename_context(item, station, date) for item in filenames)
+    # A compressed/uncompressed copy of one observation is not another block.
+    identities = [re.sub(r"\.fits?(?:\.gz)?$", "", item, flags=re.IGNORECASE) for item in validated]
+    if len(set(identities)) != len(validated):
+        raise ValueError("combine_time filenames must be unique observations, not copies of the same block")
+    if len({fits_focus_code(item) for item in validated}) != 1:
+        raise ValueError("Cannot combine different receivers. Select consecutive blocks from the same focus code.")
+    return validated
+
+
 def safe_join(root: str, filename: str) -> str:
     """Join an archive filename and prove it remains below ``root``."""
     clean_name = validate_fits_filename(filename)

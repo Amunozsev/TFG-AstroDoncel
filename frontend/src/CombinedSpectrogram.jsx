@@ -55,9 +55,13 @@ export default function CombinedSpectrogram({ artifactUrl, theme = 'dark' }) {
           <span className="section-kicker">Continuous observation</span>
           <h2>Combined spectrogram</h2>
           <p>
-            {result.station} · {result.filenames.length} consecutive blocks · {utcTime(start)}–{utcTime(end)} UTC ·{' '}
+            {result.station}{result.focus_code ? ` · FC ${result.focus_code}` : ''} · {result.filenames.length} consecutive blocks
+            {Number.isFinite(result.duration_seconds) ? ` · ≈${(result.duration_seconds / 60).toFixed(1)} min` : ''} · {utcTime(start)}–{utcTime(end)} UTC ·{' '}
             {minFrequency.toFixed(3)}–{maxFrequency.toFixed(3)} MHz
           </p>
+          {result.overlap_samples_dropped > 0 && (
+            <p>{result.overlap_samples_dropped} overlapping boundary samples omitted; original UTC timestamps retained.</p>
+          )}
         </div>
         <a className="btn-tool" href={artifactUrl}>View combined data (JSON)</a>
       </header>

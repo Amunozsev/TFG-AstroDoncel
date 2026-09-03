@@ -38,7 +38,7 @@ from sqlalchemy import select
 from backend import catalog, catalog_mysql
 from backend.api_features import router as feature_router
 from backend.db import FitsFile, GoesDay, Station, init_db, session_scope
-from backend.security import safe_join, validate_date, validate_filename_context, validate_station
+from backend.security import fits_focus_code, safe_join, validate_date, validate_filename_context, validate_station
 from backend.version import APP_NAME, APP_VERSION
 
 logging.basicConfig(level=logging.INFO)
@@ -633,8 +633,7 @@ def _time_from_filename(filename: str) -> str:
 
 
 def _focus_code_from_filename(filename: str) -> str | None:
-    match = re.search(r"_([A-Za-z0-9-]+)\.fits?(?:\.gz)?$", filename, re.IGNORECASE)
-    return match.group(1) if match else None
+    return fits_focus_code(filename)
 
 
 def _list_local_fits_files(station: str, date: str) -> list[str]:

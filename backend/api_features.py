@@ -26,7 +26,13 @@ from backend.catalog import (
     station_statistics,
 )
 from backend.db import TaskRecord, session_scope
-from backend.security import safe_join, validate_date, validate_filename_context, validate_station
+from backend.security import (
+    safe_join,
+    validate_combine_filenames,
+    validate_date,
+    validate_filename_context,
+    validate_station,
+)
 from backend.version import APP_NAME, APP_VERSION
 
 router = APIRouter(prefix="/api", tags=["analysis"])
@@ -420,16 +426,10 @@ def create_task(task: TaskCreate):
         options["start_at"] = start_at.isoformat()
         options["end_at"] = end_at.isoformat()
     if task.type == "combine_time":
-        filenames = options.get("filenames")
-        if not isinstance(filenames, list) or not 2 <= len(filenames) <= 16:
-            raise HTTPException(status_code=422, detail="combine_time needs 2 to 16 filenames")
         try:
-            validated = [validate_filename_context(item, station, date) for item in filenames]
+            options["filenames"] = validate_combine_filenames(options.get("filenames"), station, date)
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        if len(set(validated)) != len(validated):
-            raise HTTPException(status_code=422, detail="combine_time filenames must be unique")
-        options["filenames"] = validated
     payload = {"station": station, "date": date, "options": options}
     task_id = str(uuid.uuid4())
     with _TASK_CREATE_LOCK:
