@@ -19,9 +19,23 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 10
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_DATABASE: burst_source_test
+          MARIADB_USER: studio_reader
+          MARIADB_PASSWORD: test-source-password
+          MARIADB_ROOT_PASSWORD: test-root-password
+        ports: ["3307:3306"]
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 15
     env:
       DATABASE_URL: postgresql+psycopg://astrodoncel:test-password@127.0.0.1:5432/astrodoncel_test
       ASTRODONCEL_TEST_DATABASE_URL: postgresql+psycopg://astrodoncel:test-password@127.0.0.1:5432/astrodoncel_test
+      ASTRODONCEL_TEST_MYSQL_URL: mysql+pymysql://studio_reader:test-source-password@127.0.0.1:3307/burst_source_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -60,7 +74,7 @@ jobs:
         run: |
           curl --fail --silent http://127.0.0.1:8080/health
           curl --fail --silent http://127.0.0.1:8080/ready | grep '"database":"ok"'
-          curl --fail --silent http://127.0.0.1:8080/openapi.json | grep '"title":"AstroDoncel API"'
+          curl --fail --silent http://127.0.0.1:8080/openapi.json | grep '"title":"AstroDoncel Studio API"'
           docker compose ps --all migrate --format '{{.ExitCode}}' | grep '^0$'
       - name: Build and smoke the single-host image
         run: |
@@ -74,7 +88,7 @@ jobs:
             sleep 2
           done
           curl --fail --silent http://127.0.0.1:8001/ | grep '<div id="root"></div>'
-          curl --fail --silent http://127.0.0.1:8001/openapi.json | grep '"title":"AstroDoncel API"'
+          curl --fail --silent http://127.0.0.1:8001/openapi.json | grep '"title":"AstroDoncel Studio API"'
       - name: Show container logs after a failure
         if: failure()
         run: docker compose logs --no-color --tail 200

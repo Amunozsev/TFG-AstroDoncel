@@ -21,7 +21,8 @@ export default function BurstCatalog({ onOpenEvent }) {
   const [station, setStation] = useState('');
   const [events, setEvents] = useState([]);
   const [warnings, setWarnings] = useState([]);
-  const [sourceLabel, setSourceLabel] = useState('deARCE (v3)');
+  const [availableTypes, setAvailableTypes] = useState([]);
+  const [sourceLabel, setSourceLabel] = useState('Burst Reports');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -39,7 +40,8 @@ export default function BurstCatalog({ onOpenEvent }) {
       if (signal?.aborted) return;
       setEvents(data.events ?? []);
       setWarnings(data.warnings ?? []);
-      setSourceLabel(data.source_label ?? 'deARCE (v3)');
+      setAvailableTypes(data.available_types ?? []);
+      setSourceLabel(data.source_label ?? 'Burst Reports');
     } catch (cause) {
       if (!signal?.aborted) setError(`Could not load the burst catalogue: ${cause.message}`);
     } finally {
@@ -60,13 +62,14 @@ export default function BurstCatalog({ onOpenEvent }) {
   const formatLongitude = (value) => Number.isFinite(value) ? `${value.toFixed(1)}°` : '—';
 
   function exportCsv() {
-    const header = ['Date', 'Start UTC', 'End UTC', 'Type', 'Stations', 'Min lon', 'Mid lon', 'Max lon', 'Source'];
+    const header = ['Date', 'Start UTC', 'End UTC', 'Key', 'Type', 'Intensity', 'Remarks', 'Stations', 'Min lon', 'Mid lon', 'Max lon', 'Source'];
     const rows = events.map((event) => {
       const started = new Date(event.started_at);
       const ended = new Date(event.ended_at);
       return [
         started.toISOString().slice(0, 10), started.toISOString(), ended.toISOString(),
-        event.burst_type ?? 'Candidate', event.stations.join('; '),
+        event.metadata?.key, event.burst_type ?? '—', event.intensity,
+        event.metadata?.remarks, event.stations.join('; '),
         event.min_lon, event.mid_lon, event.max_lon, event.source_label ?? event.source,
       ];
     });
@@ -93,7 +96,7 @@ export default function BurstCatalog({ onOpenEvent }) {
       <section className="filter-bar" aria-label="Burst filters">
         <label>Period<select value={period} onChange={(event) => setPeriod(event.target.value)}><option value="day">Day</option><option value="month">Full month</option></select></label>
         <label>{period === 'month' ? 'Month' : 'Date'}<input type={period === 'month' ? 'month' : 'date'} value={period === 'month' ? date.slice(0, 7) : date} onChange={(event) => setDate(period === 'month' ? `${event.target.value}-01` : event.target.value)} /></label>
-        <label>Type<select value={type} onChange={(event) => setType(event.target.value)}><option value="">All types</option>{['II', 'III', 'IIIG', 'V', 'VI', 'U', 'J', 'CTM', 'RBR'].map((value) => <option key={value}>{value}</option>)}</select></label>
+        <label>Type<select value={type} onChange={(event) => setType(event.target.value)}><option value="">All types</option>{availableTypes.map((value) => <option key={value}>{value}</option>)}</select></label>
         <label>Station<input value={station} onChange={(event) => setStation(event.target.value)} placeholder="Search stations…" /></label>
         <button className="btn-primary" onClick={() => load()} disabled={loading}>{loading ? 'Loading…' : 'Refresh'}</button>
         <button type="button" onClick={exportCsv} disabled={loading || events.length === 0}>Export CSV</button>
@@ -107,7 +110,7 @@ export default function BurstCatalog({ onOpenEvent }) {
         <div className="data-table-wrap">
           <table className="data-table burst-report-table">
             <caption className="sr-only">Solar radio burst catalogue</caption>
-            <thead><tr><th>Date</th><th>UTC interval</th><th>Type</th><th>Stations</th><th>Min. lon</th><th>Mid. lon</th><th>Max. lon</th><th>Source</th></tr></thead>
+            <thead><tr><th>Date</th><th>UTC interval</th><th>Key</th><th>Type</th><th>Intensity</th><th>Remarks</th><th>Stations</th><th>Min. lon</th><th>Mid. lon</th><th>Max. lon</th><th>Source</th></tr></thead>
             <tbody>{events.map((event) => {
               const started = new Date(event.started_at);
               const ended = new Date(event.ended_at);
@@ -115,7 +118,10 @@ export default function BurstCatalog({ onOpenEvent }) {
                 <tr key={event.id}>
                   <td>{started.toISOString().slice(0, 10)}</td>
                   <td className="tabular">{started.toISOString().slice(11, 16)}–{ended.toISOString().slice(11, 16)}</td>
-                  <td><span className="type-badge">{event.burst_type ?? 'Candidate'}</span></td>
+                  <td>{event.metadata?.key ?? '—'}</td>
+                  <td><span className="type-badge">{event.burst_type ?? '—'}</span></td>
+                  <td className="tabular">{event.intensity ?? '—'}</td>
+                  <td>{event.metadata?.remarks ?? '—'}</td>
                   <td>
                     <span className="station-links">
                       {event.stations.map((item) => (

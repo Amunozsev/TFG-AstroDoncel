@@ -9,7 +9,6 @@ from backend.main import (
     _subtract_background,
     _time_from_filename,
 )
-from backend.type_ii import calculate
 
 
 def test_filename_metadata_helpers():
@@ -46,10 +45,3 @@ def test_rfi_masks_persistent_hot_channel():
     _cleaned, channels, stats = _mitigate_rfi(data, z_thresh=4, occupancy_thresh=0.1, impulsive=False)
     assert 5 in channels
     assert stats["masked_fraction"] > 0
-
-
-def test_type_ii_band_split_returns_physical_values():
-    times = np.linspace(10, 100, 20)
-    result = calculate(times, 180 * times ** -0.2, times, 160 * times ** -0.2, 60, 900)
-    assert 1 < result["compression_ratio"] < 4
-    assert result["magnetic_field_g"] > 0

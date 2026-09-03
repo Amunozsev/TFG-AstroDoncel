@@ -1,4 +1,4 @@
-# AstroDoncel
+# AstroDoncel Studio
 
 Portal web para explorar, procesar y comparar espectrogramas solares de la red
 [e-CALLISTO](https://www.e-callisto.org/). Es el Trabajo Fin de Grado de
@@ -24,8 +24,8 @@ del proyecto.
   espectrograma continuo, que se dibuja bajo la observación actual.
 - Exportar FITS procesados, CSV y manifiestos reproducibles.
 - Ejecutar detección experimental de bursts mediante CNN+MIL con ONNX Runtime.
-- Consultar **Burst Reports**, estadísticas y Xmatch con el catálogo
-  **deARCE (v3)**.
+- Consultar **Burst Reports**, estadísticas y Xmatch desde la base actual del
+  portal UAH; los catálogos mensuales permanecen como fuente alternativa.
 - Visualizar la red de estaciones y su estado reciente en un mapa interactivo.
 - Cambiar entre tema oscuro y claro; la elección queda guardada en el navegador.
 
@@ -36,7 +36,7 @@ La procedencia, métricas y limitaciones del modelo están en
 
 ## Inicio rápido con Docker
 
-Esta es la instalación recomendada para probar o alojar AstroDoncel. Necesita
+Esta es la instalación recomendada para probar o alojar AstroDoncel Studio. Necesita
 [Git](https://git-scm.com/) y Docker con el complemento Compose.
 
 ```bash
@@ -62,7 +62,7 @@ El script:
 2. valida la configuración de Compose;
 3. construye frontend y backend;
 4. ejecuta las migraciones;
-5. inicia PostgreSQL, API, worker y servidor web;
+5. inicia PostgreSQL, API, worker, mantenimiento de caché y servidor web;
 6. espera hasta que `/ready` confirme que el sistema está operativo.
 
 Después se puede abrir:
@@ -107,6 +107,21 @@ bloques, se envían a una cola persistente. La interfaz muestra sus estados
 `queued`, `running`, `succeeded`, `failed` o `cancelled` y permite cancelar los
 que todavía no han terminado.
 
+### Enlaces directos a una observación
+
+La web puede abrir directamente un FITS concreto mediante tres parámetros:
+
+```text
+https://<host>/?station=GLASGOW&date=2026-08-25&filename=GLASGOW_20260825_123000.fit.gz
+```
+
+También admite los nombres heredados `estacion`, `fecha` y `archivo`. La
+estación y la fecha deben coincidir con el nombre FITS; el backend vuelve a
+validar los tres valores y nunca acepta una ruta local. El botón **Copy
+observation link** genera el enlace de la observación cargada. Esta es la URL
+que puede construir el portal AstroDoncel original al sustituir su enlace a
+Plotly.
+
 ### Guía breve de herramientas
 
 - **Drift ruler:** dos clics sobre el espectrograma miden `Δt`, `Δf` y la tasa
@@ -150,12 +165,12 @@ falla indicando el fichero incompatible.
 
 ## Arquitectura
 
-AstroDoncel tiene un único repositorio y admite dos formas de ejecución:
+AstroDoncel Studio tiene un único repositorio y admite dos formas de ejecución:
 
 | Entorno | Componentes | Uso recomendado |
 |---|---|---|
 | `Dockerfile` | React estático + FastAPI + worker en un contenedor; PostgreSQL gestionado aparte | Railway u otro host sencillo |
-| `docker-compose.yml` | Nginx, API, worker, migraciones y PostgreSQL en servicios separados | Servidor propio, NAS o infraestructura institucional |
+| `docker-compose.yml` | Nginx, API, worker, mantenimiento de caché, migraciones y PostgreSQL en servicios separados | Servidor propio, NAS o infraestructura institucional |
 
 El backend descarga bajo demanda desde e-CALLISTO, mantiene una caché local y
 guarda inventario, catálogo, tareas y metadatos en SQLAlchemy. PostgreSQL es la
@@ -167,18 +182,21 @@ Los FITS se resuelven en este orden: caché de `/data`, archivo local/NAS opcion
 y, si no existe una copia, descarga bajo demanda del archivo público de
 FHNW/ETHZ.
 
-Los **Burst Reports** no consultan la base de datos de AstroDoncel UAH.
-AstroDoncel descarga los ficheros mensuales publicados con el patrón
-`NCELESTINA_<año>_<mes>.link` —por ejemplo,
-`NCELESTINA_2026_08.link`—, los parsea como **deARCE (v3)** y guarda una copia
-propia en PostgreSQL —o en SQLite durante el desarrollo local—. La copia se
-intenta refrescar cada 12 horas. En **Xmatch**, los marcadores rojos son esos
-mismos eventos. Cada fila separa un receptor o `focus_code`; el marcador aparece
-en todos los receptores que tienen un bloque asociado a ese instante y abre el
-FITS exacto de la fila seleccionada. Las bandas grises de disponibilidad se
-infieren del listado diario de ficheros de FHNW/ETHZ a partir de la hora del
-nombre y una duración nominal de 15 minutos. Estas bandas son una heurística,
-no una medida leída del interior del FITS.
+En el NAS, los **Burst Reports** se leen de la base MySQL/MariaDB mantenida por
+el portal AstroDoncel UAH. La aplicación detecta una tabla o vista compatible,
+normaliza sus columnas y sincroniza una copia propia en PostgreSQL cada hora.
+Una caída temporal de esa base externa no derriba la API: los datos ya
+sincronizados siguen disponibles. Para desarrollo y demostraciones sin acceso
+a la UAH se conservan como fuentes explícitas los ficheros mensuales publicados
+(`dearce_v3`, `ecallisto_v2` y `legacy_monthly`).
+
+En **Xmatch**, los marcadores rojos son eventos de la fuente configurada. Cada
+fila separa un receptor o `focus_code`; el marcador aparece en los receptores
+que tienen un bloque asociado a ese instante y abre el FITS exacto de la fila
+seleccionada. Las bandas grises de disponibilidad se infieren del listado
+diario de ficheros de FHNW/ETHZ a partir de la hora del nombre y una duración
+nominal de 15 minutos. Estas bandas son una heurística, no una medida leída del
+interior del FITS.
 
 ```text
 Navegador
@@ -188,7 +206,7 @@ Navegador
    │        └── API FastAPI ── PostgreSQL/SQLite
    │                 │
    │                 ├── archivo e-CALLISTO
-   │                 ├── catálogo deARCE (v3)
+   │                 ├── Burst Reports UAH (copia sincronizada)
    │                 └── NOAA/SunPy (GOES)
    │
    └── cola SQL ── worker ── /data (FITS, caché y artefactos)
@@ -301,6 +319,14 @@ principales son:
 | `OVERVIEW_MAX_STATIONS` | `120` | máximo de estaciones por resumen |
 | `OVERVIEW_MAX_HOURS` | `72` | intervalo máximo de un resumen |
 | `MAX_FITS_DOWNLOAD_BYTES` | `134217728` | tamaño máximo de una descarga FITS |
+| `BURST_CATALOG_SOURCE` | automático | `uah_mysql` en el NAS; `dearce_v3` sin MySQL configurado |
+| `BURST_SOURCE_MYSQL_*` | sin valor | host, puerto, base, usuario, contraseña y tabla/vista de solo lectura |
+| `BURST_SOURCE_REFRESH_MINUTES` | `60` | intervalo de sincronización de la base UAH |
+| `FITS_CACHE_MAX_GB` | `20` | tamaño objetivo máximo de la caché descargada |
+| `FITS_CACHE_MAX_AGE_DAYS` | `90` | antigüedad máxima de los FITS descargados |
+| `FITS_CACHE_MIN_IDLE_MINUTES` | `60` | protege ficheros recién descargados o modificados frente al borrado |
+| `FITS_CACHE_MIN_FREE_GB` | `5` | espacio libre que se intenta preservar en el volumen |
+| `FITS_CACHE_PRUNE_APPLY` | `false` | `false` simula; `true` activa la limpieza programada |
 
 `.env.example` contiene también los valores específicos de Docker Compose. No
 subas `.env`, contraseñas, archivos FITS ni bases de datos al repositorio.
@@ -312,7 +338,7 @@ frontend y ejecuta migraciones, worker y API en un mismo servicio.
 
 1. Crea un proyecto desde este repositorio de GitHub.
 2. Añade un servicio PostgreSQL al proyecto.
-3. En el servicio AstroDoncel define:
+3. En el servicio AstroDoncel Studio define:
 
    ```dotenv
    DATABASE_URL=${{Postgres.DATABASE_URL}}
@@ -357,13 +383,31 @@ la instalación conviene completar esta lista.
 
    El directorio de datos debe poder escribirlo el UID/GID `10001`; el archivo
    e-CALLISTO solo necesita permisos de lectura y se monta como `ro`.
-4. Publica únicamente el servicio `web`. En producción, colócalo detrás del
+4. Para usar la base actual de Burst Reports, añade a `.env` un usuario MySQL
+   de solo lectura y configura:
+
+   ```dotenv
+   BURST_CATALOG_SOURCE=uah_mysql
+   BURST_SOURCE_MYSQL_HOST=host.docker.internal
+   BURST_SOURCE_MYSQL_PORT=3306
+   BURST_SOURCE_MYSQL_DATABASE=srbs_callisto
+   BURST_SOURCE_MYSQL_USER=<usuario_de_solo_lectura>
+   BURST_SOURCE_MYSQL_PASSWORD='<contraseña>'
+   BURST_SOURCE_MYSQL_TABLE=
+   ```
+
+   La tabla puede quedar vacía si solo existe una tabla o vista con las columnas
+   compatibles. MySQL debe escuchar en una interfaz interna alcanzable desde la
+   red Docker y el usuario debe admitir conexiones desde esa red; una cuenta
+   restringida únicamente a `localhost` no será suficiente. No publiques MySQL
+   en Internet ni uses una cuenta administradora en el repositorio.
+5. Publica únicamente el servicio `web`. En producción, colócalo detrás del
    proxy inverso del NAS con HTTPS y limita el acceso a una red privada/VPN o
    añade autenticación en el proxy: la aplicación no incorpora cuentas de
    usuario.
-5. Verifica `https://<host>/ready`, abre un espectrograma, ejecuta una detección,
+6. Verifica `https://<host>/ready`, abre un espectrograma, ejecuta una detección,
    comprueba Burst Reports/Xmatch y lanza una tarea corta del worker.
-6. Programa `scripts/backup.sh` o `scripts/backup.ps1`, copia `backups/` a otro
+7. Programa `scripts/backup.sh` o `scripts/backup.ps1`, copia `backups/` a otro
    almacenamiento y ensaya una restauración. Vigila además espacio de `/data`,
    memoria del worker y logs rotados.
 
@@ -380,10 +424,9 @@ Las migraciones se ejecutan antes de arrancar la API. Mantén una sola instancia
 del servicio `worker` salvo que se valide expresamente el consumo de CPU y el
 comportamiento de la cola en el NAS.
 
-El stack se ha validado con Docker Compose y PostgreSQL, pero la prueba en el
-NAS físico sigue dependiendo de su arquitectura, memoria, permisos y rutas.
-Antes de ponerlo en producción hay que hacer allí una instalación completa y
-ensayar también reinicio, copia de seguridad y restauración.
+El stack ya está desplegado detrás del proxy HTTPS de un Synology. Aún deben
+validarse en ese host la lectura real de MySQL con una cuenta limitada, los
+límites de caché elegidos y un ensayo documentado de copia/restauración.
 
 ### Consideraciones operativas
 
@@ -396,7 +439,8 @@ solo lectura y tiene prioridad sobre la descarga remota.
 La caché FITS no sustituye por completo la conexión a internet:
 
 - **Burst Reports** y Statistics conservan en la base propia los meses ya
-  consultados e intentan actualizarlos cada `CATALOG_REFRESH_HOURS`.
+  sincronizados. La fuente MySQL se revisa cada `BURST_SOURCE_REFRESH_MINUTES`;
+  las fuentes mensuales usan `CATALOG_REFRESH_HOURS`.
 - Las filas por `focus_code` y las bandas grises de **Xmatch** se construyen
   desde el índice diario vivo de FHNW/ETHZ; sin acceso a ese índice pueden
   faltar aunque el catálogo esté guardado.
@@ -405,8 +449,19 @@ La caché FITS no sustituye por completo la conexión a internet:
 - *Spectral overview* y *Combine* comparten un único worker y se ejecutan en
   cola. El resto del portal sigue disponible mientras terminan.
 
-Vigila el espacio de `/data`. `tools/prune_cache.py` permite limpiar FITS por
-antigüedad y tamaño; por defecto solo simula y necesita `--apply` para borrar.
+El servicio `cache-maintenance` comprueba periódicamente tamaño, antigüedad y
+espacio libre de `/data`. Solo ve la caché descargada: el archivo e-CALLISTO se
+monta exclusivamente en API/worker y siempre como solo lectura. La primera
+ejecución debe permanecer con `FITS_CACHE_PRUNE_APPLY=false`; revisa:
+
+```bash
+docker compose logs cache-maintenance
+```
+
+Cuando los límites sean correctos, cambia la variable a `true` y recrea el
+servicio. `tools/prune_cache.py` ofrece además una simulación manual. El borrado
+exige que la carpeta contenga la marca creada por la aplicación y vuelve a
+comprobar que cada fichero no haya cambiado desde que se planificó.
 
 ## Comprobaciones antes de publicar
 
@@ -452,8 +507,8 @@ delante/atrás y arranca tanto el stack Compose como la imagen monolítica.
 - La disponibilidad depende también de e-CALLISTO, del catálogo UAH y de NOAA.
   Cuando una fuente opcional falla, el resto de la API continúa operativo y la
   interfaz indica el fallback o la ausencia de datos.
-- `tools/prune_cache.py` ofrece una simulación por defecto y solo elimina FITS al
-  pasar `--apply`.
+- `cache-maintenance` y `tools/prune_cache.py` solo actúan sobre FITS de la caché
+  marcada. El modo programado no borra mientras `FITS_CACHE_PRUNE_APPLY=false`.
 
 Copias de seguridad del stack Compose:
 
@@ -476,7 +531,8 @@ restauración.
 | Una tarea se queda siempre en `queued` | el worker no está en marcha | en Compose, `docker compose ps` debe mostrar el servicio `worker`; en desarrollo local hay que lanzarlo aparte con `python -m backend.worker` |
 | `/ready` no responde tras arrancar | migraciones o PostgreSQL aún iniciando | `docker compose logs -f migrate api` |
 | Una estación no muestra ficheros ese día | no hay observaciones publicadas o el archivo remoto no responde | prueba otra fecha y revisa los logs de la API |
-| **Burst Reports** está vacío | el fichero mensual de la fuente elegida no está disponible | revisa el aviso de la interfaz o usa **deARCE (v3)**, la fuente predeterminada |
+| **Burst Reports** está vacío en el NAS | MySQL no es alcanzable desde la red Docker, rechaza el usuario, la tabla no es compatible o la fuente no está configurada | revisa `docker compose logs api`, comprueba escucha y permisos internos con la cuenta de solo lectura y fija `BURST_SOURCE_MYSQL_TABLE` si hay varias candidatas |
+| La caché sigue creciendo | la limpieza está en simulación o sus límites aún no se alcanzan | revisa `docker compose logs cache-maintenance`; valida el plan y después activa `FITS_CACHE_PRUNE_APPLY=true` |
 | *Combine* falla con «Incompatible frequency axis» | los bloques no comparten la misma configuración de receptor | selecciona otro bloque o limita la combinación al mismo `focus_code` |
 
 ## Créditos y procedencia
@@ -484,8 +540,9 @@ restauración.
 - **Autor:** Alfonso Muñoz Sevillano, Universidad de Alcalá, 2026.
 - **Red e-CALLISTO:** Christian Monstein, FHNW/ETHZ, observatorios participantes
   y equipos que operan y publican los instrumentos y datos.
-- **Portal AstroDoncel original (UAH):** referencia del producto y fuente del
-  catálogo **deARCE (v3)**.
+- **Portal AstroDoncel original (UAH):** referencia del producto y fuente de la
+  base actual de Burst Reports; sus catálogos mensuales se conservan como
+  alternativa explícita.
 - **Sahan S. Liyanage:** `e-Callisto_FITS_Analyzer` v2.8.0 y `Burst_No_Burst`,
   usados como implementaciones de referencia para partes del procesamiento,
   interacción y detección, adaptadas y verificadas en este proyecto.
@@ -509,3 +566,7 @@ Consulta [`CONTRIBUTING.md`](CONTRIBUTING.md). Mantén los cambios pequeños,
 acompañados de pruebas y con unidades y procedencia científica explícitas. Los
 proyectos de referencia y la documentación interna no forman parte del código
 público y no deben añadirse al repositorio.
+
+El funcionamiento operativo está resumido en
+[`MANUAL_MANTENIMIENTO.md`](MANUAL_MANTENIMIENTO.md) y el texto académico de
+partida en [`MEMORIA_BORRADOR.md`](MEMORIA_BORRADOR.md).

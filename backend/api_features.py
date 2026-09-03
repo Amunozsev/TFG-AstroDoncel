@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import os
 import re
 import threading
@@ -26,9 +27,11 @@ from backend.catalog import (
 )
 from backend.db import TaskRecord, session_scope
 from backend.security import safe_join, validate_date, validate_filename_context, validate_station
+from backend.version import APP_NAME, APP_VERSION
 
 router = APIRouter(prefix="/api", tags=["analysis"])
 _TASK_CREATE_LOCK = threading.Lock()
+logger = logging.getLogger(__name__)
 
 
 class TaskCreate(BaseModel):
@@ -36,15 +39,6 @@ class TaskCreate(BaseModel):
     station: str
     date: str
     options: dict = Field(default_factory=dict)
-
-
-class TypeIIBandSplitRequest(BaseModel):
-    upper_time_seconds: list[float]
-    upper_freqs_mhz: list[float]
-    lower_time_seconds: list[float]
-    lower_freqs_mhz: list[float]
-    analysis_frequency_mhz: float
-    shock_speed_km_s: float
 
 
 def _range(start: str, end: str | None) -> tuple[datetime, datetime]:
@@ -81,7 +75,11 @@ def _ensure_months(
         try:
             ingest_month(cursor.year, cursor.month, source=source)
         except Exception as exc:
-            warnings.append(f"{cursor:%Y-%m}: {exc}")
+            logger.warning("Catalogue refresh failed for %s %s: %s", source, cursor.strftime("%Y-%m"), exc)
+            if source == "uah_mysql":
+                warnings.append(f"{cursor:%Y-%m}: the UAH database is temporarily unavailable")
+            else:
+                warnings.append(f"{cursor:%Y-%m}: {exc}")
         cursor = (cursor + timedelta(days=32)).replace(day=1)
     return warnings
 
@@ -104,11 +102,15 @@ def get_bursts(
         raise HTTPException(status_code=422, detail=f"Unknown catalogue source: {source}")
     warnings = _ensure_months(start_dt, end_dt, source)
     events = list_events(start_dt, end_dt, station, burst_type, source)
+    unfiltered_events = events if not burst_type else list_events(start_dt, end_dt, station, source=source)
     return {
         "events": events,
         "count": len(events),
         "source": source,
         "source_label": source_label(source),
+        "available_types": sorted({
+            event["burst_type"] for event in unfiltered_events if event.get("burst_type")
+        }),
         "available_sources": [
             {"id": key, "label": value["label"]}
             for key, value in CATALOG_SOURCES.items()
@@ -275,20 +277,6 @@ def get_xmatch_timeline(
     }
 
 
-@router.post("/analysis/type-ii-band-split")
-def type_ii_band_split(payload: TypeIIBandSplitRequest):
-    from backend.type_ii import calculate
-
-    try:
-        return calculate(
-            payload.upper_time_seconds, payload.upper_freqs_mhz,
-            payload.lower_time_seconds, payload.lower_freqs_mhz,
-            payload.analysis_frequency_mhz, payload.shock_speed_km_s,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-
 def _resolve_file(station: str, date: str, filename: str) -> str:
     from backend import main as core
 
@@ -366,7 +354,7 @@ def export_processed_fits(
         )
     export_header = header.copy()
     export_header["BUNIT"] = ("relative detector digits", "Background-subtracted intensity")
-    export_header["PROCVER"] = ("AstroDoncel 0.3.0", "Processing software")
+    export_header["PROCVER"] = (f"{APP_NAME} {APP_VERSION}", "Processing software")
     export_header.add_history("AstroDoncel: per-frequency background subtraction applied")
     export_header.add_history(f"AstroDoncel: RFI mitigation applied={rfi}")
     if rfi:

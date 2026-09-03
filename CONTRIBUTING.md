@@ -1,4 +1,4 @@
-# Contributing to AstroDoncel
+# Contributing to AstroDoncel Studio
 
 Use Python 3.12 and Node 22. Install `requirements-dev.txt` and run `npm ci` in
 `frontend/`. Keep third-party reference projects under `Sahan/` unchanged;

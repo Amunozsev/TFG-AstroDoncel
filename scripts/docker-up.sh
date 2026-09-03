@@ -62,7 +62,7 @@ if [ "$attempt" -gt 60 ]; then
 fi
 
 docker compose ps
-printf '\nAstroDoncel is ready:\n'
+printf '\nAstroDoncel Studio is ready:\n'
 printf '  Portal:  http://127.0.0.1:%s\n' "$web_port"
 printf '  API:     http://127.0.0.1:%s/docs\n' "$web_port"
 printf '  Status:  %s\n' "$ready_url"

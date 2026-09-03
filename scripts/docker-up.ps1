@@ -105,7 +105,7 @@ try {
 
     Invoke-Docker @("compose", "ps")
     Write-Host ""
-    Write-Host "AstroDoncel is ready:"
+    Write-Host "AstroDoncel Studio is ready:"
     Write-Host "  Portal:  http://127.0.0.1:$webPort"
     Write-Host "  API:     http://127.0.0.1:$webPort/docs"
     Write-Host "  Status:  $readyUrl"

@@ -4,14 +4,14 @@ export default function About() {
       <header className="page-header">
         <div>
           <p className="eyebrow">Universidad de Alcalá · 2026</p>
-          <h1>About AstroDoncel</h1>
+          <h1>About AstroDoncel Studio</h1>
           <p className="page-subtitle">Project authorship, scientific provenance and the people and software this portal builds upon.</p>
         </div>
       </header>
-      <section className="about-grid" aria-label="AstroDoncel credits">
+      <section className="about-grid" aria-label="AstroDoncel Studio credits">
         <article>
           <h2>Project</h2>
-          <p>AstroDoncel is the Bachelor’s Thesis project of <strong>Alfonso Muñoz Sevillano</strong> at the Universidad de Alcalá. It provides a web workflow for discovering, processing and comparing solar radio spectrograms.</p>
+          <p>AstroDoncel Studio is the Bachelor’s Thesis project of <strong>Alfonso Muñoz Sevillano</strong> at the Universidad de Alcalá. It extends the original AstroDoncel portal with a web workflow for discovering, processing and comparing solar radio spectrograms.</p>
         </article>
         <article>
           <h2>e-CALLISTO network</h2>
@@ -20,7 +20,7 @@ export default function About() {
         </article>
         <article>
           <h2>Original AstroDoncel portal</h2>
-          <p>The Universidad de Alcalá AstroDoncel portal is the product and catalogue reference for this project. Burst Reports and Xmatch use its <strong>deARCE (v3)</strong> catalogue while preserving the catalogue as a source distinct from ML candidates and heuristics.</p>
+          <p>The Universidad de Alcalá AstroDoncel portal is the product and catalogue reference for this project. The NAS deployment reads its current Burst Reports database, while the published monthly catalogues remain available as an explicit fallback. Catalogue events are kept distinct from ML candidates and heuristics.</p>
           <a href="https://astrodoncel.uah.es/dashboard/" target="_blank" rel="noreferrer">Original AstroDoncel portal</a>
         </article>
         <article>
@@ -30,11 +30,11 @@ export default function About() {
         </article>
         <article>
           <h2>Open-source ecosystem</h2>
-          <p>AstroDoncel uses FastAPI, Astropy, SunPy, NumPy, SciPy, SQLAlchemy, ONNX Runtime, React, Vite and Plotly. Their licences and the detailed provenance register are maintained in <code>THIRD_PARTY_NOTICES.md</code>.</p>
+          <p>AstroDoncel Studio uses FastAPI, Astropy, SunPy, NumPy, SciPy, SQLAlchemy, ONNX Runtime, React, Vite and Plotly. Their licences and the detailed provenance register are maintained in <code>THIRD_PARTY_NOTICES.md</code>.</p>
         </article>
         <article>
           <h2>Scientific scope</h2>
-          <p>The detector supports research triage, not authoritative space-weather alerts. Instrumental measurements, model inferences, visual heuristics and experimental Type II results are labelled separately and require expert interpretation.</p>
+          <p>The detector supports research triage, not authoritative space-weather alerts. Instrumental measurements, model inferences and visual heuristics are labelled separately and require expert interpretation.</p>
         </article>
       </section>
     </main>

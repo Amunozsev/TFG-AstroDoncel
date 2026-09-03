@@ -23,7 +23,7 @@ def test_processed_fits_contains_provenance_and_both_axes(monkeypatch):
     )
     with fits.open(io.BytesIO(response.body), checksum=True) as hdus:
         assert [hdu.name for hdu in hdus] == ["PRIMARY", "FREQUENCY_AXIS", "TIME_AXIS"]
-        assert hdus[0].header["PROCVER"] == "AstroDoncel 0.3.0"
+        assert hdus[0].header["PROCVER"] == "AstroDoncel Studio 0.5.0"
         assert "background subtraction" in str(hdus[0].header["HISTORY"])
         assert hdus[1].data["FREQUENCY_MHZ"].tolist() == [40.0, 45.0, 50.0]
         assert hdus[2].data["TIME_OFFSET_S"].tolist() == [0.0, 1.0, 2.0, 3.0]

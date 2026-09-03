@@ -70,6 +70,12 @@ function response(data) {
 }
 
 const filesByStation = {
+  GLASGOW: [{
+    filename: 'GLASGOW_20260825_123001_01.fit.gz',
+    time: '12:30:01',
+    label: '12:30:01',
+    focus_code: '01',
+  }],
   'SPAIN-SIGUENZA': [{
     filename: 'SPAIN-SIGUENZA_20260826_063000_02.fit.gz',
     time: '06:30:00',
@@ -87,9 +93,67 @@ const filesByStation = {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  window.history.replaceState({}, '', '/');
 });
 
 describe('catalogue navigation', () => {
+  it('opens the exact FITS from a shared observation URL', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/?station=GLASGOW&date=2026-08-25&filename=GLASGOW_20260825_123001_01.fit.gz',
+    );
+    vi.mocked(apiFetch).mockImplementation(async (path) => {
+      if (path === '/api/stations') {
+        return response({ stations: ['GLASGOW'], source: 'ethz', details: [] });
+      }
+      const url = new URL(path, 'http://astrodoncel.test');
+      if (url.pathname === '/api/files') {
+        return response({ station: 'GLASGOW', files: filesByStation.GLASGOW });
+      }
+      if (url.pathname === '/api/spectrogram') {
+        return response({
+          station: url.searchParams.get('station'),
+          date: url.searchParams.get('date'),
+          filename: url.searchParams.get('filename'),
+          vmin: -2,
+          vmax: 8,
+        });
+      }
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByLabelText('Loaded FITS file')).toHaveTextContent(
+      'GLASGOW_20260825_123001_01.fit.gz',
+    ));
+    expect(window.location.search).toBe(
+      '?station=GLASGOW&date=2026-08-25&filename=GLASGOW_20260825_123001_01.fit.gz',
+    );
+  });
+
+  it('rejects a shared URL whose FITS belongs to another station', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/?station=GLASGOW&date=2026-08-25&filename=BIR_20260825_123001_01.fit.gz',
+    );
+    vi.mocked(apiFetch).mockImplementation(async (path) => {
+      if (path === '/api/stations') {
+        return response({ stations: ['GLASGOW'], source: 'ethz', details: [] });
+      }
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByLabelText('Layer error')).toHaveTextContent(
+      'The FITS filename does not belong to the requested station and date.',
+    ));
+    expect(vi.mocked(apiFetch).mock.calls.some(([path]) => String(path).startsWith('/api/files?'))).toBe(false);
+  });
+
   it('opens consecutive Xmatch events even when station and date repeat', async () => {
     vi.mocked(apiFetch).mockImplementation(async (path) => {
       if (path === '/api/stations') {

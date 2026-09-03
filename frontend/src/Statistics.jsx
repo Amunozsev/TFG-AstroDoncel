@@ -18,7 +18,7 @@ export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' 
   const [date, setDate] = useState(today);
   const [ranking, setRanking] = useState([]);
   const [timeline, setTimeline] = useState([]);
-  const [sourceLabel, setSourceLabel] = useState('deARCE (v3)');
+  const [sourceLabel, setSourceLabel] = useState('Burst Reports');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [xmatchDate, setXmatchDate] = useState(today);
@@ -46,7 +46,7 @@ export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' 
       if (signal?.aborted) return;
       setRanking(rankingData.ranking ?? []);
       setTimeline(timelineData.points ?? []);
-      setSourceLabel(rankingData.source_label ?? 'deARCE (v3)');
+      setSourceLabel(rankingData.source_label ?? 'Burst Reports');
     } catch (cause) {
       if (!signal?.aborted) setError(cause.message);
     } finally {
@@ -107,6 +107,7 @@ export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' 
     };
   });
   const eventPoints = xmatchRows.flatMap((row) => row.eventPoints);
+  const xmatchSourceLabel = xmatch?.source_label ?? 'Burst report';
   const openEventPoint = (item) => {
     if (item.filename) {
       onOpenEvent(item.event, item.station, {
@@ -137,8 +138,15 @@ export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' 
     customdata: eventPoints,
     marker: { color: '#ff3b30', size: 15, symbol: 'line-ns-open', line: { color: '#ff3b30', width: 3 } },
     text: eventPoints.map((item) => `${item.station}${item.focusCode ? ` · FC ${item.focusCode}` : ''} · ${item.event.burst_type ?? 'burst'}`),
-    hovertemplate: '%{text}<br>%{x|%H:%M:%S} UTC<br>Click to open spectrogram<extra></extra>',
-    name: 'deARCE (v3)',
+    meta: xmatchSourceLabel,
+    hovertemplate: '<b>%{text}</b><br>%{x|%H:%M:%S} UTC<br>Click to open spectrogram<extra>%{meta}</extra>',
+    hoverlabel: {
+      align: 'left',
+      bgcolor: theme === 'light' ? '#ffffff' : '#17283a',
+      bordercolor: '#ff3b30',
+      font: { color: theme === 'light' ? '#26384a' : '#f3f8fc', size: 12 },
+    },
+    name: xmatchSourceLabel,
   };
 
   const handleViewKeyDown = (event) => {
@@ -155,7 +163,7 @@ export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' 
         <div>
           <p className="eyebrow">Network intelligence</p>
           <h1>Statistics &amp; Xmatch</h1>
-          <p className="page-subtitle">Compare station coverage with deARCE (v3), or review activity across the network.</p>
+          <p className="page-subtitle">Compare station coverage with the configured Burst Reports source, or review activity across the network.</p>
         </div>
       </header>
 
@@ -196,7 +204,7 @@ export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' 
           <div>
             <p className="eyebrow">Cross-station context</p>
             <h2 id="xmatch-title">Xmatch timeline</h2>
-            <p>Each row is one receiver (focus code). Grey bands are archive availability; select a red {xmatch?.source_label ?? 'deARCE (v3)'} marker to open that exact FITS block.</p>
+            <p>Each row is one receiver (focus code). Grey bands are archive availability; select a red {xmatch?.source_label ?? 'Burst Reports'} marker to open that exact FITS block.</p>
           </div>
           <div className="stats-controls">
             <label>Date<input type="date" value={xmatchDate} onChange={(event) => setXmatchDate(event.target.value)} /></label>
@@ -218,6 +226,8 @@ export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' 
                 paper_bgcolor: theme === 'light' ? '#ffffff' : '#0b1726',
                 plot_bgcolor: theme === 'light' ? '#ffffff' : '#0b1726',
                 font: { color: theme === 'light' ? '#26384a' : '#c8d9e8', size: 10 },
+                hovermode: 'closest',
+                hoverdistance: 24,
                 showlegend: true,
                 legend: { orientation: 'h', y: 1.04 },
                 xaxis: {

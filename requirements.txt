@@ -22,6 +22,8 @@ onnxruntime==1.22.0
 # Persistence (PostgreSQL in production; SQLite fallback in development)
 SQLAlchemy==2.0.41
 psycopg[binary]==3.2.9
+# Read-only Burst Reports source used by the NAS deployment
+PyMySQL==1.1.2
 
 # Schema migrations are part of the production startup flow
 alembic==1.16.2

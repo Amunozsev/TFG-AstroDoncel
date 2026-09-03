@@ -1,4 +1,4 @@
-# Model card — AstroDoncel burst detector
+# Model card — AstroDoncel Studio burst detector
 
 ## Intended use
 
