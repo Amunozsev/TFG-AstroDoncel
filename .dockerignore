@@ -11,7 +11,9 @@ backups
 capturas_correo_2026-07-19
 data
 tests
-tools
+tools/*
+!tools/cache_maintenance.py
+!tools/prune_cache.py
 frontend/coverage
 frontend/node_modules
 frontend/dist

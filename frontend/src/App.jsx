@@ -3,6 +3,7 @@ import { API_BASE_URL, apiFetch } from './api';
 import { buildAnalysisManifest, downloadManifest } from './analysisManifest';
 import { describeBurstResult } from './burstResult';
 import { fileForEvent } from './eventNavigation';
+import { observationPath, parseObservationSearch, writeObservationUrl } from './observationUrl';
 import './App.css';
 
 const Spectrogram = lazy(() => import('./Spectrogram'));
@@ -79,6 +80,8 @@ function describeStationSource(source, retentionDays) {
 }
 
 export default function App() {
+  const [initialLink] = useState(() => parseObservationSearch(window.location.search));
+  const initialObservation = initialLink.observation;
   const [theme, setTheme]                   = useState(initialTheme);
   // Top-level view: the spectrogram portal or the world stations map.
   const [view, setView]                     = useState('portal');
@@ -89,12 +92,12 @@ export default function App() {
   const [stationFilter, setStationFilter]   = useState('');
   // Primary station: drives the burst-file list and the 15-min sync block.
   // No station is preselected on startup — the user must pick one.
-  const [station, setStation]               = useState(null);
+  const [station, setStation]               = useState(initialObservation?.station ?? null);
   // All stations selected for multi-layer loading
-  const [selectedStations, setSelectedStations] = useState([]);
-  const [date, setDate]                     = useState(() => new Date().toISOString().slice(0, 10));
-  const [overviewStart, setOverviewStart]   = useState(() => `${new Date().toISOString().slice(0, 10)}T00:00`);
-  const [overviewEnd, setOverviewEnd]       = useState(() => `${nextUtcDate(new Date().toISOString().slice(0, 10))}T00:00`);
+  const [selectedStations, setSelectedStations] = useState(() => initialObservation ? [initialObservation.station] : []);
+  const [date, setDate]                     = useState(() => initialObservation?.date ?? new Date().toISOString().slice(0, 10));
+  const [overviewStart, setOverviewStart]   = useState(() => `${initialObservation?.date ?? new Date().toISOString().slice(0, 10)}T00:00`);
+  const [overviewEnd, setOverviewEnd]       = useState(() => `${nextUtcDate(initialObservation?.date ?? new Date().toISOString().slice(0, 10))}T00:00`);
 
   // Daily burst list (primary station only)
   const [files, setFiles]                   = useState([]);
@@ -103,7 +106,13 @@ export default function App() {
   const [filesError, setFilesError]         = useState(null);
   const [selectedFile, setSelectedFile]     = useState(null);
   const [focusCode, setFocusCode]           = useState('all');
-  const [pendingEvent, setPendingEvent]     = useState(null);
+  const [pendingEvent, setPendingEvent]     = useState(() => initialObservation ? {
+    station: initialObservation.station,
+    date: initialObservation.date,
+    startedAt: initialObservation.startedAt,
+    filename: initialObservation.filename,
+    focusCode: initialObservation.focusCode,
+  } : null);
   const [filesReloadKey, setFilesReloadKey] = useState(0);
   const [collapsedHours, setCollapsedHours] = useState({});
 
@@ -130,7 +139,7 @@ export default function App() {
   const [layers, setLayers]                 = useState([]);
   const [failedStations, setFailedStations] = useState([]);
   const [fetchLoading, setFetchLoading]     = useState(false);
-  const [fetchError, setFetchError]         = useState(null);
+  const [fetchError, setFetchError]         = useState(initialLink.error);
 
   // Per-layer UI state: { [station]: { visible: bool, opacity: number } }
   const [layerState, setLayerState]         = useState({});
@@ -146,7 +155,64 @@ export default function App() {
   const [burstDetecting, setBurstDetecting] = useState(false);
   const [taskStatus, setTaskStatus]         = useState(null);
   const [lightCurveResult, setLightCurveResult] = useState(null);
+  const [shareStatus, setShareStatus]       = useState('');
   const taskRunRef = useRef(0);
+  const pendingUrlPushRef = useRef(false);
+
+  const applyLinkedObservation = useCallback((observation) => {
+    setHasLoaded(false);
+    setFiles([]);
+    setFilesContext(null);
+    setSelectedFile(null);
+    setLayers([]);
+    setFailedStations([]);
+    setFetchError(null);
+    setShareStatus('');
+    setBurstResults({});
+    setDate(observation.date);
+    setOverviewStart(`${observation.date}T00:00`);
+    setOverviewEnd(`${nextUtcDate(observation.date)}T00:00`);
+    setSelectedStations([observation.station]);
+    setStation(observation.station);
+    setFocusCode(observation.focusCode ?? 'all');
+    setPendingEvent({
+      station: observation.station,
+      date: observation.date,
+      startedAt: observation.startedAt,
+      filename: observation.filename,
+      focusCode: observation.focusCode,
+    });
+    setFilesReloadKey((value) => value + 1);
+    setView('portal');
+  }, []);
+
+  useEffect(() => {
+    if (initialObservation) writeObservationUrl(initialObservation, { replace: true });
+    const onPopState = () => {
+      const parsed = parseObservationSearch(window.location.search);
+      pendingUrlPushRef.current = false;
+      if (parsed.error) {
+        setFetchError(parsed.error);
+        return;
+      }
+      if (parsed.observation) {
+        applyLinkedObservation(parsed.observation);
+        return;
+      }
+      setHasLoaded(false);
+      setFiles([]);
+      setFilesContext(null);
+      setSelectedFile(null);
+      setLayers([]);
+      setSelectedStations([]);
+      setStation(null);
+      setPendingEvent(null);
+      setFetchError(null);
+      setView('portal');
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, [applyLinkedObservation, initialObservation]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -200,8 +266,6 @@ export default function App() {
           setStationDetails(Object.fromEntries(
             (data.details ?? []).map((item) => [item.station, item]),
           ));
-          setStation((current) => current && nextStations.includes(current) ? current : null);
-          setSelectedStations((current) => current.filter((item) => nextStations.includes(item)));
         }
       } catch (err) {
         if (!disposed) {
@@ -299,7 +363,9 @@ export default function App() {
     if (!nearest) {
       queueMicrotask(() => {
         setPendingEvent(null);
-        setFetchError(pendingEvent.focusCode
+        setFetchError(pendingEvent.filename
+          ? `The requested FITS file is not available: ${pendingEvent.filename}`
+          : pendingEvent.focusCode
           ? `No FITS block is available for focus code ${pendingEvent.focusCode} at this event time.`
           : 'No FITS block is available at this event time.');
       });
@@ -308,9 +374,14 @@ export default function App() {
     queueMicrotask(() => {
       setSelectedFile(nearest.filename);
       setFocusCode(nearest.focus_code ?? 'all');
+      setShareStatus('');
       setPendingEvent(null);
       setHasLoaded(true);
       setTriggerLoad((value) => value + 1);
+      if (pendingUrlPushRef.current) {
+        writeObservationUrl({ station: pendingEvent.station, date: pendingEvent.date, filename: nearest.filename });
+        pendingUrlPushRef.current = false;
+      }
     });
   }, [files, filesContext, filesError, filesLoading, pendingEvent]);
 
@@ -408,7 +479,9 @@ export default function App() {
   function handleLoad() {
     setHasLoaded(true);
     setBurstResults({}); // stale detections don't apply to a new load
+    setShareStatus('');
     setTriggerLoad((n) => n + 1);
+    if (station && selectedFile) writeObservationUrl({ station, date, filename: selectedFile });
   }
 
   function changeObservationDate(nextDate) {
@@ -429,6 +502,7 @@ export default function App() {
     setView('portal');
     setHasLoaded(true);
     setBurstResults({});
+    setShareStatus('');
     setTriggerLoad((n) => n + 1);
   }
 
@@ -459,6 +533,7 @@ export default function App() {
       filename: requestedFile?.filename ?? null,
       focusCode: requestedFile?.focusCode ?? null,
     });
+    pendingUrlPushRef.current = true;
     // A station/date pair can be selected repeatedly from Xmatch. Its values do
     // not change in that case, so use an explicit run key to reload the file
     // inventory and complete every navigation request.
@@ -518,11 +593,23 @@ export default function App() {
     }
   }
 
-  function handleChipClick(filename) {
+  const handleChipClick = useCallback((filename) => {
     setSelectedFile(filename);
     setHasLoaded(true);
     setBurstResults({});
     setTriggerLoad((n) => n + 1);
+    if (station) writeObservationUrl({ station, date, filename });
+  }, [date, station]);
+
+  async function copyObservationLink() {
+    if (!station || !selectedFile) return;
+    const path = observationPath({ station, date, filename: selectedFile });
+    try {
+      await navigator.clipboard.writeText(new URL(path, window.location.origin).href);
+      setShareStatus('Link copied');
+    } catch {
+      setShareStatus('Could not copy the link');
+    }
   }
 
   // ── Keyboard navigation: ←/→ steps through the burst list ─────────────────
@@ -541,7 +628,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [files, selectedFile]);
+  }, [files, handleChipClick, selectedFile]);
 
   function toggleStation(s) {
     if (selectedStations.includes(s)) {
@@ -945,8 +1032,10 @@ export default function App() {
                 {layers[0] && <>
                   <a className="btn-tool" title="Download the unmodified source observation" href={`${API_BASE_URL}/api/files/download?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename })}`}>Download original FITS</a>
                   <a className="btn-tool" title="Export the displayed processing result and its scientific axes as FITS" href={`${API_BASE_URL}/api/spectrogram/export?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename, rfi: useSahanFilter, rfi_z_thresh: rfiParams.zThresh, rfi_occupancy: rfiParams.occupancy, rfi_min_component: rfiParams.minComponent, rfi_impulsive: rfiParams.impulsive })}`}>Export processed FITS</a>
+                  <button className="btn-tool" type="button" onClick={copyObservationLink} title="Copy a link that opens this exact FITS block">Copy observation link</button>
                   <button className="btn-tool" type="button" onClick={exportAnalysisManifest} title="Save selected files, units, processing settings and provenance as JSON">Export analysis manifest</button>
                 </>}
+                {shareStatus && <p className="tool-help" role="status">{shareStatus}</p>}
                 <p className="tool-help">Combining starts at the selected block and joins up to three following blocks from the same station when their frequency axes are compatible. The result appears as one continuous spectrogram below the current observation.</p>
               </div>
             </details>
@@ -971,7 +1060,7 @@ export default function App() {
     <div className="app-root" data-theme={theme}>
       <a className="skip-link" href="#main-content">Skip to main content</a>
       <nav className="app-nav" aria-label="Primary navigation">
-        <span className="app-brand"><b>AstroDoncel</b><small>e-CALLISTO solar archive</small></span>
+        <span className="app-brand"><b>AstroDoncel Studio</b><small>e-CALLISTO analysis workspace</small></span>
         <div className="app-nav-tabs">
           <button
             className={view === 'portal' ? 'active' : ''}

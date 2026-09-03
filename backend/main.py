@@ -1,5 +1,5 @@
 """
-AstroDoncel API — FastAPI backend for e-CALLISTO spectrograms.
+AstroDoncel Studio API — FastAPI backend for e-CALLISTO spectrograms.
 Scientific engine adapted from e-CALLISTO FITS Analyzer (Sahan S. Liyanage, through v2.8.0).
 """
 
@@ -18,8 +18,9 @@ import uuid
 import warnings
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -34,23 +35,55 @@ from pydantic import BaseModel, Field
 from scipy.ndimage import label as ndi_label
 from sqlalchemy import select
 
+from backend import catalog, catalog_mysql
 from backend.api_features import router as feature_router
 from backend.db import FitsFile, GoesDay, Station, init_db, session_scope
 from backend.security import safe_join, validate_date, validate_filename_context, validate_station
+from backend.version import APP_NAME, APP_VERSION
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+USER_AGENT = f"{APP_NAME.replace(' ', '-')}/{APP_VERSION}"
+
+
+async def _background_catalog_sync() -> None:
+    """Refresh the current authoritative UAH month without blocking requests."""
+    interval = max(1.0, float(os.environ.get("BURST_SOURCE_REFRESH_MINUTES", "60"))) * 60
+    while True:
+        now = datetime.now(timezone.utc)
+        try:
+            await asyncio.to_thread(
+                catalog.ingest_month,
+                now.year,
+                now.month,
+                source=catalog_mysql.SOURCE_ID,
+                force=True,
+            )
+        except Exception as exc:
+            logger.warning("Background UAH catalogue refresh failed: %s", exc)
+        await asyncio.sleep(interval)
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """Prepare mandatory local state before accepting traffic."""
     os.makedirs(DATA_DIR_LOCAL, exist_ok=True)
+    Path(DATA_DIR_LOCAL, ".astrodoncel-cache").touch(exist_ok=True)
     os.makedirs(os.environ.get("TASK_RESULT_DIR", os.path.join("data", "task_results")), exist_ok=True)
     init_db()
-    yield
+    sync_task = None
+    if catalog.DEFAULT_CATALOG_SOURCE == catalog_mysql.SOURCE_ID and catalog_mysql.is_configured():
+        sync_task = asyncio.create_task(_background_catalog_sync(), name="uah-catalog-sync")
+    try:
+        yield
+    finally:
+        if sync_task:
+            sync_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await sync_task
 
 
-app = FastAPI(title="AstroDoncel API", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title=f"{APP_NAME} API", version=APP_VERSION, lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
 app.include_router(feature_router)
 
@@ -655,7 +688,7 @@ def _archive_inventory_for_date(date: str) -> dict[str, list[str]]:
 
         dir_url = f"{ETHZ_BASE_URL}/{dt.strftime('%Y/%m/%d')}/"
         try:
-            req = Request(dir_url, headers={"User-Agent": "AstroDoncel/1.0"})
+            req = Request(dir_url, headers={"User-Agent": USER_AGENT})
             with urlopen(req, timeout=15) as resp:
                 page = resp.read().decode("utf-8", errors="replace")
         except Exception:
@@ -719,7 +752,7 @@ def _download_from_ethz(station: str, date: str, filename: str | None = None) ->
             max_bytes = int(os.environ.get("MAX_FITS_DOWNLOAD_BYTES", str(128 * 1024 * 1024)))
             logger.info("Downloading %s → %s", file_url, local_path)
             try:
-                req = Request(file_url, headers={"User-Agent": "AstroDoncel/1.0"})
+                req = Request(file_url, headers={"User-Agent": USER_AGENT})
                 downloaded = 0
                 with urlopen(req, timeout=120) as resp:
                     declared = resp.headers.get("Content-Length")
@@ -751,7 +784,7 @@ def _download_from_ethz(station: str, date: str, filename: str | None = None) ->
     # No filename: inspect the directory to find the first matching file
     logger.info("Querying ETHZ archive: %s", dir_url)
     try:
-        req = Request(dir_url, headers={"User-Agent": "AstroDoncel/1.0"})
+        req = Request(dir_url, headers={"User-Agent": USER_AGENT})
         with urlopen(req, timeout=15) as resp:
             page = resp.read().decode("utf-8", errors="replace")
     except URLError as exc:
@@ -1388,7 +1421,7 @@ _MAX_COMBINE_STATIONS = 6
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.3.0"}
+    return {"status": "ok", "name": APP_NAME, "version": APP_VERSION}
 
 
 @app.get("/ready")
@@ -1442,7 +1475,7 @@ def _burst_counts_for_month(year: int, month: int) -> dict[str, int]:
     url = f"{_BURSTLIST_BASE}/{year:04d}/e-CALLISTO_{year:04d}_{month:02d}.txt"
     counts: dict[str, int] = {}
     try:
-        req = Request(url, headers={"User-Agent": "AstroDoncel/1.0"})
+        req = Request(url, headers={"User-Agent": USER_AGENT})
         with urlopen(req, timeout=15) as resp:
             text = resp.read().decode("utf-8", errors="replace")
     except Exception as exc:
@@ -2390,7 +2423,7 @@ def _mount_frontend() -> None:
         logger.warning("SERVE_FRONTEND enabled but no index.html exists in %s", dist_dir)
         return
     app.mount("/", StaticFiles(directory=dist_dir, html=True), name="frontend")
-    logger.info("Serving the AstroDoncel frontend from %s", dist_dir)
+    logger.info("Serving the AstroDoncel Studio frontend from %s", dist_dir)
 
 
 _mount_frontend()

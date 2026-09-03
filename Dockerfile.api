@@ -9,9 +9,11 @@ RUN groupadd --gid 10001 astrodoncel \
     && useradd --create-home --uid 10001 --gid 10001 astrodoncel
 COPY requirements.txt .
 RUN pip install -r requirements.txt
+COPY VERSION .
 COPY alembic.ini .
 COPY migrations ./migrations
 COPY backend ./backend
+COPY tools ./tools
 RUN mkdir -p /data/task_results && chown -R astrodoncel:astrodoncel /app /data
 USER astrodoncel
 EXPOSE 8000

@@ -1,3 +1,5 @@
+/* global __APP_VERSION__ */
+
 const FITS_PROVENANCE_FIELDS = [
   'DATE-OBS', 'TIME-OBS', 'INSTRUME', 'CONTENT', 'ORIGIN', 'OBSERVAT',
   'OBS_LAT', 'OBS_LON', 'OBS_LAC', 'OBS_LOC', 'BUNIT',
@@ -23,7 +25,7 @@ export function buildAnalysisManifest({
   return {
     schema: 'astrodoncel.analysis-manifest.v1',
     generated_at: generatedAt,
-    application: { name: 'AstroDoncel', version: '0.4.0' },
+    application: { name: 'AstroDoncel Studio', version: __APP_VERSION__ },
     selection: {
       date_utc: date,
       primary_station: station,
@@ -40,16 +42,16 @@ export function buildAnalysisManifest({
     processing,
     display,
     solar_context: solarContext,
-    catalogue: { id: 'dearce_v3', label: 'deARCE (v3)' },
+    catalogue: { id: 'deployment-configured', label: 'Deployment-configured Burst Reports source' },
     interpretation: {
       measured: ['FITS time axis', 'FITS frequency axis', 'instrumental intensity'],
       inferred: ['CNN+MIL candidate probability'],
       heuristic: ['visual candidate localization', 'Xmatch nominal block interval'],
-      experimental: ['Type II band-splitting output'],
+      experimental: [],
     },
     provenance: [
       'e-CALLISTO/ETHZ archive data',
-      'AstroDoncel/Universidad de Alcalá portal and deARCE (v3) catalogue',
+      'AstroDoncel/Universidad de Alcalá portal and its Burst Reports database',
       'Sahan S. Liyanage e-CALLISTO FITS Analyzer and Burst_No_Burst reference methods',
     ],
   };

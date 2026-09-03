@@ -6,6 +6,7 @@ import hashlib
 import os
 import re
 import threading
+from datetime import date as date_type
 from datetime import datetime, timedelta, timezone
 from html import unescape
 from urllib.request import Request, urlopen
@@ -15,15 +16,22 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 
+from backend import catalog_mysql
 from backend.db import BurstEvent, CatalogMonth, Station, engine, session_scope
+from backend.version import APP_NAME, APP_VERSION
+
+USER_AGENT = f"{APP_NAME.replace(' ', '-')}/{APP_VERSION}"
 
 ASTRODONCEL_REPORT_BASES = (
     "https://astrodoncel.uah.es/ecallistodata/burst_reports",
     "http://astrodoncel.uah.es/ecallistodata/burst_reports",
 )
 LEGACY_BURSTLIST_BASE = "http://soleil.i4ds.ch/solarradio/data/BurstLists/2010-yyyy_Monstein"
-DEFAULT_CATALOG_SOURCE = "dearce_v3"
 CATALOG_SOURCES = {
+    catalog_mysql.SOURCE_ID: {
+        "label": "AstroDoncel UAH database",
+        "urls": [],
+    },
     "dearce_v3": {
         "label": "deARCE (v3)",
         "urls": [
@@ -43,6 +51,9 @@ CATALOG_SOURCES = {
         "urls": [f"{LEGACY_BURSTLIST_BASE}/{{year}}/e-CALLISTO_{{year}}_{{month:02d}}.txt"],
     },
 }
+DEFAULT_CATALOG_SOURCE = os.environ.get("BURST_CATALOG_SOURCE", "").strip() or (
+    catalog_mysql.SOURCE_ID if catalog_mysql.is_configured() else "dearce_v3"
+)
 
 
 def _clean_station(token: str) -> str:
@@ -74,6 +85,23 @@ def _optional_float(value: str) -> float | None:
     try:
         return float(value.strip())
     except (TypeError, ValueError):
+        return None
+
+
+def _optional_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return None if not text or text == "---" else text
+
+
+def _optional_int(value: object) -> int | None:
+    text = _optional_text(value)
+    if text is None:
+        return None
+    try:
+        return int(float(text))
+    except ValueError:
         return None
 
 
@@ -139,6 +167,87 @@ def parse_burst_list(text: str, source: str = DEFAULT_CATALOG_SOURCE) -> list[di
     return events
 
 
+def _database_date(value: object) -> str | None:
+    if isinstance(value, datetime):
+        return value.strftime("%Y%m%d")
+    if isinstance(value, date_type):
+        return value.strftime("%Y%m%d")
+    text = str(value).strip() if value is not None else ""
+    match = re.search(r"(?P<year>\d{4})[-/]?(?P<month>\d{2})[-/]?(?P<day>\d{2})", text)
+    return "".join(match.groups()) if match else None
+
+
+def parse_uah_database_rows(
+    rows: list[dict],
+    year: int,
+    month: int,
+    source: str = catalog_mysql.SOURCE_ID,
+) -> list[dict]:
+    """Map Manuel's authoritative MySQL rows to the internal catalogue model."""
+    events: list[dict] = []
+    seen_keys: set[str] = set()
+    wanted_prefix = f"{year:04d}{month:02d}"
+    for row in rows:
+        date_raw = _database_date(row.get("date"))
+        if date_raw is None or not date_raw.startswith(wanted_prefix):
+            continue
+        time_raw = str(row.get("time") or "")
+        time_match = re.search(r"(\d{2}:\d{2})\s*[-–—]\s*(\d{2}:\d{2})", time_raw)
+        if not time_match:
+            continue
+        start_raw, end_raw = time_match.groups()
+        try:
+            started = datetime.strptime(date_raw + start_raw, "%Y%m%d%H:%M").replace(tzinfo=timezone.utc)
+            ended = datetime.strptime(date_raw + end_raw, "%Y%m%d%H:%M").replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        if ended < started:
+            ended += timedelta(days=1)
+
+        raw_stations = row.get("stations")
+        station_values = raw_stations if isinstance(raw_stations, (list, tuple)) else str(raw_stations or "").split(",")
+        stations = [_clean_station(str(value)) for value in station_values]
+        stations = [value for value in stations if value and value != "---"]
+        raw_type = _optional_text(row.get("type"))
+        burst_type = raw_type.upper() if raw_type else None
+        external_id = _optional_text(row.get("event_id"))
+        source_key = _optional_text(row.get("key"))
+        if external_id:
+            event_key = f"mysql:{external_id}"
+        else:
+            identity = "|".join((date_raw, f"{start_raw}-{end_raw}", raw_type or "", source_key or "", ",".join(stations)))
+            event_key = f"mysql:{hashlib.sha1(identity.encode('utf-8'), usedforsecurity=False).hexdigest()}"
+        if len(event_key) > BurstEvent.__table__.c.event_key.type.length:
+            digest = hashlib.sha1(event_key.encode("utf-8"), usedforsecurity=False).hexdigest()
+            event_key = f"mysql:sha1:{digest}"
+        if event_key in seen_keys:
+            raise ValueError(f"Duplicate event identifier in the UAH database source: {external_id or event_key}")
+        seen_keys.add(event_key)
+
+        metadata = {
+            "source_label": source_label(source),
+            "external_event_id": external_id,
+            "key": source_key,
+            "remarks": _optional_text(row.get("remarks")),
+            "raw_type": raw_type,
+        }
+        events.append({
+            "source": source,
+            "event_key": event_key,
+            "started_at": started,
+            "ended_at": ended,
+            "burst_type": burst_type,
+            "intensity": _optional_int(row.get("intensity")),
+            "stations": stations,
+            "min_lon": _optional_float(str(row.get("min_lon")) if row.get("min_lon") is not None else ""),
+            "mid_lon": _optional_float(str(row.get("mid_lon")) if row.get("mid_lon") is not None else ""),
+            "max_lon": _optional_float(str(row.get("max_lon")) if row.get("max_lon") is not None else ""),
+            "score": None,
+            "metadata_json": metadata,
+        })
+    return events
+
+
 def ingest_month(
     year: int,
     month: int,
@@ -171,7 +280,10 @@ def _ingest_month_locked(
         raise ValueError(f"unsupported catalogue source: {source}")
     year_month = f"{year:04d}-{month:02d}"
     cache_key = f"{source}:{year_month}"
-    max_age = timedelta(hours=float(os.environ.get("CATALOG_REFRESH_HOURS", "12")))
+    if source == catalog_mysql.SOURCE_ID:
+        max_age = timedelta(minutes=float(os.environ.get("BURST_SOURCE_REFRESH_MINUTES", "60")))
+    else:
+        max_age = timedelta(hours=float(os.environ.get("CATALOG_REFRESH_HOURS", "12")))
     with session_scope() as session:
         cached = session.get(CatalogMonth, cache_key)
         if cached and not force:
@@ -180,23 +292,40 @@ def _ingest_month_locked(
                 fetched_at = fetched_at.replace(tzinfo=timezone.utc)
             if datetime.now(timezone.utc) - fetched_at < max_age:
                 return 0
-    errors = []
-    text = None
-    fetch_timeout = max(1.0, float(os.environ.get("CATALOG_FETCH_TIMEOUT_SECONDS", "12")))
-    for template in CATALOG_SOURCES[source]["urls"]:
-        url = template.format(year=year, month=month)
-        request = Request(url, headers={"User-Agent": "AstroDoncel/1.0"})
-        try:
-            with urlopen(request, timeout=fetch_timeout) as response:
-                text = response.read().decode("utf-8", errors="replace")
-            break
-        except Exception as exc:
-            errors.append(f"{url}: {exc}")
-    if text is None:
-        raise OSError("; ".join(errors))
-    if source == "dearce_v3" and "deARCE_v2" in text and "deARCE_v3" not in text:
-        raise ValueError("monthly fallback identifies itself as deARCE_v2, not deARCE_v3")
-    events = parse_burst_list(text, source)
+    replace_missing = source == catalog_mysql.SOURCE_ID
+    if replace_missing:
+        events = parse_uah_database_rows(catalog_mysql.read_rows(), year, month, source)
+    else:
+        errors = []
+        text = None
+        fetch_timeout = max(1.0, float(os.environ.get("CATALOG_FETCH_TIMEOUT_SECONDS", "12")))
+        for template in CATALOG_SOURCES[source]["urls"]:
+            url = template.format(year=year, month=month)
+            request = Request(url, headers={"User-Agent": USER_AGENT})
+            try:
+                with urlopen(request, timeout=fetch_timeout) as response:
+                    text = response.read().decode("utf-8", errors="replace")
+                break
+            except Exception as exc:
+                errors.append(f"{url}: {exc}")
+        if text is None:
+            raise OSError("; ".join(errors))
+        if source == "dearce_v3" and "deARCE_v2" in text and "deARCE_v3" not in text:
+            raise ValueError("monthly fallback identifies itself as deARCE_v2, not deARCE_v3")
+        events = parse_burst_list(text, source)
+    return _store_month_events(year, month, source, events, replace_missing=replace_missing)
+
+
+def _store_month_events(
+    year: int,
+    month: int,
+    source: str,
+    events: list[dict],
+    *,
+    replace_missing: bool,
+) -> int:
+    year_month = f"{year:04d}-{month:02d}"
+    cache_key = f"{source}:{year_month}"
     inserted = 0
     with session_scope() as session:
         month_start = datetime(year, month, 1, tzinfo=timezone.utc)
@@ -209,6 +338,7 @@ def _ingest_month_locked(
                 BurstEvent.started_at < month_end,
             ))
         }
+        incoming_keys = {event["event_key"] for event in events}
         for event in events:
             stored = existing.get(event["event_key"])
             if stored is not None:
@@ -242,7 +372,11 @@ def _ingest_month_locked(
                 except IntegrityError:
                     continue
                 inserted += 1
-            existing[event["event_key"]] = True
+            existing[event["event_key"]] = stored or True
+        if replace_missing:
+            for event_key, stored in existing.items():
+                if event_key not in incoming_keys and isinstance(stored, BurstEvent):
+                    session.delete(stored)
         station_sightings: dict[str, tuple[datetime, datetime]] = {}
         for event in events:
             for station_name in event["stations"]:

@@ -16,6 +16,7 @@ export function fileForEvent(files, filesContext, pendingEvent) {
   if (pendingEvent.filename) {
     const exact = files.find((item) => item.filename === pendingEvent.filename);
     if (exact) return exact;
+    return null;
   }
 
   const target = new Date(pendingEvent.startedAt);

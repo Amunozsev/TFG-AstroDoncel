@@ -30,6 +30,9 @@ vi.mock('./plotly', () => ({
       'aria-label': 'Mock Plotly event marker',
       'data-testid': 'plotly-chart',
       'data-x-range': props.layout?.xaxis?.range?.join('|') ?? '',
+      'data-hover-template': props.data?.find((trace) => trace.customdata?.length)?.hovertemplate ?? '',
+      'data-trace-name': props.data?.find((trace) => trace.customdata?.length)?.name ?? '',
+      'data-hover-mode': props.layout?.hovermode ?? '',
       disabled: !customdata,
       onClick: () => (handlers.get('plotly_click') ?? props.onClick)?.({ points: [{ customdata }] }),
     });
@@ -89,7 +92,11 @@ describe('analysis panels', () => {
     })));
 
     render(<Statistics onOpenEvent={onOpenEvent} onOpenStation={vi.fn()} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Mock Plotly event marker' }));
+    const marker = await screen.findByRole('button', { name: 'Mock Plotly event marker' });
+    expect(marker).toHaveAttribute('data-hover-template', expect.stringContaining('<extra>%{meta}</extra>'));
+    expect(marker).toHaveAttribute('data-trace-name', 'deARCE (v3)');
+    expect(marker).toHaveAttribute('data-hover-mode', 'closest');
+    fireEvent.click(marker);
     expect(onOpenEvent).toHaveBeenCalledWith(report, 'HUMAIN');
   });
 
@@ -307,6 +314,25 @@ describe('analysis panels', () => {
     )?.filename).toBe('GERMANY-DLR_20260825_101500_02.fit.gz');
   });
 
+  it('does not replace a missing exact FITS with a nearby block', () => {
+    const files = [{
+      filename: 'GLASGOW_20260825_123000_01.fit.gz',
+      time: '12:30:00',
+      focus_code: '01',
+    }];
+
+    expect(fileForEvent(
+      files,
+      { station: 'GLASGOW', date: '2026-08-25' },
+      {
+        station: 'GLASGOW',
+        date: '2026-08-25',
+        startedAt: '2026-08-25T12:30:01Z',
+        filename: 'GLASGOW_20260825_123001_01.fit.gz',
+      },
+    )).toBeNull();
+  });
+
   it('prefers the new block when adjacent archive files overlap by one second', () => {
     const event = { started_at: '2026-08-25T11:15:00+00:00' };
     const blocks = [
@@ -420,7 +446,7 @@ describe('analysis panels', () => {
     });
 
     expect(manifest.schema).toBe('astrodoncel.analysis-manifest.v1');
-    expect(manifest.catalogue.label).toBe('deARCE (v3)');
+    expect(manifest.catalogue.label).toBe('Deployment-configured Burst Reports source');
     expect(manifest.selection.layers[0].fits_provenance).toEqual({ 'DATE-OBS': '2026-08-24' });
     expect(JSON.stringify(manifest)).not.toContain('C:/private');
   });

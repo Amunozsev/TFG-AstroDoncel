@@ -62,6 +62,10 @@ services:
     volumes:
       - ${APP_DATA_SOURCE:-app_data}:/data
       - ${ECALLISTO_HOST_DIR:-./data/archive}:/archive/ecallistodata:ro
+    # Lets the NAS deployment reach a MySQL/MariaDB service bound to the host
+    # without publishing that database to the internet.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     read_only: true
     tmpfs: [/tmp]
     init: true
@@ -92,6 +96,24 @@ services:
     security_opt: [no-new-privileges:true]
     mem_limit: ${WORKER_MEMORY_LIMIT:-1g}
     cpus: ${WORKER_CPU_LIMIT:-2.0}
+    logging: *default-logging
+
+  cache-maintenance:
+    image: astrodoncel-backend:local
+    command: ["python", "-m", "tools.cache_maintenance"]
+    restart: unless-stopped
+    env_file: ${APP_ENV_FILE:-.env}
+    environment:
+      DATA_DIR_LOCAL: /data
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - ${APP_DATA_SOURCE:-app_data}:/data
+    read_only: true
+    tmpfs: [/tmp]
+    init: true
+    security_opt: [no-new-privileges:true]
     logging: *default-logging
 
   web:
