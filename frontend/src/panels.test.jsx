@@ -17,6 +17,7 @@ import { blockForEvent, expandXmatchRows } from './xmatch';
 
 vi.mock('./plotly', () => ({
   default: {},
+  OBSERVATORY_COLOR_SCALE: [[0, '#000000'], [1, '#ffffb0']],
   Plot: function PlotMock(props) {
     const customdata = props.data?.find((trace) => trace.customdata?.length)?.customdata?.[0];
     const handlers = new Map();

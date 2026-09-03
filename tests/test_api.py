@@ -1,14 +1,19 @@
+"""API endpoints and archive identifier security."""
+
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend import api_features
 from backend import main as core
 from backend.db import SessionLocal, Station, TaskRecord
 from backend.main import app
+from backend.security import safe_join, validate_filename_context, validate_fits_filename, validate_station
 
 client = TestClient(app)
 
@@ -268,3 +273,49 @@ def test_station_inventory_hides_stale_rows_but_preserves_recent_and_live(monkey
                 if row:
                     session.delete(row)
             session.commit()
+
+
+# Archive identifiers and path safety
+
+@pytest.mark.parametrize("station", ["SPAIN-SIGUENZA", "MRO", "MEXICO_LANCE", "A1", "SWISS-Landschlacht"])
+def test_valid_stations(station):
+    assert validate_station(station) == station
+
+
+@pytest.mark.parametrize("station", ["../etc", "A/B", "", " station", "A B", "A?x"])
+def test_invalid_stations(station):
+    with pytest.raises(ValueError):
+        validate_station(station)
+
+
+@pytest.mark.parametrize("filename", [
+    "SPAIN-SIGUENZA_20240101_120000_01.fit.gz",
+    "MRO_20240101_120000.fit",
+    "AUSTRIA-UNIGRAZ_20240101_120000_62.fits.gz",
+])
+def test_valid_filenames(filename):
+    assert validate_fits_filename(filename) == filename
+
+
+@pytest.mark.parametrize("filename", ["../secret.fit", "C:\\x.fit", "x.fit", "x_20240101_120000.exe", "x_20241301_120000.fit"])
+def test_invalid_filenames(filename):
+    with pytest.raises(ValueError):
+        validate_fits_filename(filename)
+
+
+def test_filename_context_matches():
+    value = "SPAIN-SIGUENZA_20240101_120000_01.fit.gz"
+    assert validate_filename_context(value, "spain-siguenza", "2024-01-01") == value
+
+
+def test_filename_context_rejects_other_station_or_date():
+    value = "SPAIN-SIGUENZA_20240101_120000_01.fit.gz"
+    with pytest.raises(ValueError):
+        validate_filename_context(value, "MRO", "2024-01-01")
+    with pytest.raises(ValueError):
+        validate_filename_context(value, "SPAIN-SIGUENZA", "2024-01-02")
+
+
+def test_safe_join_stays_below_root(tmp_path):
+    result = safe_join(str(tmp_path), "MRO_20240101_120000_01.fit.gz")
+    assert os.path.commonpath((str(tmp_path), result)) == str(tmp_path)

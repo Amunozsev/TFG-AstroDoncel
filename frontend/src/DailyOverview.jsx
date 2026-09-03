@@ -1,14 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Plot } from './plotly';
+import { OBSERVATORY_COLOR_SCALE, Plot } from './plotly';
 import { apiFetch } from './api';
 
 const OVERVIEW_PLOT_HEIGHT = 360;
-const DEFAULT_COLOR_SCALE = [
-  [0.00, '#000000'], [0.10, '#0a0038'], [0.20, '#1a0080'],
-  [0.30, '#4a0090'], [0.40, '#7a0080'], [0.50, '#aa2050'],
-  [0.60, '#cc0000'], [0.70, '#e06000'], [0.80, '#f5a000'],
-  [0.90, '#ffcc00'], [1.00, '#ffffb0'],
-];
 const COLOR_SCALES = [
   { value: 'default', label: 'Default' },
   { value: 'Viridis', label: 'Viridis' },
@@ -45,7 +39,7 @@ export default function DailyOverview({ artifactUrl, theme = 'dark' }) {
   if (!overview?.stations) return null;
 
   const stationsWithData = overview.stations.filter((item) => item.status === 'ok').length;
-  const selectedColorscale = colorscale === 'default' ? DEFAULT_COLOR_SCALE : colorscale;
+  const selectedColorscale = colorscale === 'default' ? OBSERVATORY_COLOR_SCALE : colorscale;
   const plotTheme = theme === 'light'
     ? { surface: '#ffffff', text: '#26384a', grid: '#dce4ec' }
     : { surface: '#0b1726', text: '#c8d9e8', grid: '#1e3448' };
