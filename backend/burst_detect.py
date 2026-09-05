@@ -45,9 +45,9 @@ def is_available() -> tuple[bool, str]:
             "Install the production requirements."
         )
     if not os.path.isfile(os.path.join(BUNDLE_DIR, "model.onnx")):
-        return False, f"Model bundle not found in {BUNDLE_DIR}"
+        return False, "Model bundle not found; check BURST_MODEL_DIR on the server"
     if not os.path.isfile(os.path.join(BUNDLE_DIR, "runtime_config.json")):
-        return False, f"Model runtime configuration not found in {BUNDLE_DIR}"
+        return False, "Model runtime configuration not found; check BURST_MODEL_DIR on the server"
     return True, ""
 
 

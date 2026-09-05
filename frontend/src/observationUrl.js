@@ -16,6 +16,15 @@ function validIsoDate(value) {
   return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 }
 
+export function observationDateRange(value, period = 'day') {
+  const start = period === 'month' && value ? `${value.slice(0, 7)}-01` : value;
+  if (!validIsoDate(start)) return null;
+  const parsed = new Date(`${start}T00:00:00Z`);
+  if (period === 'month') parsed.setUTCMonth(parsed.getUTCMonth() + 1);
+  else parsed.setUTCDate(parsed.getUTCDate() + 1);
+  return { start, end: parsed.toISOString().slice(0, 10) };
+}
+
 export function parseObservationSearch(search) {
   const params = new URLSearchParams(search);
   let station;
@@ -50,6 +59,10 @@ export function parseObservationSearch(search) {
     return { observation: null, error: 'The FITS filename does not belong to the requested station and date.' };
   }
   const timestamp = `${date}T${context.groups.time.slice(0, 2)}:${context.groups.time.slice(2, 4)}:${context.groups.time.slice(4, 6)}Z`;
+  const instant = new Date(timestamp);
+  if (!Number.isFinite(instant.getTime()) || instant.toISOString() !== timestamp.replace('Z', '.000Z')) {
+    return { observation: null, error: 'The FITS filename contains an invalid observation time.' };
+  }
   return {
     observation: {
       station,

@@ -1,10 +1,13 @@
 """Catalogue parsing, source databases and synchronization."""
 
 import os
+import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from sqlalchemy import Column, Float, Integer, MetaData, String, Table, create_engine, insert
@@ -335,3 +338,15 @@ def test_managed_postgres_urls_use_psycopg3():
         "postgresql+psycopg://user:pass@db/name"
     )
     assert normalize_database_url("sqlite:///data/test.db") == "sqlite:///data/test.db"
+
+
+def test_migrations_accept_percent_encoded_database_passwords():
+    # Offline SQL exercises the real Alembic environment without connecting to
+    # a database. ConfigParser must never interpolate the encoded password.
+    env = {**os.environ, "DATABASE_URL": "postgresql+psycopg://reader:encoded%25password@localhost/unused"}
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head", "--sql"],
+        cwd=Path(__file__).resolve().parents[1], env=env, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "CREATE TABLE stations" in result.stdout

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./api', () => ({
@@ -43,11 +43,12 @@ vi.mock('./Statistics', () => ({
 }));
 
 vi.mock('./Spectrogram', () => ({
-  default: function SpectrogramMock({ layers, error }) {
+  default: function SpectrogramMock({ layers, error, burstResults }) {
     return (
       <>
         <output aria-label="Loaded FITS file">{layers[0]?.filename ?? 'none'}</output>
         <output aria-label="Layer error">{error ?? ''}</output>
+        <output aria-label="Detection results">{JSON.stringify(burstResults)}</output>
       </>
     );
   },
@@ -96,6 +97,7 @@ afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   window.history.replaceState({}, '', '/');
+  localStorage.clear();
 });
 
 describe('combine blocks controls', () => {
@@ -417,6 +419,10 @@ describe('combine selection', () => {
 });
 
 describe('observation links', () => {
+  it.each(['240000', '126000', '123060'])('rejects invalid FITS time %s', (time) => {
+    expect(parseObservationSearch(`?station=MRO&date=2026-08-25&filename=MRO_20260825_${time}.fit`).error)
+      .toMatch(/invalid observation time/);
+  });
   it('parses canonical and legacy parameter names', () => {
     const canonical = parseObservationSearch(
       '?station=GLASGOW&date=2026-08-25&filename=GLASGOW_20260825_123001_01.fit.gz',
@@ -454,5 +460,67 @@ describe('observation links', () => {
     }, { pathname: '/studio/', hash: '' })).toBe(
       '/studio/?station=MRO&date=2026-08-25&filename=MRO_20260825_120000_01.fit.gz',
     );
+  });
+});
+
+describe('observation request lifetime', () => {
+  function setup(intercept = () => null) {
+    vi.mocked(apiFetch).mockImplementation(async (path, options) => {
+      const pending = intercept(path, options);
+      if (pending) return pending;
+      const url = new URL(path, 'http://astrodoncel.test');
+      if (url.pathname === '/api/stations') return response({ stations: Object.keys(filesByStation), details: [] });
+      if (url.pathname === '/api/files') return response({ files: filesByStation[url.searchParams.get('station')] ?? [] });
+      if (url.pathname === '/api/spectrogram') return response({
+        station: url.searchParams.get('station'), date: url.searchParams.get('date'),
+        filename: url.searchParams.get('filename'), vmin: -2, vmax: 8,
+      });
+      throw new Error(`Unexpected API request: ${path}`);
+    });
+    render(<App />);
+  }
+
+  it('does not replace a newer observation with an old spectrogram response body', async () => {
+    let resolveOldBody;
+    setup((path) => path.startsWith('/api/spectrogram?') && path.includes('filename=GERMANY-DLR_20260825_101500')
+      ? { ok: true, json: () => new Promise((resolve) => { resolveOldBody = resolve; }) } : null);
+    fireEvent.click(screen.getByRole('button', { name: 'Statistics' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open first DLR event' }));
+    await waitFor(() => expect(resolveOldBody).toBeTypeOf('function'));
+    fireEvent.click(screen.getByRole('button', { name: 'Statistics' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Sigüenza event' }));
+    await waitFor(() => expect(screen.getByLabelText('Loaded FITS file')).toHaveTextContent('SPAIN-SIGUENZA'));
+    await act(async () => resolveOldBody({
+      station: 'GERMANY-DLR', date: '2026-08-25', filename: filesByStation['GERMANY-DLR'][0].filename,
+      vmin: 0, vmax: 1,
+    }));
+    expect(screen.getByLabelText('Loaded FITS file')).toHaveTextContent('SPAIN-SIGUENZA');
+  });
+
+  it('discards detection results after loading another FITS', async () => {
+    let resolveDetection;
+    setup((path) => path.startsWith('/api/burst/detect?')
+      ? new Promise((resolve) => { resolveDetection = resolve; }) : null);
+    fireEvent.click(screen.getByRole('button', { name: 'Statistics' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open first DLR event' }));
+    await waitFor(() => expect(screen.getByLabelText('Loaded FITS file')).toHaveTextContent('GERMANY-DLR'));
+    fireEvent.click(screen.getByRole('button', { name: 'Tools' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Detect current file (ML)' }));
+    await waitFor(() => expect(resolveDetection).toBeTypeOf('function'));
+    fireEvent.click(screen.getByRole('button', { name: 'Statistics' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Sigüenza event' }));
+    await waitFor(() => expect(screen.getByLabelText('Loaded FITS file')).toHaveTextContent('SPAIN-SIGUENZA'));
+    await act(async () => resolveDetection(response({ available: false, reason: 'old detection' })));
+    expect(screen.getByLabelText('Detection results')).toHaveTextContent('{}');
+  });
+
+  it('accepts clearing the observation date and ignores malformed stored presets', async () => {
+    localStorage.setItem('astrodoncel.contrastPresets', 'null');
+    setup();
+    await screen.findByLabelText('Loaded FITS file');
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '' } });
+    expect(screen.getByRole('button', { name: '▶ Load' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Display' }));
+    expect(screen.getByRole('button', { name: 'Save contrast preset' })).toBeInTheDocument();
   });
 });

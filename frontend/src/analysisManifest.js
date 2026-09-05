@@ -33,7 +33,7 @@ export function buildAnalysisManifest({
         station: layer.station,
         date_utc: layer.date,
         filename: layer.filename,
-        intensity_unit: layer.intensity_unit,
+        intensity_unit: layer.unit ?? layer.intensity_unit,
         frequency_unit: 'MHz',
         time_standard: 'UTC',
         fits_provenance: selectedHeaderFields(layer.fits_header),

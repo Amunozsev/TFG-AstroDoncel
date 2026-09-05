@@ -426,7 +426,7 @@ export default function StationsMap({ onOpenStation, theme = 'dark' }) {
             onChange={(e) => setFilter(e.target.value)}
           />
 
-          <button className="map-refresh" onClick={load} title="Re-check operative status">
+          <button className="map-refresh" onClick={() => load()} title="Re-check operative status">
             ⟳
           </button>
         </div>
@@ -437,7 +437,7 @@ export default function StationsMap({ onOpenStation, theme = 'dark' }) {
         {error && (
           <div className="map-overlay map-error">
             Could not load stations: {error}
-            <button className="map-refresh" onClick={load} style={{ marginLeft: '0.6rem' }}>
+            <button className="map-refresh" onClick={() => load()} style={{ marginLeft: '0.6rem' }}>
               Retry
             </button>
           </div>

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { OBSERVATORY_COLOR_SCALE, Plot } from './plotly';
-import { apiFetch } from './api';
+import { apiFetch, apiUrl } from './api';
 
 function utcTime(value) {
   if (!value) return '—';
@@ -17,10 +17,14 @@ export default function CombinedSpectrogram({ artifactUrl, theme = 'dark' }) {
     if (!artifactUrl) return undefined;
     const controller = new AbortController();
     queueMicrotask(async () => {
+      if (controller.signal.aborted) return;
+      setResult(null);
+      setError('');
       try {
         const response = await apiFetch(artifactUrl, { signal: controller.signal });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        setResult(await response.json());
+        const data = await response.json();
+        if (!controller.signal.aborted) setResult(data);
       } catch (cause) {
         if (!controller.signal.aborted) setError(cause.message);
       }
@@ -56,7 +60,7 @@ export default function CombinedSpectrogram({ artifactUrl, theme = 'dark' }) {
             <p>{result.overlap_samples_dropped} overlapping boundary samples omitted; original UTC timestamps retained.</p>
           )}
         </div>
-        <a className="btn-tool" href={artifactUrl}>View combined data (JSON)</a>
+        <a className="btn-tool" href={apiUrl(artifactUrl)}>View combined data (JSON)</a>
       </header>
       <Plot
         data={[{

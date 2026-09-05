@@ -4,7 +4,7 @@ import { buildAnalysisManifest, downloadManifest } from './analysisManifest';
 import { describeBurstResult } from './burstResult';
 import { fileForEvent } from './eventNavigation';
 import { displayBlockTime, selectCombineBlocks } from './fileBlocks';
-import { observationPath, parseObservationSearch, writeObservationUrl } from './observationUrl';
+import { observationDateRange, observationPath, parseObservationSearch, writeObservationUrl } from './observationUrl';
 import './App.css';
 
 const Spectrogram = lazy(() => import('./Spectrogram'));
@@ -52,9 +52,7 @@ function initialTheme() {
 }
 
 function nextUtcDate(value) {
-  const parsed = new Date(`${value}T00:00:00Z`);
-  parsed.setUTCDate(parsed.getUTCDate() + 1);
-  return parsed.toISOString().slice(0, 10);
+  return observationDateRange(value)?.end ?? '';
 }
 
 function describeStationSource(source, retentionDays) {
@@ -128,7 +126,13 @@ export default function App() {
   const [zmax, setZmax]                     = useState(30);
   const [useCustomZ, setUseCustomZ]         = useState(false);
   const [contrastPresets, setContrastPresets] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('astrodoncel.contrastPresets') ?? '[]'); }
+    try {
+      const stored = JSON.parse(localStorage.getItem('astrodoncel.contrastPresets') ?? '[]');
+      return Array.isArray(stored) ? stored.filter((preset) => (
+        preset && typeof preset.name === 'string' && typeof preset.colormap === 'string'
+        && Number.isFinite(preset.zmin) && Number.isFinite(preset.zmax)
+      )).slice(-8) : [];
+    }
     catch { return []; }
   });
   const [compareMode, setCompareMode]       = useState('panels'); // 'panels' | 'overlay'
@@ -159,6 +163,25 @@ export default function App() {
   const [shareStatus, setShareStatus]       = useState('');
   const taskRunRef = useRef(0);
   const pendingUrlPushRef = useRef(false);
+  const layerRequestRef = useRef(null);
+  const detectionRequestRef = useRef(null);
+
+  useEffect(() => {
+    queueMicrotask(() => {
+      setFetchLoading(false);
+      setBurstDetecting(false);
+    });
+    return () => {
+      layerRequestRef.current?.abort();
+      detectionRequestRef.current?.abort();
+    };
+  }, [station, date, filesReloadKey]);
+
+  useEffect(() => {
+    detectionRequestRef.current?.abort();
+    queueMicrotask(() => setBurstDetecting(false));
+    return () => detectionRequestRef.current?.abort();
+  }, [triggerLoad]);
 
   const applyLinkedObservation = useCallback((observation) => {
     setHasLoaded(false);
@@ -285,12 +308,16 @@ export default function App() {
 
   // ── Reload burst list when primary station or date changes ────────────────
   const loadFiles = useCallback(async (st, dt, signal) => {
+    if (signal.aborted) return;
     setFiles([]);
     setFilesContext(null);
     setFilesError(null);
     setSelectedFile(null);
     setCollapsedHours({});
-    if (!st) return;
+    if (!st || !observationDateRange(dt)) {
+      setFilesLoading(false);
+      return;
+    }
     setFilesLoading(true);
     try {
       const res = await apiFetch(
@@ -392,6 +419,7 @@ export default function App() {
     if (selectedStations.length === 0) return;
 
     const controller = new AbortController();
+    layerRequestRef.current = controller;
     async function fetchLayers() {
       setFetchLoading(true);
       setFetchError(null);
@@ -445,6 +473,7 @@ export default function App() {
           newLayers = [await res.json()];
         }
 
+        if (controller.signal.aborted) return;
         setLayers(newLayers);
         setFailedStations(newFailed);
 
@@ -475,7 +504,7 @@ export default function App() {
 
     fetchLayers();
     return () => controller.abort();
-  }, [triggerLoad]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [triggerLoad, hasLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleLoad() {
     setHasLoaded(true);
@@ -487,8 +516,8 @@ export default function App() {
 
   function changeObservationDate(nextDate) {
     setDate(nextDate);
-    setOverviewStart(`${nextDate}T00:00`);
-    setOverviewEnd(`${nextUtcDate(nextDate)}T00:00`);
+    setOverviewStart(nextDate ? `${nextDate}T00:00` : '');
+    setOverviewEnd(nextDate ? `${nextUtcDate(nextDate)}T00:00` : '');
   }
 
   // ── Open a station from the map: select it and load its spectrograms ───────
@@ -548,22 +577,26 @@ export default function App() {
     setBurstDetecting(true);
     setBurstResults({});
     const layer = layers[0];
+    const controller = new AbortController();
+    detectionRequestRef.current?.abort();
+    detectionRequestRef.current = controller;
     try {
       const params = new URLSearchParams({
         station: layer.station,
         date: layer.date,
         filename: layer.filename,
       });
-      const res = await apiFetch(`/api/burst/detect?${params}`, { timeoutMs: 90_000 });
+      const res = await apiFetch(`/api/burst/detect?${params}`, { timeoutMs: 90_000, signal: controller.signal });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.detail ?? `Error ${res.status}`);
       }
-      setBurstResults({ [layer.station]: await res.json() });
+      const result = await res.json();
+      if (!controller.signal.aborted) setBurstResults({ [layer.station]: result });
     } catch (err) {
-      setBurstResults({ [layer.station]: { available: false, reason: err.message } });
+      if (!controller.signal.aborted) setBurstResults({ [layer.station]: { available: false, reason: err.message } });
     } finally {
-      setBurstDetecting(false);
+      if (!controller.signal.aborted) setBurstDetecting(false);
     }
   }
 
@@ -678,7 +711,8 @@ export default function App() {
   function saveContrastPreset() {
     const next = [...contrastPresets, { name: `Preset ${contrastPresets.length + 1}`, zmin, zmax, colormap }].slice(-8);
     setContrastPresets(next);
-    localStorage.setItem('astrodoncel.contrastPresets', JSON.stringify(next));
+    try { localStorage.setItem('astrodoncel.contrastPresets', JSON.stringify(next)); }
+    catch { /* Keep presets usable in memory when browser storage is unavailable. */ }
   }
 
   function applyContrastPreset(index) {
@@ -1053,7 +1087,7 @@ export default function App() {
                 {combineSelection.notice && <p className="tool-help" role="status">{combineSelection.notice}</p>}
                 {layers[0] && <>
                   <a className="btn-tool" title="Download the unmodified source observation" href={`${API_BASE_URL}/api/files/download?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename })}`}>Download original FITS</a>
-                  <a className="btn-tool" title="Export the displayed processing result and its scientific axes as FITS" href={`${API_BASE_URL}/api/spectrogram/export?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename, rfi: useSahanFilter, rfi_z_thresh: rfiParams.zThresh, rfi_occupancy: rfiParams.occupancy, rfi_min_component: rfiParams.minComponent, rfi_impulsive: rfiParams.impulsive })}`}>Export processed FITS</a>
+                  <a className="btn-tool" title="Export the displayed processing result and its scientific axes as FITS" href={`${API_BASE_URL}/api/spectrogram/export?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename, scale_mode: layers[0].scale_mode ?? 'relative', rfi: useSahanFilter, rfi_z_thresh: rfiParams.zThresh, rfi_occupancy: rfiParams.occupancy, rfi_min_component: rfiParams.minComponent, rfi_impulsive: rfiParams.impulsive })}`}>Export processed FITS</a>
                   <button className="btn-tool" type="button" onClick={copyObservationLink} title="Copy a link that opens this exact FITS block">Copy observation link</button>
                   <button className="btn-tool" type="button" onClick={exportAnalysisManifest} title="Save selected files, units, processing settings and provenance as JSON">Export analysis manifest</button>
                 </>}
@@ -1370,7 +1404,6 @@ export default function App() {
         <Spectrogram
           layers={layers}
           layerState={layerState}
-          failedStations={failedStations}
           date={date}
           showGoes={showGoes}
           colormap={colormap}
