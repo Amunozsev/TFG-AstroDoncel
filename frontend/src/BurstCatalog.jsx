@@ -1,13 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from './api';
-
-function dateRange(value, period) {
-  const start = period === 'month' ? `${value.slice(0, 7)}-01` : value;
-  const endDate = new Date(`${start}T00:00:00Z`);
-  if (period === 'month') endDate.setUTCMonth(endDate.getUTCMonth() + 1);
-  else endDate.setUTCDate(endDate.getUTCDate() + 1);
-  return { start, end: endDate.toISOString().slice(0, 10) };
-}
+import { observationDateRange } from './observationUrl';
 
 function csvCell(value) {
   const text = value == null ? '' : String(value);
@@ -25,11 +18,20 @@ export default function BurstCatalog({ onOpenEvent }) {
   const [sourceLabel, setSourceLabel] = useState('Burst Reports');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [refreshKey, setRefreshKey] = useState(0);
+  const refresh = () => setRefreshKey((value) => value + 1);
 
   const load = useCallback(async (signal) => {
+    if (signal.aborted) return;
+    const range = observationDateRange(date, period);
+    if (!range) {
+      setLoading(false);
+      setEvents([]);
+      setError('Select a valid date.');
+      return;
+    }
     setLoading(true);
     setError('');
-    const range = dateRange(date, period);
     const query = new URLSearchParams(range);
     if (type) query.set('type', type);
     if (station) query.set('station', station);
@@ -57,7 +59,7 @@ export default function BurstCatalog({ onOpenEvent }) {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [load, station]);
+  }, [load, station, refreshKey]);
 
   const formatLongitude = (value) => Number.isFinite(value) ? `${value.toFixed(1)}°` : '—';
 
@@ -95,14 +97,14 @@ export default function BurstCatalog({ onOpenEvent }) {
       </header>
       <section className="filter-bar" aria-label="Burst filters">
         <label>Period<select value={period} onChange={(event) => setPeriod(event.target.value)}><option value="day">Day</option><option value="month">Full month</option></select></label>
-        <label>{period === 'month' ? 'Month' : 'Date'}<input type={period === 'month' ? 'month' : 'date'} value={period === 'month' ? date.slice(0, 7) : date} onChange={(event) => setDate(period === 'month' ? `${event.target.value}-01` : event.target.value)} /></label>
+        <label>{period === 'month' ? 'Month' : 'Date'}<input type={period === 'month' ? 'month' : 'date'} value={period === 'month' ? date.slice(0, 7) : date} onChange={(event) => setDate(period === 'month' && event.target.value ? `${event.target.value}-01` : event.target.value)} /></label>
         <label>Type<select value={type} onChange={(event) => setType(event.target.value)}><option value="">All types</option>{availableTypes.map((value) => <option key={value}>{value}</option>)}</select></label>
         <label>Station<input value={station} onChange={(event) => setStation(event.target.value)} placeholder="Search stations…" /></label>
-        <button className="btn-primary" onClick={() => load()} disabled={loading}>{loading ? 'Loading…' : 'Refresh'}</button>
+        <button className="btn-primary" onClick={refresh} disabled={loading}>{loading ? 'Loading…' : 'Refresh'}</button>
         <button type="button" onClick={exportCsv} disabled={loading || events.length === 0}>Export CSV</button>
       </section>
       <div className="live-region" aria-live="polite">{loading ? 'Loading burst reports' : `${events.length} events found for the selected ${period}`}</div>
-      {error && <div className="page-error" role="alert">{error}<button onClick={() => load()}>Retry</button></div>}
+      {error && <div className="page-error" role="alert">{error}<button onClick={refresh}>Retry</button></div>}
       {warnings.length > 0 && <p className="page-warning">Some source months were unavailable. Cached results are shown.</p>}
       {!loading && !error && events.length === 0 ? (
         <div className="empty-card"><h2>No events found</h2><p>Try another date or remove filters.</p></div>

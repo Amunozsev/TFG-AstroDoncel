@@ -24,10 +24,14 @@ export default function DailyOverview({ artifactUrl, theme = 'dark' }) {
     if (!artifactUrl) return undefined;
     const controller = new AbortController();
     queueMicrotask(async () => {
+      if (controller.signal.aborted) return;
+      setOverview(null);
+      setError('');
       try {
         const response = await apiFetch(artifactUrl, { signal: controller.signal });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        setOverview(await response.json());
+        const data = await response.json();
+        if (!controller.signal.aborted) setOverview(data);
       } catch (cause) {
         if (!controller.signal.aborted) setError(cause.message);
       }

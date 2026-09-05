@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { createElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -10,6 +10,8 @@ import BurstCatalog from './BurstCatalog';
 import CombinedSpectrogram from './CombinedSpectrogram';
 import LightCurvePanel, { LightCurveResult } from './LightCurvePanel';
 import Statistics from './Statistics';
+import Spectrogram from './Spectrogram';
+import { apiFetch, apiUrl } from './api';
 import { buildAnalysisManifest } from './analysisManifest';
 import { describeBurstResult } from './burstResult';
 import { fileForEvent } from './eventNavigation';
@@ -34,6 +36,7 @@ vi.mock('./plotly', () => ({
       'data-hover-template': props.data?.find((trace) => trace.customdata?.length)?.hovertemplate ?? '',
       'data-trace-name': props.data?.find((trace) => trace.customdata?.length)?.name ?? '',
       'data-hover-mode': props.layout?.hovermode ?? '',
+      'data-traces': JSON.stringify(props.data),
       disabled: !customdata,
       onClick: () => (handlers.get('plotly_click') ?? props.onClick)?.({ points: [{ customdata }] }),
     });
@@ -427,7 +430,7 @@ describe('analysis panels', () => {
     expect(screen.getByText(/45\.000–80\.000 MHz/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'View combined data (JSON)' })).toHaveAttribute(
       'href',
-      '/api/tasks/combine/artifact',
+      apiUrl('/api/tasks/combine/artifact'),
     );
     expect(screen.getByTestId('plotly-chart')).toBeInTheDocument();
   });
@@ -438,7 +441,7 @@ describe('analysis panels', () => {
       station: 'MRO',
       layers: [{
         station: 'MRO', date: '2026-08-24', filename: 'MRO_20260824_120000.fit.gz',
-        intensity_unit: 'relative digits', fits_header: { 'DATE-OBS': '2026-08-24', SECRET: 'C:/private' },
+        unit: 'relative digits', fits_header: { 'DATE-OBS': '2026-08-24', SECRET: 'C:/private' },
       }],
       processing: { rfi_enabled: true },
       display: { colormap: 'viridis' },
@@ -449,6 +452,7 @@ describe('analysis panels', () => {
     expect(manifest.schema).toBe('astrodoncel.analysis-manifest.v1');
     expect(manifest.catalogue.label).toBe('Deployment-configured Burst Reports source');
     expect(manifest.selection.layers[0].fits_provenance).toEqual({ 'DATE-OBS': '2026-08-24' });
+    expect(manifest.selection.layers[0].intensity_unit).toBe('relative digits');
     expect(JSON.stringify(manifest)).not.toContain('C:/private');
   });
 
@@ -484,5 +488,57 @@ describe('analysis panels', () => {
     expect(screen.getByRole('option', { name: 'Default' })).toBeInTheDocument();
     expect(screen.getByText('45–80 MHz')).toBeInTheDocument();
     expect(screen.getByText('No observations in interval')).toBeInTheDocument();
+  });
+});
+
+describe('request cancellation and empty dates', () => {
+  it('propagates an already-aborted caller signal', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (_url, options) => {
+      expect(options.signal.aborted).toBe(true);
+      throw options.signal.reason;
+    }));
+    const controller = new AbortController();
+    controller.abort(new Error('cancelled before fetch'));
+    await expect(apiFetch('/api/stations', { signal: controller.signal })).rejects.toThrow('cancelled before fetch');
+  });
+
+  it('keeps catalogue and statistics usable when their dates are cleared', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ events: [], ranking: [], points: [], rows: [] }) }));
+    render(<BurstCatalog onOpenEvent={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '' } });
+    expect(await screen.findByRole('alert')).toHaveTextContent('Select a valid date.');
+    cleanup();
+    render(<Statistics onOpenEvent={vi.fn()} onOpenStation={vi.fn()} />);
+    fireEvent.click(screen.getByRole('tab', { name: /Network summary/ }));
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '' } });
+    expect(await screen.findByRole('alert')).toHaveTextContent('Select a valid date.');
+  });
+
+  it('does not revive GOES after the overlay has been turned off', async () => {
+    let resolve;
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => new Promise((done) => { resolve = done; })));
+    const props = {
+      layers: [{ station: 'MRO', date: '2024-01-01', filename: 'MRO_20240101_120000.fit',
+        time_axis: ['2024-01-01T12:00:00.000Z', '2024-01-01T12:00:01.000Z'], freq_axis: [80, 45], z: [[1, 2], [3, 4]] }],
+      layerState: {}, date: '2024-01-01', hasLoaded: true, triggerLoad: 1, compareMode: 'panels',
+      zmin: null, zmax: null,
+    };
+    const view = render(<Spectrogram {...props} showGoes />);
+    await waitFor(() => expect(resolve).toBeTypeOf('function'));
+    view.rerender(<Spectrogram {...props} showGoes={false} />);
+    await act(async () => resolve({ ok: true, json: async () => ({ available: true, times: props.layers[0].time_axis, xrsb: [1, 2] }) }));
+    expect(screen.getByTestId('plotly-chart').dataset.traces).not.toContain('XRS-B');
+  });
+
+  it('does not deliver a light curve after its source panel unmounts', async () => {
+    let resolve;
+    const onCurve = vi.fn();
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => new Promise((done) => { resolve = done; })));
+    const view = render(<LightCurvePanel embedded onCurve={onCurve} layer={{ station: 'MRO', date: '2024-01-01', filename: 'MRO_20240101_120000.fit' }} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Plot light curve' }));
+    view.unmount();
+    await act(async () => resolve({ ok: true, json: async () => ({ times: [], curves: [] }) }));
+    expect(onCurve).not.toHaveBeenCalled();
   });
 });

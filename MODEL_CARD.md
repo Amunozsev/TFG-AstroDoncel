@@ -4,7 +4,7 @@
 
 The bundled model screens e-CALLISTO spectrograms for binary burst/no-burst candidates. Its output is an experimental aid for expert review, not an authoritative event classification, an alerting system, or a replacement for the official catalogue.
 
-AstroDoncel never infers a solar-burst type from this network. A temporally matched official type is stored only as catalogue cross-match metadata.
+AstroDoncel never infers a solar-burst type from this network. Official catalogue types remain separate from the file-level detection response.
 
 ## Bundle identity
 
@@ -22,7 +22,7 @@ The API returns the effective threshold, candidate threshold, model version, ONN
 
 The versioned `runtime_config.json` defines the contract: non-negative `log1p`, running 0.2-quantile background with a 121-sample window, robust normalization per frequency, RFI mitigation, clipping to `[-6, 12]`, non-overlapping 128×128 windows and top-8 mean MIL pooling. Event postprocessing uses a smoothing kernel of 5 and at least 3 event windows.
 
-The `visual_fallback` / `visual_candidate` localizer is a separate heuristic. Persisted events from it use `source=heuristic_visual`; CNN-window events use `source=ml_cnn`.
+The `visual_fallback` / `visual_candidate` localizer is a separate heuristic, identified by `event_source` and `localization_method`. Current-file detections are returned to the browser; this endpoint does not persist them in the catalogue.
 
 ## Metrics supplied with the upstream bundle
 

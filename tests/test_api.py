@@ -6,7 +6,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
+import numpy as np
 import pytest
+from astropy.io import fits
 from fastapi.testclient import TestClient
 
 from backend import api_features
@@ -21,6 +23,88 @@ client = TestClient(app)
 def test_health():
     response = client.get("/health")
     assert response.status_code == 200
+
+
+@pytest.mark.parametrize("value", [None, 42, {}, ["MRO"]])
+def test_overview_rejects_non_string_station_entries(value):
+    response = client.post("/api/tasks", json={
+        "type": "spectral_overview", "station": "MRO", "date": "2024-01-01",
+        "options": {"stations": [value]},
+    })
+    assert response.status_code == 422
+
+
+def test_overview_rejects_non_canonical_date():
+    response = client.post("/api/tasks", json={
+        "type": "spectral_overview", "station": "MRO", "date": "2024-1-1",
+    })
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+@pytest.mark.parametrize("endpoint", ["/api/spectrogram", "/api/spectrogram/combine"])
+def test_spectrogram_rejects_non_positive_bin_limit(endpoint, limit, monkeypatch):
+    monkeypatch.setattr(core, "_build_spectrogram", lambda *_args, **_kwargs: pytest.fail("Invalid bins reached processing"))
+    response = client.get(endpoint, params={
+        "station": "MRO", "stations": "MRO", "date": "2024-01-01", "max_time_bins": limit,
+    })
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("frequency", ["nan", "inf", "-inf"])
+def test_lightcurve_rejects_non_finite_frequency_before_file_access(frequency, monkeypatch):
+    monkeypatch.setattr(api_features, "_resolve_file", lambda *_args: pytest.fail("Invalid frequency reached FITS I/O"))
+    response = client.get("/api/lightcurve", params={
+        "station": "MRO", "date": "2024-01-01", "filename": "MRO_20240101_120000.fit", "freq_mhz": frequency,
+    })
+    assert response.status_code == 422
+
+
+def test_selected_nas_file_works_without_remote_archive(tmp_path, monkeypatch):
+    archive = tmp_path / "archive"
+    folder = archive / "2024" / "01" / "01"
+    folder.mkdir(parents=True)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    filename = "MRO_20240101_120000.fit"
+    fits.PrimaryHDU(np.arange(12).reshape(3, 4), header=fits.Header({
+        "DATE-OBS": "2024-01-01", "TIME-OBS": "12:00:00",
+        "CRVAL1": 0, "CDELT1": 0.25, "CRVAL2": 80, "CDELT2": -10,
+    })).writeto(folder / filename)
+    monkeypatch.setattr(core, "DATA_DIR_LOCAL", str(cache))
+    monkeypatch.setattr(core, "ECALLISTO_DATA_DIR", str(archive))
+    monkeypatch.setattr(core, "_list_ethz_files", lambda *_args: [])
+    monkeypatch.setattr(core, "_FILES_CACHE", {})
+    monkeypatch.setattr(core, "urlopen", lambda *_args, **_kwargs: pytest.fail("NAS file triggered a download"))
+    assert filename in [entry["filename"] for entry in client.get(
+        "/api/files", params={"station": "MRO", "date": "2024-01-01"},
+    ).json()["files"]]
+    response = client.get("/api/files/download", params={"station": "MRO", "date": "2024-01-01", "filename": filename})
+    assert response.status_code == 200
+    assert response.content == (folder / filename).read_bytes()
+    assert list(cache.iterdir()) == []
+
+
+def test_detector_response_retains_model_provenance(monkeypatch):
+    from backend import burst_detect
+
+    monkeypatch.setattr(burst_detect, "is_available", lambda: (True, ""))
+    monkeypatch.setattr(core, "_download_from_ethz", lambda *_args, **_kwargs: "synthetic.fit")
+    monkeypatch.setattr(core, "_load_raw_cached", lambda *_args: (
+        np.ones((2, 3)), np.array([80, 45]), np.arange(3), {"DATE-OBS": "2024-01-01"},
+    ))
+    result = {
+        "file_score": 0.8, "threshold": 0.6, "events": [], "inference_ms": 1,
+        "model_sha256": "a" * 64, "inference_method": "cnn_mil_onnx",
+        "localization_method": "sahan_window_postprocess", "bundle_name": "test-bundle",
+    }
+    monkeypatch.setattr(burst_detect, "detect_bursts", lambda *_args: result)
+    response = client.get("/api/burst/detect", params={
+        "station": "MRO", "date": "2024-01-01", "filename": "MRO_20240101_120000.fit",
+    })
+    assert response.status_code == 200
+    for key in ("model_sha256", "inference_method", "localization_method", "bundle_name"):
+        assert response.json()[key] == result[key]
 
 
 def test_file_path_is_gone():

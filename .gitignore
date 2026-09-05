@@ -63,6 +63,10 @@ frontend/public/datos_prueba.json
 /.private/
 /local-notes/
 
+# Memoria academica local; no se publica con el codigo
+/memoria/
+/MEMORIA_BORRADOR.*
+
 # Pesos fuente para desarrollo ML; producción usa el modelo ONNX
 /backend/model/burst_detector/*.pt
 

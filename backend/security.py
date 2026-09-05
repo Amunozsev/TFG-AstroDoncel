@@ -15,6 +15,8 @@ FITS_FILENAME_RE = re.compile(
 
 
 def validate_station(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError("Invalid station identifier")
     station = value.strip()
     if station != value or not STATION_RE.fullmatch(station):
         raise ValueError("Invalid station identifier")
@@ -22,12 +24,14 @@ def validate_station(value: str) -> str:
 
 
 def validate_date(value: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise ValueError("Dates must use ISO format YYYY-MM-DD")
     datetime.strptime(value, "%Y-%m-%d")
     return value
 
 
 def validate_fits_filename(value: str) -> str:
-    if value != os.path.basename(value) or not FITS_FILENAME_RE.fullmatch(value):
+    if not isinstance(value, str) or value != os.path.basename(value) or not FITS_FILENAME_RE.fullmatch(value):
         raise ValueError("Invalid CALLISTO FITS filename")
     stamp = re.search(r"_(\d{8})_(\d{6})(?:_|\.)", value)
     try:

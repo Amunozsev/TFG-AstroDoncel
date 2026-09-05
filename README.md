@@ -588,5 +588,4 @@ proyectos de referencia y la documentación interna no forman parte del código
 público y no deben añadirse al repositorio.
 
 El funcionamiento operativo está resumido en
-[`MANUAL_MANTENIMIENTO.md`](MANUAL_MANTENIMIENTO.md) y el texto académico de
-partida en [`MEMORIA_BORRADOR.md`](MEMORIA_BORRADOR.md).
+[`MANUAL_MANTENIMIENTO.md`](MANUAL_MANTENIMIENTO.md).

@@ -21,7 +21,6 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 import numpy as np
@@ -509,6 +508,10 @@ class BurstDetectResponse(BaseModel):
     available: bool
     reason: str = ""
     model_version: str | None = None
+    bundle_name: str | None = None
+    model_sha256: str | None = None
+    inference_method: str | None = None
+    localization_method: str | None = None
     threshold: float | None = None
     candidate_threshold: float | None = None
     file_score: float | None = None
@@ -578,37 +581,46 @@ class FilesResponse(BaseModel):
 
 def _find_local_fits_file(station: str, date: str) -> str | None:
     """Search the local cache by exact station token and observation date."""
-    if not os.path.isdir(DATA_DIR_LOCAL):
-        return None
-    # Match by station + specific date
-    try:
-        dt = datetime.strptime(date, "%Y-%m-%d")
-        date_str = dt.strftime("%Y%m%d")
-        for ext in (".fit.gz", ".fits.gz", ".fit", ".fits"):
-            matches = glob.glob(os.path.join(DATA_DIR_LOCAL, f"{station.upper()}_{date_str}_*{ext}"))
-            if matches:
-                return sorted(matches)[0]
-    except ValueError:
-        pass
-    return None
+    files = _fits_in_directory(DATA_DIR_LOCAL, station, date)
+    return safe_join(DATA_DIR_LOCAL, files[0]) if files else None
 
 
-def _find_nas_fits_file(station: str, date: str) -> str | None:
-    """Search NAS structure at ECALLISTO_DATA_DIR/YYYY/MM/DD/."""
-    try:
-        dt = datetime.strptime(date, "%Y-%m-%d")
-    except ValueError:
-        return None
-    date_dir = os.path.join(
-        ECALLISTO_DATA_DIR, dt.strftime("%Y"), dt.strftime("%m"), dt.strftime("%d")
-    )
-    if not os.path.isdir(date_dir):
-        return None
+def _nas_date_directory(date: str) -> str:
+    validate_date(date)
+    root = os.path.realpath(ECALLISTO_DATA_DIR)
+    date_dir = os.path.realpath(os.path.join(root, *date.split("-")))
+    if os.path.commonpath((root, date_dir)) != root:
+        raise ValueError("Resolved archive directory escapes the configured root")
+    return date_dir
+
+
+def _fits_in_directory(root: str, station: str, date: str) -> list[str]:
+    station = validate_station(station)
+    validate_date(date)
+    # Keep the established compressed-first preference for automatic selection.
+    found = []
     for ext in (".fit.gz", ".fits.gz", ".fit", ".fits"):
-        matches = glob.glob(os.path.join(date_dir, f"{station.upper()}_*{ext}"))
-        if matches:
-            return sorted(matches)[0]
-    return None
+        for path in sorted(glob.glob(os.path.join(root, f"{station.upper()}_{date.replace('-', '')}_*{ext}"))):
+            name = os.path.basename(path)
+            try:
+                validate_filename_context(name, station, date)
+                if os.path.isfile(safe_join(root, name)):
+                    found.append(name)
+            except ValueError:
+                continue
+    return found
+
+
+def _find_nas_fits_file(station: str, date: str, filename: str | None = None) -> str | None:
+    """Resolve only a validated observation inside the read-only NAS archive."""
+    date_dir = _nas_date_directory(date)
+    if filename is not None:
+        path = safe_join(date_dir, validate_filename_context(filename, station, date))
+        return path if os.path.isfile(path) else None
+    files = _fits_in_directory(date_dir, station, date)
+    if not files:
+        return None
+    return safe_join(date_dir, files[0])
 
 
 def _time_from_filename(filename: str) -> str:
@@ -628,21 +640,11 @@ def _focus_code_from_filename(filename: str) -> str | None:
 
 
 def _list_local_fits_files(station: str, date: str) -> list[str]:
-    """Return locally cached filenames for the given station/date."""
-    if not os.path.isdir(DATA_DIR_LOCAL):
-        return []
-    try:
-        dt = datetime.strptime(date, "%Y-%m-%d")
-        date_str = dt.strftime("%Y%m%d")
-    except ValueError:
-        return []
-    found: list[str] = []
-    for ext in (".fit.gz", ".fits.gz", ".fit", ".fits"):
-        for path in glob.glob(
-            os.path.join(DATA_DIR_LOCAL, f"{station.upper()}_{date_str}_*{ext}")
-        ):
-            found.append(os.path.basename(path))
-    return sorted(set(found))
+    """List validated observations in the cache and optional NAS archive."""
+    return sorted(set(
+        _fits_in_directory(DATA_DIR_LOCAL, station, date)
+        + _fits_in_directory(_nas_date_directory(date), station, date)
+    ))
 
 
 _ARCHIVE_DAY_CACHE: dict[str, tuple[float, dict[str, list[str]]]] = {}
@@ -691,6 +693,10 @@ def _archive_inventory_for_date(date: str) -> dict[str, list[str]]:
             station = _station_from_filename(filename)
             if station is None or f"_{expected_date}_" not in filename.upper():
                 continue
+            try:
+                validate_filename_context(filename, station, date)
+            except ValueError:
+                continue
             inventory.setdefault(station, []).append(filename)
         inventory = {
             station: sorted(set(filenames))
@@ -711,7 +717,7 @@ def _list_ethz_files(station: str, date: str) -> list[str]:
 
 
 def _download_from_ethz(station: str, date: str, filename: str | None = None) -> str | None:
-    """Download a FITS file from the ETHZ archive.
+    """Resolve the cache/NAS first, then download a missing FITS from ETHZ.
 
     If `filename` is given, downloads that specific file.
     Otherwise, downloads the first file matching station/date.
@@ -737,6 +743,9 @@ def _download_from_ethz(station: str, date: str, filename: str | None = None) ->
             if os.path.isfile(local_path):
                 logger.info("File already cached: %s", local_path)
                 return local_path
+            nas_path = _find_nas_fits_file(station, date, filename)
+            if nas_path:
+                return nas_path
             file_url = dir_url + filename
             temporary_path = f"{local_path}.{uuid.uuid4().hex}.part"
             max_bytes = int(os.environ.get("MAX_FITS_DOWNLOAD_BYTES", str(128 * 1024 * 1024)))
@@ -771,26 +780,10 @@ def _download_from_ethz(station: str, date: str, filename: str | None = None) ->
                     pass
                 return None
 
-    # No filename: inspect the directory to find the first matching file
-    logger.info("Querying ETHZ archive: %s", dir_url)
-    try:
-        req = Request(dir_url, headers={"User-Agent": USER_AGENT})
-        with urlopen(req, timeout=15) as resp:
-            page = resp.read().decode("utf-8", errors="replace")
-    except URLError as exc:
-        logger.warning("Could not reach ETHZ archive: %s", exc)
-        return None
-
-    date_str = dt.strftime("%Y%m%d")
-    # Permissive: matches with or without trailing _NN, and .fit/.fits/.fit.gz/.fits.gz
-    prefix_re = re.compile(
-        r'href="(' + re.escape(station.upper()) + r'_' + date_str + r'_\d{6}.*?\.fits?(?:\.gz)?)"',
-        re.IGNORECASE,
-    )
-    matches = sorted(set(prefix_re.findall(page)))
-    if not matches:
-        all_files = re.findall(r'href="([^"]+\.fits?(?:\.gz)?)"', page, re.IGNORECASE)
-        matches = sorted(c for c in all_files if html.unescape(c).upper().startswith(station.upper() + "_"))
+    local = _find_local_fits_file(station, date) or _find_nas_fits_file(station, date)
+    if local:
+        return local
+    matches = _list_ethz_files(station, date)
     if not matches:
         logger.warning("No files for '%s' in ETHZ on %s", station, date)
         return None
@@ -915,7 +908,7 @@ def _load_callisto_data(hdul) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     time = np.asarray(time, dtype=float).ravel()
 
     # Fix transposition: data must be (n_freq, n_time)
-    if data.shape == (len(time), len(freqs)):
+    if data.shape != (len(freqs), len(time)) and data.shape == (len(time), len(freqs)):
         data = data.T
         logger.debug("Transposed axes detected and corrected")
     elif data.shape != (len(freqs), len(time)):
@@ -938,7 +931,7 @@ def _observation_start(header) -> datetime:
     if "T" in date_obs:
         try:
             base = datetime.fromisoformat(date_obs.replace("Z", "+00:00"))
-            return base if base.tzinfo else base.replace(tzinfo=timezone.utc)
+            return base.astimezone(timezone.utc) if base.tzinfo else base.replace(tzinfo=timezone.utc)
         except Exception:
             pass
 
@@ -946,7 +939,8 @@ def _observation_start(header) -> datetime:
     date_part = date_obs.split("T")[0]
     time_part = time_obs if time_obs else "00:00:00"
     try:
-        return datetime.fromisoformat(f"{date_part}T{time_part}").replace(tzinfo=timezone.utc)
+        base = datetime.fromisoformat(f"{date_part}T{time_part}")
+        return base.astimezone(timezone.utc) if base.tzinfo else base.replace(tzinfo=timezone.utc)
     except Exception:
         return datetime(1970, 1, 1, tzinfo=timezone.utc)
 
@@ -1161,7 +1155,11 @@ def _percentile_clip_global(data: np.ndarray, lo: float = 2.0, hi: float = 98.0)
     # Request both bounds together so NumPy performs one order-statistics pass.
     # This follows the v2.8.0 playback/row-statistics optimisation from Sahan's
     # analyzer while keeping AstroDoncel's established 2–98 % display contract.
-    vmin, vmax = np.nanpercentile(np.asarray(data), [lo, hi])
+    values = np.asarray(data)
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return 0.0, 1.0
+    vmin, vmax = np.percentile(finite, [lo, hi])
     return float(vmin), float(vmax)
 
 
@@ -1267,26 +1265,23 @@ def _decimate_time(
     by taking the first label of each block (the block-start timestamp).
     """
     n_cols = data.shape[1]
+    if max_cols < 1:
+        raise ValueError("max_cols must be positive")
     if n_cols <= max_cols:
         return data, time_labels
-    k = max(1, n_cols // max_cols)
-    n_trim = (n_cols // k) * k
-    decimated = data[:, :n_trim].reshape(data.shape[0], n_trim // k, k).mean(axis=2)
-    dec_labels = time_labels[::k][: n_trim // k]
+    k = (n_cols + max_cols - 1) // max_cols
+    n_full = (n_cols // k) * k
+    decimated = data[:, :n_full].reshape(data.shape[0], n_full // k, k).mean(axis=2)
+    if n_full < n_cols:
+        decimated = np.concatenate((decimated, data[:, n_full:].mean(axis=1, keepdims=True)), axis=1)
+    dec_labels = time_labels[::k]
     return decimated, dec_labels
 
 
 def _parse_utc(s: str) -> datetime:
     """Parse an ISO-8601 / Plotly date string to an aware UTC datetime."""
-    s = s.strip().replace(" ", "T").rstrip("Z")
-    # Strip explicit timezone offset if present (assume UTC)
-    s = re.sub(r"[+-]\d{2}:\d{2}$", "", s)
-    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
-        except ValueError:
-            continue
-    raise ValueError(f"Cannot parse timestamp: {s!r}")
+    parsed = datetime.fromisoformat(s.strip().replace("Z", "+00:00"))
+    return parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 # ── Single-station pipeline helper ───────────────────────────────────────────
@@ -1316,22 +1311,13 @@ def _build_spectrogram(
     validate_date(date)
     if filename:
         filename = validate_filename_context(filename, station, date)
-        local_path = safe_join(DATA_DIR_LOCAL, filename)
-        if os.path.isfile(local_path):
-            fits_path = local_path
-            logger.info("Using locally cached file: %s", fits_path)
-        else:
-            fits_path = _download_from_ethz(station, date, filename=filename)
+        fits_path = _download_from_ethz(station, date, filename=filename)
         if not fits_path:
             raise FileNotFoundError(
                 f"Could not retrieve '{filename}' for '{station}' on {date}."
             )
     else:
-        fits_path = (
-            _find_local_fits_file(station, date)
-            or _find_nas_fits_file(station, date)
-            or _download_from_ethz(station, date)
-        )
+        fits_path = _download_from_ethz(station, date)
         if not fits_path:
             raise FileNotFoundError(
                 f"No file found for station '{station}' on {date}. "
@@ -1371,11 +1357,7 @@ def _build_spectrogram(
                 len(rfi_masked), 100.0 * rfi_stats.get("masked_fraction", 0.0),
             )
 
-        finite_vals = data[np.isfinite(data)]
-        if finite_vals.size == 0:
-            vmin, vmax = 0.0, 1.0
-        else:
-            vmin, vmax = _percentile_clip_global(data.astype(float))
+        vmin, vmax = _percentile_clip_global(data.astype(float))
 
         data_out = np.nan_to_num(
             np.array(data, dtype=float),
@@ -1801,7 +1783,7 @@ def get_spectrogram(
     filename: str = Query(default=None, description="Specific FITS filename"),
     file_path: str | None = Query(default=None, deprecated=True, include_in_schema=False),
     sahan_filter: bool = Query(default=False, description="Apply full RFI cleaning"),
-    max_time_bins: int = Query(default=None, description="Decimate time axis to at most N columns (overview mode)"),
+    max_time_bins: int = Query(default=None, ge=1, description="Decimate time axis to at most N columns (overview mode)"),
     rfi_z_thresh: float = Query(default=6.0, ge=0.5, le=20.0, description="RFI robust z-score threshold"),
     rfi_occupancy: float = Query(default=0.15, ge=0.01, le=1.0, description="RFI channel occupancy threshold"),
     rfi_min_component: int = Query(default=9, ge=1, le=500, description="Min connected-component size for impulsive RFI"),
@@ -1855,7 +1837,7 @@ async def get_spectrogram_combine(
     stations: list[str] = Query(..., description="Station names to combine"),
     filename: str = Query(default=None, description="Primary station filename for 15-min block sync"),
     sahan_filter: bool = Query(default=False, description="Apply full RFI cleaning"),
-    max_time_bins: int = Query(default=None, description="Decimate time axis to at most N columns (overview mode)"),
+    max_time_bins: int = Query(default=None, ge=1, description="Decimate time axis to at most N columns (overview mode)"),
     rfi_z_thresh: float = Query(default=6.0, ge=0.5, le=20.0),
     rfi_occupancy: float = Query(default=0.15, ge=0.01, le=1.0),
     rfi_min_component: int = Query(default=9, ge=1, le=500),
@@ -1946,7 +1928,8 @@ async def get_spectrogram_combine(
             return st, result, None
         except Exception as exc:
             logger.warning("combine: %s failed: %s", st, exc)
-            return st, None, str(exc)
+            reason = str(exc) if isinstance(exc, FileNotFoundError) else "FITS processing failed; inspect server logs using the request id"
+            return st, None, reason
 
     # Primary station gets the exact filename; secondaries get HHMM sync
     tasks = [
@@ -2100,11 +2083,7 @@ def get_spectrogram_zoom(
                 impulsive=rfi_impulsive,
             )
 
-        finite_vals = data_proc[np.isfinite(data_proc)]
-        if finite_vals.size == 0:
-            vmin, vmax = 0.0, 1.0
-        else:
-            vmin, vmax = _percentile_clip_global(data_proc.astype(float))
+        vmin, vmax = _percentile_clip_global(data_proc.astype(float))
 
         data_out = np.nan_to_num(
             np.array(data_proc, dtype=float),
@@ -2379,7 +2358,7 @@ async def get_goes(date: str = Query(..., description="Date YYYY-MM-DD")):
         return GoesResponse(
             date=date,
             available=False,
-            reason=str(exc),
+            reason="GOES/XRS data are temporarily unavailable for this date; inspect server logs using the request id",
             times=[],
             xrsb=[],
             satellite=None,

@@ -24,5 +24,14 @@ backend/model/burst_detector/model.pt
 .pytest_cache
 .ruff_cache
 .env
+.env.*
+!.env.example
+.private
+local-notes
+memoria
+docs
+e-Callisto_FITS_Analyzer-master
+ecallistolib-main
+sahan
 *.log
 *.md

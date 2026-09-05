@@ -3,7 +3,9 @@
 import gzip
 import json
 import os
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -15,6 +17,133 @@ from backend import worker
 from backend.db import SessionLocal, TaskRecord, init_db
 from backend.security import fits_focus_code, validate_combine_filenames
 from backend.worker import recover_stale_tasks
+
+
+def test_two_sqlite_workers_do_not_execute_the_same_queued_task(monkeypatch):
+    task_id = str(uuid.uuid4())
+    with SessionLocal() as session:
+        session.add(TaskRecord(id=task_id, task_type="test_claim", status="queued", payload={}))
+        session.commit()
+    selected = threading.Barrier(2)
+    original_scalar = SessionLocal.class_.scalar
+    executions = []
+
+    def scalar(session, statement, *args, **kwargs):
+        result = original_scalar(session, statement, *args, **kwargs)
+        if statement._for_update_arg is not None:
+            selected.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(SessionLocal.class_, "scalar", scalar)
+    monkeypatch.setitem(worker.HANDLERS, "test_claim", lambda task: executions.append(task.id) or {"files": 1})
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: worker.run_once(), range(2)))
+        assert sorted(results) == [False, True]
+        assert executions == [task_id]
+        with SessionLocal() as session:
+            task = session.get(TaskRecord, task_id)
+            assert task.status == "succeeded"
+            assert task.attempts == 1
+    finally:
+        with SessionLocal() as session:
+            session.delete(session.get(TaskRecord, task_id))
+            session.commit()
+
+
+def test_cancellation_between_final_checkpoint_and_result_publication(monkeypatch):
+    task_id = str(uuid.uuid4())
+    with SessionLocal() as session:
+        session.add(TaskRecord(id=task_id, task_type="test_late_cancel", status="queued", payload={}))
+        session.commit()
+    original_update = worker._update
+
+    def update(task_id, **values):
+        if values.get("status") == "succeeded":
+            response = TestClient(core.app).post(f"/api/tasks/{task_id}/cancel")
+            assert response.json()["status"] == "cancel_requested"
+        original_update(task_id, **values)
+
+    monkeypatch.setattr(worker, "_update", update)
+    monkeypatch.setitem(worker.HANDLERS, "test_late_cancel", lambda _: {"files": 1})
+    try:
+        assert worker.run_once()
+        with SessionLocal() as session:
+            task = session.get(TaskRecord, task_id)
+            assert task.status == "cancelled"
+            assert task.result is None
+    finally:
+        with SessionLocal() as session:
+            session.delete(session.get(TaskRecord, task_id))
+            session.commit()
+
+
+def test_retention_removes_late_cancelled_artifact_only(tmp_path, monkeypatch):
+    task_id = str(uuid.uuid4())
+    with SessionLocal() as session:
+        session.add(TaskRecord(
+            id=task_id, task_type="combine_time", status="cancelled", payload={}, result=None,
+            updated_at=datetime.now(timezone.utc) - timedelta(days=40),
+        ))
+        session.commit()
+    artifact = tmp_path / f"{task_id}.json.gz"
+    artifact.write_bytes(b"cancelled result")
+    unrelated = tmp_path / "preserved.json.gz"
+    unrelated.write_bytes(b"unrelated result")
+    monkeypatch.setattr(worker, "RESULT_DIR", str(tmp_path))
+    assert worker.cleanup_completed_tasks(retention_days=30) == 1
+    assert not artifact.exists()
+    assert unrelated.read_bytes() == b"unrelated result"
+    with SessionLocal() as session:
+        assert session.get(TaskRecord, task_id) is None
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_worker_honours_cancellation_during_handler(monkeypatch, failure):
+    task_id = str(uuid.uuid4())
+    with SessionLocal() as session:
+        session.add(TaskRecord(id=task_id, task_type="test_cancel", status="queued", payload={}))
+        session.commit()
+
+    def handler(task):
+        response = TestClient(core.app).post(f"/api/tasks/{task.id}/cancel")
+        assert response.status_code == 202
+        if failure:
+            raise OSError("C:/private/cache: disk failure")
+        return {"files": 2}
+
+    monkeypatch.setitem(worker.HANDLERS, "test_cancel", handler)
+    try:
+        assert worker.run_once()
+        with SessionLocal() as session:
+            stored = session.get(TaskRecord, task_id)
+            assert stored.status == "cancelled"
+            assert stored.result is None
+    finally:
+        with SessionLocal() as session:
+            session.delete(session.get(TaskRecord, task_id))
+            session.commit()
+
+
+def test_worker_does_not_publish_internal_error_paths(monkeypatch):
+    task_id = str(uuid.uuid4())
+    with SessionLocal() as session:
+        session.add(TaskRecord(id=task_id, task_type="test_private", status="queued", payload={}, max_attempts=1))
+        session.commit()
+
+    def handler(_task):
+        raise OSError("C:/private/cache: disk failure")
+
+    monkeypatch.setitem(worker.HANDLERS, "test_private", handler)
+    try:
+        assert worker.run_once()
+        response = TestClient(core.app).get(f"/api/tasks/{task_id}")
+        assert response.json()["status"] == "failed"
+        assert "C:/private" not in response.text
+    finally:
+        with SessionLocal() as session:
+            session.delete(session.get(TaskRecord, task_id))
+            session.commit()
 
 
 def test_stale_running_task_is_requeued():

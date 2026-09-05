@@ -83,6 +83,15 @@ export default function LightCurvePanel({ layer, theme = 'dark', embedded = fals
   const [frequency, setFrequency] = useState('45');
   const [data, setData] = useState(null);
   const [status, setStatus] = useState('');
+  const requestRef = useRef(null);
+
+  useEffect(() => {
+    queueMicrotask(() => {
+      setData(null);
+      setStatus('');
+    });
+    return () => requestRef.current?.abort();
+  }, [layer?.station, layer?.date, layer?.filename]);
 
   async function load() {
     if (!layer) return;
@@ -95,6 +104,10 @@ export default function LightCurvePanel({ layer, theme = 'dark', embedded = fals
       return;
     }
 
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
+
     setStatus('Loading light curve…');
     const params = new URLSearchParams({
       station: layer.station,
@@ -104,9 +117,10 @@ export default function LightCurvePanel({ layer, theme = 'dark', embedded = fals
     frequencies.forEach((value) => params.append('freq_mhz', String(value)));
 
     try {
-      const response = await apiFetch(`/api/lightcurve?${params}`);
+      const response = await apiFetch(`/api/lightcurve?${params}`, { signal: controller.signal });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const payload = await response.json();
+      if (controller.signal.aborted) return;
       const result = {
         data: payload,
         source: { station: layer.station, date: layer.date, filename: layer.filename },
@@ -115,11 +129,12 @@ export default function LightCurvePanel({ layer, theme = 'dark', embedded = fals
       onCurve?.(result);
       setStatus(onCurve ? 'Curve displayed below the spectrogram.' : '');
     } catch (cause) {
-      setStatus(`Could not load curve: ${cause.message}`);
+      if (!controller.signal.aborted) setStatus(`Could not load curve: ${cause.message}`);
     }
   }
 
   function close() {
+    requestRef.current?.abort();
     setData(null);
     setStatus('');
   }
@@ -146,7 +161,7 @@ export default function LightCurvePanel({ layer, theme = 'dark', embedded = fals
             onClick={load}
             disabled={!layer}
             aria-expanded={Boolean(data)}
-            aria-controls="lightcurve-plot"
+            aria-controls="lightcurve-result"
           >
             Plot light curve
           </button>

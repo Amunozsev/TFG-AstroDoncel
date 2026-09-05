@@ -2,15 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Plot } from './plotly';
 import { apiFetch } from './api';
 import { expandXmatchRows } from './xmatch';
+import { observationDateRange } from './observationUrl';
 const today = () => new Date().toISOString().slice(0, 10);
-
-function rangeFor(period, date) {
-  const start = period === 'month' ? `${date.slice(0, 7)}-01` : date;
-  const parsed = new Date(`${start}T00:00:00Z`);
-  if (period === 'month') parsed.setUTCMonth(parsed.getUTCMonth() + 1);
-  else parsed.setUTCDate(parsed.getUTCDate() + 1);
-  return { start, end: parsed.toISOString().slice(0, 10) };
-}
 
 export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' }) {
   const [activeView, setActiveView] = useState('xmatch');
@@ -27,13 +20,21 @@ export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' 
   const [xmatchLoading, setXmatchLoading] = useState(false);
   const [xmatchError, setXmatchError] = useState('');
   const openEventPointRef = useRef(null);
-  const range = useMemo(() => rangeFor(period, date), [date, period]);
+  const range = useMemo(() => observationDateRange(date, period), [date, period]);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const refresh = () => setRefreshKey((value) => value + 1);
 
   const load = useCallback(async (signal) => {
+    if (signal.aborted) return;
     setLoading(true);
     setError('');
     setRanking([]);
     setTimeline([]);
+    if (!range) {
+      setLoading(false);
+      setError('Select a valid date.');
+      return;
+    }
     try {
       const params = new URLSearchParams(range);
       const [rankingResponse, timelineResponse] = await Promise.all([
@@ -55,9 +56,15 @@ export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' 
   }, [range]);
 
   const loadXmatch = useCallback(async (signal) => {
+    if (signal.aborted) return;
     setXmatchLoading(true);
     setXmatchError('');
     setXmatch(null);
+    if (!observationDateRange(xmatchDate)) {
+      setXmatchLoading(false);
+      setXmatchError('Select a valid date.');
+      return;
+    }
     try {
       const response = await apiFetch(
         `/api/xmatch/timeline?date=${encodeURIComponent(xmatchDate)}`,
@@ -78,13 +85,13 @@ export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' 
     const controller = new AbortController();
     queueMicrotask(() => load(controller.signal));
     return () => controller.abort();
-  }, [activeView, load]);
+  }, [activeView, load, refreshKey]);
   useEffect(() => {
     if (activeView !== 'xmatch') return undefined;
     const controller = new AbortController();
     queueMicrotask(() => loadXmatch(controller.signal));
     return () => controller.abort();
-  }, [activeView, loadXmatch]);
+  }, [activeView, loadXmatch, refreshKey]);
 
   const max = Math.max(1, ...ranking.map((item) => item.count));
   const timelineMax = Math.max(1, ...timeline.map((item) => item.count));
@@ -209,11 +216,11 @@ export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' 
           <div className="stats-controls">
             <label>Date<input type="date" value={xmatchDate} onChange={(event) => setXmatchDate(event.target.value)} /></label>
             <label>Stations<select value={xmatchFilter} onChange={(event) => setXmatchFilter(event.target.value)}><option value="all">All stations</option><option value="positive">Positive only</option></select></label>
-            <button type="button" onClick={() => loadXmatch()} disabled={xmatchLoading}>{xmatchLoading ? 'Loading…' : 'Refresh'}</button>
+            <button type="button" onClick={refresh} disabled={xmatchLoading}>{xmatchLoading ? 'Loading…' : 'Refresh'}</button>
           </div>
         </header>
         <div className="live-region" aria-live="polite">{xmatchLoading ? 'Loading Xmatch timeline' : `${xmatchRows.length} receiver rows shown in Xmatch`}</div>
-        {xmatchError && <div className="page-error" role="alert">{xmatchError}<button onClick={() => loadXmatch()}>Retry</button></div>}
+        {xmatchError && <div className="page-error" role="alert">{xmatchError}<button onClick={refresh}>Retry</button></div>}
         {!xmatchLoading && !xmatchError && xmatchRows.length === 0 && <p className="empty-inline">No receiver rows match this filter for the selected day.</p>}
         {xmatchRows.length > 0 && (
           <>
@@ -275,12 +282,12 @@ export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' 
           </div>
           <div className="stats-controls">
             <label>Period<select value={period} onChange={(event) => setPeriod(event.target.value)}><option value="day">Day</option><option value="month">Month</option></select></label>
-            <label>Date<input type={period === 'month' ? 'month' : 'date'} value={period === 'month' ? date.slice(0, 7) : date} onChange={(event) => setDate(period === 'month' ? `${event.target.value}-01` : event.target.value)} /></label>
-            <button type="button" onClick={() => load()} disabled={loading}>{loading ? 'Loading…' : 'Refresh'}</button>
+            <label>Date<input type={period === 'month' ? 'month' : 'date'} value={period === 'month' ? date.slice(0, 7) : date} onChange={(event) => setDate(period === 'month' && event.target.value ? `${event.target.value}-01` : event.target.value)} /></label>
+            <button type="button" onClick={refresh} disabled={loading}>{loading ? 'Loading…' : 'Refresh'}</button>
           </div>
         </div>
         <div className="live-region" aria-live="polite">{loading ? 'Loading network summary' : `${ranking.length} stations in the ranking`}</div>
-        {error && <div className="page-error" role="alert">{error}<button onClick={() => load()}>Retry</button></div>}
+        {error && <div className="page-error" role="alert">{error}<button onClick={refresh}>Retry</button></div>}
         {period === 'month' && timeline.length > 0 && (
           <section className="timeline-card" aria-label="Daily burst totals">
             <h2>Events per day</h2>
@@ -294,7 +301,7 @@ export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' 
             </div>
           </section>
         )}
-        <section className="ranking-card" aria-label={`Station ranking from ${range.start} to ${range.end}`}>
+        <section className="ranking-card" aria-label={range ? `Station ranking from ${range.start} to ${range.end}` : 'Station ranking'}>
           <h2>Bursts observed</h2>
           {!loading && ranking.length === 0 && !error ? <p className="empty-inline">No events available for this period.</p> : ranking.map((item, index) => (
             <button key={item.station} className="ranking-row" onClick={() => onOpenStation(item.station)}>

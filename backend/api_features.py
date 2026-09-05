@@ -15,7 +15,7 @@ from astropy.io import fits
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from backend.catalog import (
     CATALOG_SOURCES,
@@ -27,7 +27,6 @@ from backend.catalog import (
 )
 from backend.db import TaskRecord, session_scope
 from backend.security import (
-    safe_join,
     validate_combine_filenames,
     validate_date,
     validate_filename_context,
@@ -49,8 +48,8 @@ class TaskCreate(BaseModel):
 
 def _range(start: str, end: str | None) -> tuple[datetime, datetime]:
     try:
-        start_dt = datetime.fromisoformat(start).replace(tzinfo=timezone.utc)
-        end_dt = datetime.fromisoformat(end).replace(tzinfo=timezone.utc) if end else start_dt + timedelta(days=1)
+        start_dt = _task_instant(start, "start")
+        end_dt = _task_instant(end, "end") if end else start_dt + timedelta(days=1)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="Dates must use ISO format YYYY-MM-DD") from exc
     if end_dt <= start_dt or end_dt - start_dt > timedelta(days=366):
@@ -76,7 +75,7 @@ def _ensure_months(
     source: str = DEFAULT_CATALOG_SOURCE,
 ) -> list[str]:
     warnings: list[str] = []
-    cursor = start.replace(day=1)
+    cursor = start.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     while cursor < end:
         try:
             ingest_month(cursor.year, cursor.month, source=source)
@@ -289,9 +288,6 @@ def _resolve_file(station: str, date: str, filename: str) -> str:
     station = validate_station(station)
     validate_date(date)
     filename = validate_filename_context(filename, station, date)
-    local = safe_join(core.DATA_DIR_LOCAL, filename)
-    if os.path.isfile(local):
-        return local
     downloaded = core._download_from_ethz(station, date, filename)
     if not downloaded:
         raise HTTPException(status_code=404, detail="FITS file not found")
@@ -313,6 +309,8 @@ def get_lightcurve(station: str, date: str, filename: str, freq_mhz: list[float]
 
     if not 1 <= len(freq_mhz) <= 8:
         raise HTTPException(status_code=422, detail="Select between 1 and 8 frequencies")
+    if not all(np.isfinite(value) for value in freq_mhz):
+        raise HTTPException(status_code=422, detail="Frequencies must be finite numbers in MHz")
     try:
         path = _resolve_file(station, date, filename)
     except ValueError as exc:
@@ -341,6 +339,7 @@ def export_processed_fits(
     rfi_occupancy: float = Query(default=0.15, ge=0.01, le=1.0),
     rfi_min_component: int = Query(default=9, ge=1, le=500),
     rfi_impulsive: bool = True,
+    scale_mode: str = Query(default="relative", pattern="^(relative|median_db)$"),
 ):
     from backend import main as core
 
@@ -349,6 +348,8 @@ def export_processed_fits(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     data, frequencies, time_axis, header = core._load_raw_cached(path)
+    if scale_mode == "median_db":
+        data = data * (2500.0 / 255.0 / 25.4)
     processed = core._subtract_background(data)
     if rfi:
         processed, _channels, _stats = core._mitigate_rfi(
@@ -359,9 +360,11 @@ def export_processed_fits(
             impulsive=rfi_impulsive,
         )
     export_header = header.copy()
-    export_header["BUNIT"] = ("relative detector digits", "Background-subtracted intensity")
+    export_header["BUNIT"] = ("dB" if scale_mode == "median_db" else "relative detector digits", "Background-subtracted intensity")
     export_header["PROCVER"] = (f"{APP_NAME} {APP_VERSION}", "Processing software")
     export_header.add_history("AstroDoncel: per-frequency background subtraction applied")
+    if scale_mode == "median_db":
+        export_header.add_history("AstroDoncel: instrumental median_db scale factor 2500/255/25.4 applied")
     export_header.add_history(f"AstroDoncel: RFI mitigation applied={rfi}")
     if rfi:
         export_header.add_history(
@@ -465,12 +468,16 @@ def cancel_task(task_id: str):
         task = session.get(TaskRecord, task_id)
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
-        if task.status == "queued":
-            task.status = "cancelled"
-            task.error = "Cancelled before execution"
-        elif task.status == "running":
-            task.status = "cancel_requested"
-        task.updated_at = datetime.now(timezone.utc)
+        statement = update(TaskRecord).where(TaskRecord.id == task_id)
+        now = datetime.now(timezone.utc)
+        changed = session.execute(statement.where(TaskRecord.status == "queued").values(
+            status="cancelled", error="Cancelled before execution", updated_at=now,
+        ))
+        if changed.rowcount == 0:
+            session.execute(statement.where(TaskRecord.status == "running").values(
+                status="cancel_requested", updated_at=now,
+            ))
+        session.refresh(task)
         return {"id": task.id, "status": task.status}
 
 

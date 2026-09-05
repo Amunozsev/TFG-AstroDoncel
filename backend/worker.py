@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from backend.db import TaskRecord, init_db, session_scope
 from backend.security import fits_focus_code, validate_combine_filenames
@@ -25,18 +25,33 @@ class TaskCancelled(Exception):
     """Raised at cooperative cancellation checkpoints."""
 
 
+class TaskFailure(ValueError):
+    """An actionable, path-free scientific task error safe to show publicly."""
+
+
 def _update(task_id: str, **values) -> None:
     with session_scope() as session:
-        task = session.get(TaskRecord, task_id)
-        for key, value in values.items():
-            setattr(task, key, value)
-        task.updated_at = datetime.now(timezone.utc)
+        values["updated_at"] = datetime.now(timezone.utc)
+        statement = update(TaskRecord).where(TaskRecord.id == task_id)
+        if values.get("status") in {"queued", "succeeded", "failed"}:
+            # Compare-and-set: a late success/retry must not overwrite a
+            # cancellation that the API has already accepted.
+            changed = session.execute(statement.where(TaskRecord.status == "running").values(**values))
+            if changed.rowcount == 0:
+                session.execute(statement.where(TaskRecord.status == "cancel_requested").values(
+                    status="cancelled", result=None, error="Cancelled by user",
+                    updated_at=values["updated_at"],
+                ))
+        else:
+            session.execute(statement.where(
+                TaskRecord.status.in_(["running", "cancel_requested"]),
+            ).values(**values))
 
 
 def _check_cancelled(task_id: str) -> None:
     with session_scope() as session:
         task = session.get(TaskRecord, task_id)
-        if task and task.status == "cancel_requested":
+        if task and task.status in {"cancel_requested", "cancelled"}:
             raise TaskCancelled("Cancelled by user")
 
 
@@ -76,8 +91,14 @@ def cleanup_completed_tasks(retention_days: int | None = None) -> int:
             TaskRecord.updated_at < cutoff,
         )).all()
         for task in expired:
-            artifact = task.result.get("artifact") if task.result else None
-            if artifact == f"{task.id}.json.gz":
+            # A cancellation can arrive just after publication but before the
+            # result is saved. Such terminal tasks still own their UUID artifact.
+            artifact = f"{task.id}.json.gz"
+            try:
+                valid_id = str(uuid.UUID(task.id)) == task.id
+            except ValueError:
+                valid_id = False
+            if valid_id:
                 artifact_path = os.path.realpath(os.path.join(result_root, artifact))
                 if os.path.commonpath((result_root, artifact_path)) == result_root:
                     try:
@@ -221,7 +242,7 @@ def _spectral_overview(task: TaskRecord) -> dict:
         })
 
     if not any(result["status"] == "ok" for result in station_results):
-        raise ValueError("No FITS observations were available inside the requested UTC interval")
+        raise TaskFailure("No FITS observations were available inside the requested UTC interval")
 
     payload = {
         "start_at": start_at.isoformat(),
@@ -246,9 +267,12 @@ def _combine_time(task: TaskRecord) -> dict:
     from backend import main as core
 
     station, date = task.payload["station"], task.payload["date"]
-    filenames = validate_combine_filenames(
-        task.payload.get("options", {}).get("filenames"), station, date,
-    )
+    try:
+        filenames = validate_combine_filenames(
+            task.payload.get("options", {}).get("filenames"), station, date,
+        )
+    except ValueError as exc:
+        raise TaskFailure(str(exc)) from exc
     matrices, labels = [], []
     reference_freqs = None
     previous_end = None
@@ -258,16 +282,16 @@ def _combine_time(task: TaskRecord) -> dict:
         _check_cancelled(task.id)
         path = core._download_from_ethz(station, date, filename)
         if not path:
-            raise ValueError(f"Could not retrieve {filename}. Check archive availability and retry.")
+            raise TaskFailure(f"Could not retrieve {filename}. Check archive availability and retry.")
         try:
             raw, freqs, time_values, header = core._load_raw_cached(path)
         except Exception as exc:
             # Do not return the local cache/NAS path in a public task error.
-            raise ValueError(f"Could not read FITS data in {filename}. Check the source file and retry.") from exc
+            raise TaskFailure(f"Could not read FITS data in {filename}. Check the source file and retry.") from exc
         if reference_freqs is None:
             reference_freqs = np.asarray(freqs)
         elif len(freqs) != len(reference_freqs) or not np.allclose(freqs, reference_freqs, rtol=0, atol=1e-3):
-            raise ValueError(
+            raise TaskFailure(
                 f"Incompatible frequency axis in {filename}. The receiver configuration changed; "
                 "choose another starting block or use Spectral overview to view separate groups."
             )
@@ -277,7 +301,7 @@ def _combine_time(task: TaskRecord) -> dict:
             for label in block_labels
         ])
         if raw.shape != (len(freqs), len(instants)) or len(instants) < 2 or not np.all(np.diff(instants) > 0):
-            raise ValueError(f"Invalid or non-increasing time axis in {filename}; cannot build a continuous observation.")
+            raise TaskFailure(f"Invalid or non-increasing time axis in {filename}; cannot build a continuous observation.")
         cadence = float(np.median(np.diff(instants)))
         if previous_end is not None:
             # Recorder boundaries can jitter by a second or two. Do not shift
@@ -285,17 +309,17 @@ def _combine_time(task: TaskRecord) -> dict:
             tolerance = max(2.0, 1.5 * max(cadence, previous_cadence))
             gap = float(instants[0] - (previous_end + previous_cadence))
             if gap > tolerance:
-                raise ValueError(
+                raise TaskFailure(
                     f"Missing observations before {filename} (gap {gap:.1f} s). "
                     "Choose consecutive blocks or use Spectral overview to display gaps."
                 )
             if gap < -tolerance:
-                raise ValueError(
+                raise TaskFailure(
                     f"Overlapping observations in {filename}. Select consecutive blocks from one receiver."
                 )
             first = int(np.searchsorted(instants, previous_end, side="right"))
             if first == len(instants):
-                raise ValueError(f"No new time samples in {filename}.")
+                raise TaskFailure(f"No new time samples in {filename}.")
             overlap_samples_dropped += first
             raw, block_labels = raw[:, first:], block_labels[first:]
         previous_end, previous_cadence = instants[-1], cadence
@@ -339,22 +363,26 @@ def run_once() -> bool:
         )
         if not task:
             return False
-        task.status = "running"
-        task.attempts += 1
-        task.updated_at = datetime.now(timezone.utc)
+        claimed = session.execute(update(TaskRecord).where(
+            TaskRecord.id == task.id, TaskRecord.status == "queued",
+        ).values(status="running", attempts=TaskRecord.attempts + 1, updated_at=datetime.now(timezone.utc)))
+        if claimed.rowcount != 1:
+            return False
         task_id = task.id
     with session_scope() as session:
         task = session.get(TaskRecord, task_id)
-        try:
-            result = HANDLERS[task.task_type](task)
-            _check_cancelled(task.id)
-            _update(task.id, status="succeeded", progress=1.0, result=result, error=None)
-        except TaskCancelled as exc:
-            _update(task.id, status="cancelled", error=str(exc))
-        except Exception as exc:
-            logger.exception("Task %s (%s) failed", task.id, task.task_type)
-            status = "queued" if task.attempts < task.max_attempts else "failed"
-            _update(task.id, status=status, error=str(exc))
+    try:
+        _check_cancelled(task.id)
+        result = HANDLERS[task.task_type](task)
+        _check_cancelled(task.id)
+        _update(task.id, status="succeeded", progress=1.0, result=result, error=None)
+    except TaskCancelled as exc:
+        _update(task.id, status="cancelled", error=str(exc))
+    except Exception as exc:
+        logger.exception("Task %s (%s) failed", task.id, task.task_type)
+        status = "queued" if task.attempts < task.max_attempts else "failed"
+        error = str(exc) if isinstance(exc, TaskFailure) else "Task processing failed; inspect server logs using the task id"
+        _update(task.id, status=status, error=error)
     return True
 
 

@@ -151,6 +151,10 @@ export default function Spectrogram({
       clearZoomState();
       setRulerPoints([]);
     });
+    return () => {
+      clearTimeout(debounceRef.current);
+      abortRef.current?.abort();
+    };
   }, [triggerLoad, compareMode]);
 
   useEffect(() => {
@@ -158,33 +162,38 @@ export default function Spectrogram({
   }, [rulerMode]);
 
   // ── Fetch GOES XRS ───────────────────────────────────────────────────────
+  const goesDate = layers[0]?.date ?? date;
   useEffect(() => {
-    if (!hasLoaded || triggerLoad === 0) return;
-    if (!showGoes) {
+    if (!hasLoaded || triggerLoad === 0 || !showGoes) {
       queueMicrotask(() => {
         setGoesData(null);
         setGoesStatus('');
       });
       return;
     }
+    const controller = new AbortController();
     async function fetchGoes() {
       setGoesStatus('Loading GOES…');
+      setGoesData(null);
       try {
-        const res = await apiFetch(`/api/goes?date=${encodeURIComponent(date)}`);
+        const res = await apiFetch(`/api/goes?date=${encodeURIComponent(goesDate)}`, { signal: controller.signal });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           throw new Error(body.detail ?? `Error GOES ${res.status}`);
         }
         const data = await res.json();
+        if (controller.signal.aborted) return;
         setGoesData(data);
         setGoesStatus(data.available ? '' : data.reason);
       } catch (err) {
+        if (controller.signal.aborted) return;
         setGoesData(null);
         setGoesStatus(`GOES unavailable: ${err.message}`);
       }
     }
     fetchGoes();
-  }, [showGoes, triggerLoad]); // eslint-disable-line react-hooks/exhaustive-deps
+    return () => controller.abort();
+  }, [showGoes, triggerLoad, hasLoaded, goesDate]);
 
   // ── Layer preparation ────────────────────────────────────────────────────
   // Drop layers with empty/malformed axes — prevents Plotly from stretching the
