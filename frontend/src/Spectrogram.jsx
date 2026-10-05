@@ -676,33 +676,27 @@ export default function Spectrogram({
         <h2>
           {headerTitle}
           {useSahanFilter && layers.length > 0 && (
-            <span style={{ marginLeft: '0.6rem', fontSize: '0.7rem', color: '#38bdf8' }}>
-              ▶ RFI v2 active
-            </span>
+            <span className="header-status rfi">RFI v2 active</span>
           )}
           {zoomFetching && (
-            <span style={{ marginLeft: '0.6rem', fontSize: '0.7rem', color: '#a3e635' }}>
-              ⟳ loading high-res…
-            </span>
+            <span className="header-status busy">Loading high-res…</span>
           )}
           {isZoomed && !zoomFetching && (
-            <span style={{ marginLeft: '0.6rem', fontSize: '0.7rem', color: '#4ade80' }}>
-              ⤢ high-res
-            </span>
+            <span className="header-status zoomed">High-res view</span>
           )}
           {rulerMode && (
-            <span style={{ marginLeft: '0.6rem', fontSize: '0.7rem', color: '#a3e635' }}>
-              📐 {rulerMeasure
-                ? `Δt=${rulerMeasure.dtSec.toFixed(1)} s · Δf=${rulerMeasure.dfMHz.toFixed(1)} MHz` +
+            <span className="header-status ruler">
+              {rulerMeasure
+                ? `Ruler: Δt ${rulerMeasure.dtSec.toFixed(1)} s · Δf ${rulerMeasure.dfMHz.toFixed(1)} MHz` +
                   (rulerMeasure.drift !== null ? ` · ${rulerMeasure.drift.toFixed(2)} MHz/s` : '')
-                : `ruler: click ${2 - rulerPoints.length} more point${rulerPoints.length === 1 ? '' : 's'}`}
+                : `Ruler: click ${2 - rulerPoints.length} more point${rulerPoints.length === 1 ? '' : 's'}`}
             </span>
           )}
         </h2>
-        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+        <div className="main-header-actions">
           {isZoomed && (
             <button className="btn-reset-zoom" onClick={handleResetZoom}>
-              ↩ Overview
+              Back to overview
             </button>
           )}
           {layers.length === 1 && (
@@ -724,9 +718,7 @@ export default function Spectrogram({
           <div className="status-message">
             <div className="spinner" />
             <span>Processing astronomical data…</span>
-            <span style={{ fontSize: '0.72rem', color: '#2e5575', marginTop: '0.25rem' }}>
-              (auto-download if file is not local)
-            </span>
+            <small>The file is downloaded automatically if it is not stored locally.</small>
           </div>
         )}
 
@@ -739,15 +731,7 @@ export default function Spectrogram({
 
         {/* GOES no-data notice */}
         {goesStatus && !loading && (
-          <div style={{
-            position: 'absolute', bottom: '0.75rem', left: '50%',
-            transform: 'translateX(-50%)', zIndex: 10,
-            background: '#1f1505', border: '1px solid #78350f',
-            color: '#fbbf24', padding: '0.4rem 0.8rem', borderRadius: '4px',
-            fontSize: '0.72rem', maxWidth: '600px', textAlign: 'center',
-          }}>
-            ⚠ {goesStatus}
-          </div>
+          <div className="goes-notice" role="status">{goesStatus}</div>
         )}
 
         {/* All layers hidden */}

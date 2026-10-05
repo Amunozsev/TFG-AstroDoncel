@@ -127,7 +127,7 @@ describe('combine blocks controls', () => {
     await waitFor(() => expect(screen.getByLabelText('Loaded FITS file')).toHaveTextContent(mexicoFiles[0].filename));
     fireEvent.change(screen.getByLabelText('Focus code'), { target: { value: 'all' } });
     const chip = screen.getAllByRole('button').find((button) => button.title.startsWith(mexicoFiles[4].filename));
-    expect(chip).toHaveTextContent('≈45:00');
+    expect(chip).toHaveTextContent('16:45');
     expect(chip).toHaveAttribute('title', expect.stringContaining('16:44:59 UTC'));
     fireEvent.click(screen.getByRole('button', { name: 'Tools' }));
     fireEvent.click(screen.getByText('Data & exports'));
@@ -519,7 +519,7 @@ describe('observation request lifetime', () => {
     setup();
     await screen.findByLabelText('Loaded FITS file');
     fireEvent.change(screen.getByLabelText('Date'), { target: { value: '' } });
-    expect(screen.getByRole('button', { name: '▶ Load' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Load' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Display' }));
     expect(screen.getByRole('button', { name: 'Save contrast preset' })).toBeInTheDocument();
   });

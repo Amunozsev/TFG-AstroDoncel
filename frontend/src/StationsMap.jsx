@@ -235,7 +235,7 @@ export default function StationsMap({ onOpenStation, theme = 'dark' }) {
       hovertemplate:
         '<b>%{customdata[0]}</b><br>' +
         `${name}<br>` +
-        '☀ %{customdata[1]} bursts this month<br>' +
+        '%{customdata[1]} bursts this month<br>' +
         '%{lat:.2f}°, %{lon:.2f}°%{customdata[2]}<br>' +
         '<span style="font-size:11px">click to open spectrograms</span>' +
         '<extra></extra>',
@@ -368,13 +368,13 @@ export default function StationsMap({ onOpenStation, theme = 'dark' }) {
               className={isGlobe ? 'active' : ''}
               onClick={() => setProjection('orthographic')}
             >
-              🌐 Globe
+              Globe
             </button>
             <button
               className={!isGlobe ? 'active' : ''}
               onClick={() => setProjection('natural earth')}
             >
-              🗺 Map
+              Map
             </button>
           </div>
 
@@ -389,13 +389,13 @@ export default function StationsMap({ onOpenStation, theme = 'dark' }) {
               className={statusFilter === 'operative' ? 'active' : ''}
               onClick={() => setStatusFilter('operative')}
             >
-              🟢 Operative
+              Operative
             </button>
             <button
               className={statusFilter === 'offline' ? 'active' : ''}
               onClick={() => setStatusFilter('offline')}
             >
-              🔴 Offline
+              Offline
             </button>
           </div>
 
@@ -415,7 +415,7 @@ export default function StationsMap({ onOpenStation, theme = 'dark' }) {
               checked={showSun}
               onChange={(e) => setShowSun(e.target.checked)}
             />
-            ☀ Day/night
+            Day/night
           </label>
 
           <input
@@ -427,7 +427,7 @@ export default function StationsMap({ onOpenStation, theme = 'dark' }) {
           />
 
           <button className="map-refresh" onClick={() => load()} title="Re-check operative status">
-            ⟳
+            Refresh
           </button>
         </div>
       </div>
@@ -437,7 +437,7 @@ export default function StationsMap({ onOpenStation, theme = 'dark' }) {
         {error && (
           <div className="map-overlay map-error">
             Could not load stations: {error}
-            <button className="map-refresh" onClick={() => load()} style={{ marginLeft: '0.6rem' }}>
+            <button className="map-refresh" onClick={() => load()}>
               Retry
             </button>
           </div>
@@ -465,16 +465,16 @@ export default function StationsMap({ onOpenStation, theme = 'dark' }) {
             <span className="dot dot-red" /> {total - opCount} offline
           </span>
           <span className="map-stat" title="Coordinates read from the stations' own FITS headers">
-            📍 {total} mapped{typeof data.fits_coord_count === 'number' ? ` (${data.fits_coord_count} from data)` : ''}
+            {total} mapped{typeof data.fits_coord_count === 'number' ? ` (${data.fits_coord_count} from data)` : ''}
           </span>
           {data.unmapped?.length > 0 && (
             <span className="map-stat map-stat-warn" title={data.unmapped.join(', ')}>
-              ⏳ {data.unmapped.length} locating…
+              {data.unmapped.length} still locating…
             </span>
           )}
           {data.burst_month && (
             <span className="map-stat">
-              ☀ {data.burst_total} bursts in {data.burst_month}
+              {data.burst_total} bursts in {data.burst_month}
             </span>
           )}
           {data.reference_date ? (
@@ -483,7 +483,7 @@ export default function StationsMap({ onOpenStation, theme = 'dark' }) {
             </span>
           ) : (
             <span className="map-stat map-stat-warn">
-              ⚠ ETHZ unreachable — status may be stale
+              ETHZ unreachable — status may be stale
             </span>
           )}
           {updatedAt && (
