@@ -46,6 +46,15 @@ function Icon({ name }) {
   );
 }
 
+function BrandMark() {
+  return (
+    <svg className="app-brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+      <circle cx="11" cy="16" r="6" fill="var(--primary)" />
+      <path d="M19.5 11.5c2.6 2.5 2.6 6.5 0 9M23.5 7.5c4.8 4.7 4.8 12.3 0 17M27.5 4c6.3 6.6 6.3 17.4 0 24" fill="none" stroke="var(--text-strong)" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function initialTheme() {
   try { return localStorage.getItem('astrodoncel.theme') === 'light' ? 'light' : 'dark'; }
   catch { return 'dark'; }
@@ -59,20 +68,20 @@ function describeStationSource(source, retentionDays) {
   if (!source) return null;
   if (source.includes('ethz')) {
     return {
-      label: '● live + recent',
+      label: 'live + recent',
       title: `Live ETHZ inventory plus stations seen in the last ${retentionDays} days`,
       live: true,
     };
   }
   if (source === 'bootstrap') {
     return {
-      label: '● bootstrap',
+      label: 'bootstrap',
       title: 'Local bootstrap list; the live archive is unavailable',
       live: false,
     };
   }
   return {
-    label: '● unavailable',
+    label: 'unavailable',
     title: 'Station inventory is temporarily unavailable',
     live: false,
   };
@@ -970,7 +979,7 @@ export default function App() {
             })}
             {failedStations.map((f) => (
               <div key={f.station} className="layer-failed">
-                ⚠ {f.station}: {f.reason}
+                {f.station}: {f.reason}
               </div>
             ))}
           </div>
@@ -1002,11 +1011,11 @@ export default function App() {
                   onClick={() => setRulerMode((current) => !current)}
                   title="Click two points on the spectrogram to measure Δt, Δf and drift rate (MHz/s)"
                 >
-                  Drift ruler {rulerMode ? 'on' : ''}
+                  {rulerMode ? 'Drift ruler · on' : 'Drift ruler'}
                 </button>
                 <button className="btn-tool" onClick={() => { setHeaderLayerIdx(0); setShowHeaderViewer(true); }} disabled={layers.length === 0} title="Show scientific metadata stored in the current FITS header">FITS header</button>
                 <button
-                  className="btn-tool"
+                  className="btn-tool tool-action-wide"
                   onClick={handleDetectBursts}
                   disabled={layers.length === 0 || burstDetecting}
                   title="Classify the primary FITS block with the experimental CNN+MIL model"
@@ -1079,20 +1088,28 @@ export default function App() {
             <details className="tool-disclosure">
               <summary>Data &amp; exports <span>Advanced actions</span></summary>
               <div className="tool-disclosure-body">
-                <button className="btn-tool" onClick={() => {
-                  startTask('combine_time', { filenames: combineFilenames });
-                }} disabled={!station || combineFilenames.length < 2 || ['submitting', 'queued', 'running'].includes(taskStatus?.status)} title="Join up to four consecutive FITS blocks from the selected file's receiver">
-                  Combine {combineFilenames.length} blocks{combineSelection.focusCode ? ` · FC ${combineSelection.focusCode}` : ''}
-                </button>
-                {combineSelection.notice && <p className="tool-help" role="status">{combineSelection.notice}</p>}
-                {layers[0] && <>
-                  <a className="btn-tool" title="Download the unmodified source observation" href={`${API_BASE_URL}/api/files/download?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename })}`}>Download original FITS</a>
-                  <a className="btn-tool" title="Export the displayed processing result and its scientific axes as FITS" href={`${API_BASE_URL}/api/spectrogram/export?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename, scale_mode: layers[0].scale_mode ?? 'relative', rfi: useSahanFilter, rfi_z_thresh: rfiParams.zThresh, rfi_occupancy: rfiParams.occupancy, rfi_min_component: rfiParams.minComponent, rfi_impulsive: rfiParams.impulsive })}`}>Export processed FITS</a>
-                  <button className="btn-tool" type="button" onClick={copyObservationLink} title="Copy a link that opens this exact FITS block">Copy observation link</button>
-                  <button className="btn-tool" type="button" onClick={exportAnalysisManifest} title="Save selected files, units, processing settings and provenance as JSON">Export analysis manifest</button>
-                </>}
-                {shareStatus && <p className="tool-help" role="status">{shareStatus}</p>}
-                <p className="tool-help">Starts at the selected file and uses only its receiver, even with “All receivers” selected. Four 15-minute blocks cover about one hour. Actual FITS times and frequency compatibility are checked by the worker.</p>
+                <div className="tool-subgroup">
+                  <p className="tool-subgroup-title">Combine consecutive blocks</p>
+                  <button className="btn-tool" onClick={() => {
+                    startTask('combine_time', { filenames: combineFilenames });
+                  }} disabled={!station || combineFilenames.length < 2 || ['submitting', 'queued', 'running'].includes(taskStatus?.status)} title="Join up to four consecutive FITS blocks from the selected file's receiver">
+                    Combine {combineFilenames.length} blocks{combineSelection.focusCode ? ` · FC ${combineSelection.focusCode}` : ''}
+                  </button>
+                  {combineSelection.notice && <p className="tool-help" role="status">{combineSelection.notice}</p>}
+                  <p className="tool-help">Starts at the selected file and uses only its receiver, even with “All receivers” selected. Four 15-minute blocks cover about one hour. Actual FITS times and frequency compatibility are checked by the worker.</p>
+                </div>
+                {layers[0] && (
+                  <div className="tool-subgroup">
+                    <p className="tool-subgroup-title">Download and share</p>
+                    <div className="tool-action-grid">
+                      <a className="btn-tool" title="Download the unmodified source observation" href={`${API_BASE_URL}/api/files/download?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename })}`}>Download original FITS</a>
+                      <a className="btn-tool" title="Export the displayed processing result and its scientific axes as FITS" href={`${API_BASE_URL}/api/spectrogram/export?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename, scale_mode: layers[0].scale_mode ?? 'relative', rfi: useSahanFilter, rfi_z_thresh: rfiParams.zThresh, rfi_occupancy: rfiParams.occupancy, rfi_min_component: rfiParams.minComponent, rfi_impulsive: rfiParams.impulsive })}`}>Export processed FITS</a>
+                      <button className="btn-tool" type="button" onClick={copyObservationLink} title="Copy a link that opens this exact FITS block">Copy observation link</button>
+                      <button className="btn-tool" type="button" onClick={exportAnalysisManifest} title="Save selected files, units, processing settings and provenance as JSON">Export analysis manifest</button>
+                    </div>
+                    {shareStatus && <p className="tool-help" role="status">{shareStatus}</p>}
+                  </div>
+                )}
               </div>
             </details>
 
@@ -1116,7 +1133,10 @@ export default function App() {
     <div className="app-root" data-theme={theme}>
       <a className="skip-link" href="#main-content">Skip to main content</a>
       <nav className="app-nav" aria-label="Primary navigation">
-        <span className="app-brand"><b>AstroDoncel Studio</b><small>e-CALLISTO analysis workspace</small></span>
+        <span className="app-brand">
+          <BrandMark />
+          <span className="app-brand-text"><b>AstroDoncel <span>Studio</span></b><small>e-CALLISTO analysis workspace</small></span>
+        </span>
         <div className="app-nav-tabs">
           <button
             className={view === 'portal' ? 'active' : ''}
@@ -1171,17 +1191,16 @@ export default function App() {
           {/* ── Station multi-select ── */}
           <div className="control-label">
             Stations
-            {stationSourceStatus && (
-              <span
-                title={stationSourceStatus.title}
-                style={{ marginLeft: '0.4rem', fontSize: '0.65rem', color: stationSourceStatus.live ? '#38bdf8' : '#f59e0b', verticalAlign: 'middle' }}
-              >
-                {stationSourceStatus.label}
-              </span>
-            )}
-            {selectedStations.length > 0 && (
-              <span style={{ fontSize: '0.65rem', color: '#38bdf8', marginLeft: '0.3rem' }}>
-                {selectedStations.length}/{MAX_SPECTROGRAM_LAYERS} selected
+            {(stationSourceStatus || selectedStations.length > 0) && (
+              <span className="station-meta">
+                {stationSourceStatus && (
+                  <span className={`station-source${stationSourceStatus.live ? ' live' : ''}`} title={stationSourceStatus.title}>
+                    {stationSourceStatus.label}
+                  </span>
+                )}
+                {selectedStations.length > 0 && (
+                  <span className="selection-count">{selectedStations.length}/{MAX_SPECTROGRAM_LAYERS} selected</span>
+                )}
               </span>
             )}
             <input
@@ -1193,7 +1212,7 @@ export default function App() {
             />
             <div className="station-checklist">
               {filteredStations.length === 0 && (
-                <p className="files-hint" style={{ padding: '0.3rem 0.5rem' }}>
+                <p className="files-hint">
                   {!stationsSource ? 'Loading stations…' : stationFilter ? 'No match.' : 'No stations available.'}
                 </p>
               )}
@@ -1236,15 +1255,13 @@ export default function App() {
               Burst / File
               {filesLoading && <span className="files-loading-dot" />}
               {!filesLoading && files.length > 0 && (
-                <span style={{ color: '#4a7a9b', fontWeight: 400, marginLeft: '0.3rem' }}>
-                  ({files.length})
-                </span>
+                <span className="section-count">({files.length})</span>
               )}
             </h2>
 
             {/* Primary-station picker: anchors the 15-min block for the others */}
             {selectedStations.length > 1 && (
-              <label className="control-label" style={{ marginBottom: '0.4rem' }}>
+              <label className="control-label">
                 Primary station
                 <select
                   className="control-input"
@@ -1291,21 +1308,24 @@ export default function App() {
                     const collapsed = collapsedHours[group] ?? false;
                     return (
                       <div key={group} className="burst-hour-group">
-                        <div
-                          className="burst-hour-header collapsible"
+                        <button
+                          type="button"
+                          className="burst-hour-header"
+                          aria-expanded={!collapsed}
                           onClick={() =>
                             setCollapsedHours((prev) => ({ ...prev, [group]: !collapsed }))
                           }
                         >
-                          <span className="chevron">{collapsed ? '▸' : '▾'}</span>
-                          {hour}:xx UTC
+                          <span className="chevron" aria-hidden="true">{collapsed ? '▸' : '▾'}</span>
+                          {hour}:00–{hour}:59 UTC
                           {dayOffset !== '0' && ' (+1 day)'}
                           <span className="hour-count">({bursts.length})</span>
-                        </div>
+                        </button>
                         {!collapsed && bursts.map((f) => {
                           const isCached = f.label.startsWith('★');
                           const display = displayBlockTime(f.time);
-                          const displayLabel = `${isCached ? '★ ' : ''}${display.approximate ? '≈' : ''}${display.time.slice(3)}`;
+                          // Show only HH:MM; the exact archive start, with seconds, stays in the tooltip.
+                          const displayLabel = display.time.slice(0, 5);
                           return (
                             <button
                               key={f.filename}
@@ -1315,6 +1335,7 @@ export default function App() {
                               aria-label={`${display.approximate ? 'Approximately ' : ''}${display.time} UTC${display.dayOffset ? ' next day' : ''}${f.focus_code ? `, receiver ${f.focus_code}` : ''}`}
                               title={`${f.filename}\nArchive start: ${f.time} UTC${display.approximate ? '\nLabel shows the nearest 15-minute boundary (within 2 seconds); data times are unchanged.' : ''}`}
                             >
+                              {isCached && <i className="burst-chip-cached" title="Stored locally" aria-hidden="true" />}
                               {displayLabel}
                               {focusCode === 'all' && f.focus_code && <small className="burst-chip-receiver" aria-hidden="true">{f.focus_code}</small>}
                             </button>
@@ -1327,21 +1348,24 @@ export default function App() {
             )}
             {files.length > 0 && (
               <>
-                <p className="files-hint" style={{ marginTop: '0.3rem' }}>← → to step through files</p>
-                {files.some((file) => displayBlockTime(file.time).approximate) && (
-                  <p className="files-hint">≈ nominal block time (±2 s). Hover for the exact archive time; plots retain FITS timestamps.</p>
+                <p className="files-hint">Use the <kbd>←</kbd> <kbd>→</kbd> keys to step through files.</p>
+                {files.some((file) => file.label.startsWith('★')) && (
+                  <p className="files-hint"><i className="burst-chip-cached" aria-hidden="true" /> File already stored locally (loads faster).</p>
+                )}
+                {files.some((file) => !file.time.endsWith(':00')) && (
+                  <p className="files-hint">Times are shown as HH:MM. Hover a time for the exact archive start; plots keep the FITS timestamps.</p>
                 )}
               </>
             )}
         </div>
 
-        <div className="sidebar-section" style={{ flex: 'none' }}>
+        <div className="sidebar-section">
           <button
             className="btn-load"
             onClick={handleLoad}
             disabled={loadDisabled}
           >
-            {hasLoaded ? '▶ Reload' : '▶ Load'}
+            {hasLoaded ? 'Reload' : 'Load'}
           </button>
         </div>
 
@@ -1445,8 +1469,8 @@ export default function App() {
             </div>
             {layers.length > 1 && (
               <select
-                className="control-input"
-                style={{ margin: '0 1rem 0.5rem' }}
+                className="control-input modal-select"
+                aria-label="FITS header layer"
                 value={headerLayerIdx}
                 onChange={(e) => setHeaderLayerIdx(parseInt(e.target.value, 10))}
               >
