@@ -163,8 +163,15 @@ export default function Spectrogram({
 
   // ── Fetch GOES XRS ───────────────────────────────────────────────────────
   const goesDate = layers[0]?.date ?? date;
+  // Only the UTC interval covered by the loaded layers is requested; the full
+  // day of 1 s GOES samples is far larger than a 15-minute block needs.
+  const layerTimes = layers.flatMap((l) => (
+    Array.isArray(l.time_axis) && l.time_axis.length > 0 ? [l.time_axis[0], l.time_axis[l.time_axis.length - 1]] : []
+  ));
+  const goesStart = layerTimes.length > 0 ? layerTimes.reduce((a, b) => (a < b ? a : b)) : null;
+  const goesEnd = layerTimes.length > 0 ? layerTimes.reduce((a, b) => (a > b ? a : b)) : null;
   useEffect(() => {
-    if (!hasLoaded || triggerLoad === 0 || !showGoes) {
+    if (!hasLoaded || triggerLoad === 0 || !showGoes || !goesStart || !goesEnd) {
       queueMicrotask(() => {
         setGoesData(null);
         setGoesStatus('');
@@ -176,7 +183,8 @@ export default function Spectrogram({
       setGoesStatus('Loading GOES…');
       setGoesData(null);
       try {
-        const res = await apiFetch(`/api/goes?date=${encodeURIComponent(goesDate)}`, { signal: controller.signal });
+        const params = new URLSearchParams({ date: goesDate, start: goesStart, end: goesEnd });
+        const res = await apiFetch(`/api/goes?${params}`, { signal: controller.signal });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           throw new Error(body.detail ?? `Error GOES ${res.status}`);
@@ -193,7 +201,7 @@ export default function Spectrogram({
     }
     fetchGoes();
     return () => controller.abort();
-  }, [showGoes, triggerLoad, hasLoaded, goesDate]);
+  }, [showGoes, triggerLoad, hasLoaded, goesDate, goesStart, goesEnd]);
 
   // ── Layer preparation ────────────────────────────────────────────────────
   // Drop layers with empty/malformed axes — prevents Plotly from stretching the

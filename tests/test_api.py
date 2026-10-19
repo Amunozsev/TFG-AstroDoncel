@@ -4,7 +4,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pytest
@@ -403,3 +403,82 @@ def test_filename_context_rejects_other_station_or_date():
 def test_safe_join_stays_below_root(tmp_path):
     result = safe_join(str(tmp_path), "MRO_20240101_120000_01.fit.gz")
     assert os.path.commonpath((str(tmp_path), result)) == str(tmp_path)
+
+
+def test_goes_uses_one_product_stores_compactly_and_serves_a_window(tmp_path, monkeypatch):
+    import sunpy.net
+
+    from backend.db import GoesDay
+
+    searched, read_paths = [], []
+    t0 = datetime(2024, 1, 1, 12, 0, 0, 500000, tzinfo=timezone.utc)
+    # 1 s cadence with the ±1 ms recorder jitter seen in real NOAA files.
+    times = [t0 + timedelta(milliseconds=1000 * i - (1 if i > 10 else 0)) for i in range(1800)]
+
+    def fake_search(*attrs):
+        product = next(attr.value for attr in attrs if type(attr).__name__ == "Resolution")
+        searched.append(product)
+        return [[product]]  # both products exist for every satellite
+
+    def fake_fetch(query, path):
+        file_path = tmp_path / f"{query[0][0]}.nc"
+        file_path.write_bytes(b"netcdf")
+        return [str(file_path)]
+
+    def fake_series(path, _day):
+        read_paths.append(path)
+        return (times, [1.23456e-6] * len(times)) if path.endswith("flx1s.nc") else (times[::60], [9e-6] * 30)
+
+    monkeypatch.setattr(sunpy.net.Fido, "search", fake_search)
+    monkeypatch.setattr(sunpy.net.Fido, "fetch", fake_fetch)
+    monkeypatch.setattr(core, "_goes_xrsb_series", fake_series)
+    monkeypatch.setenv("GOES_CACHE_MAX_DAYS", "2")
+    dates = ["2024-01-01", "2024-01-02", "2024-01-03"]
+    try:
+        with SessionLocal() as session:
+            # A row in the old, mixed-product format must be refetched.
+            session.merge(GoesDay(date="2024-01-01", payload={"times": [], "xrsb": []}))
+            session.commit()
+
+        full = client.get("/api/goes", params={"date": "2024-01-01"}).json()
+        assert searched == ["flx1s"]
+        assert full["product"] == "flx1s" and len(full["times"]) == 1800
+        assert full["times"][11] == "2024-01-01T12:00:11.499Z"  # timestamps are not moved
+        assert full["xrsb"][0] == 1.235e-6
+        assert not any(os.path.exists(path) for path in read_paths)
+
+        window = client.get("/api/goes", params={
+            "date": "2024-01-01", "start": "2024-01-01T12:10:00Z", "end": "2024-01-01T12:14:59.999Z",
+        }).json()
+        assert len(window["times"]) == 300
+        assert window["times"][0].startswith("2024-01-01T12:10:00")
+
+        for date in dates[1:]:
+            client.get("/api/goes", params={"date": date})
+        with SessionLocal() as session:
+            stored = {row.date: row.payload for row in session.query(GoesDay).filter(GoesDay.date.in_(dates))}
+        assert sorted(stored) == ["2024-01-02", "2024-01-03"]
+        assert stored["2024-01-03"]["format"] == 2 and "steps_ms" in stored["2024-01-03"]["series"]
+    finally:
+        with SessionLocal() as session:
+            session.query(GoesDay).filter(GoesDay.date.in_(dates)).delete(synchronize_session=False)
+            session.commit()
+
+
+def test_goes_does_not_repeat_the_archive_search_for_an_unpublished_day(monkeypatch):
+    calls = []
+
+    def unpublished(date):
+        calls.append(date)
+        raise RuntimeError("No GOES/XRS data found")
+
+    monkeypatch.setattr(core, "_fetch_goes_xrsb_sync", unpublished)
+    date = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+    try:
+        first = client.get("/api/goes", params={"date": date}).json()
+        second = client.get("/api/goes", params={"date": date}).json()
+    finally:
+        core._GOES_UNAVAILABLE_UNTIL.pop(date, None)
+    assert calls == [date]
+    assert not first["available"] and not second["available"]
+    assert "not published yet" in second["reason"]

@@ -530,6 +530,7 @@ class GoesResponse(BaseModel):
     times: list[str]
     xrsb: list[float]
     satellite: int | None = None
+    product: str | None = None
 
 
 class StationsResponse(BaseModel):
@@ -2245,13 +2246,96 @@ def _pick_xrsb_column(columns: list[str]) -> str | None:
     return best if best_score > 0 else None
 
 
-def _fetch_goes_xrsb_sync(date_str: str) -> dict:
-    """Download GOES XRS-B data via sunpy.net.Fido for a full UTC day.
+# NOAA publishes two XRS science products per day. They are never mixed: the
+# native high-cadence flux is preferred and the 1-minute average is a fallback.
+_GOES_PRODUCTS = ("flx1s", "avg1m")
+_GOES_PAYLOAD_FORMAT = 2
+# Science files appear a few days after the UTC day ends; dates this recent
+# get an explanatory message instead of a generic failure.
+_GOES_PUBLICATION_DELAY_DAYS = 7
+_GOES_UNAVAILABLE_UNTIL: dict[str, float] = {}
+_GOES_UNAVAILABLE_LOCK = threading.Lock()
 
-    Returns {"times": [...iso8601], "xrsb": [...W/m²], "satellite": int}.
+
+def _goes_max_days() -> int:
+    try:
+        return max(1, int(os.environ.get("GOES_CACHE_MAX_DAYS", "60")))
+    except ValueError:
+        return 60
+
+
+def _goes_unavailable_retry_seconds() -> float:
+    try:
+        return max(0.0, float(os.environ.get("GOES_UNAVAILABLE_RETRY_MINUTES", "30"))) * 60
+    except ValueError:
+        return 1800.0
+
+
+def _goes_xrsb_series(path: str, target_date) -> tuple[list[datetime], list[float]]:
+    """Read the XRS-B column of one NOAA file, keeping valid samples of the day."""
+    from sunpy import timeseries as ts
+
+    df = ts.TimeSeries(path).to_dataframe()
+    numeric_cols = [c for c in df.columns if np.issubdtype(df[c].dtype, np.number)]
+    if not numeric_cols:
+        return [], []
+    col_b = _pick_xrsb_column(numeric_cols) or numeric_cols[-1]
+    flux = np.asarray(df[col_b].values, dtype=float)
+    idx = df.index
+    times_py = idx.to_pydatetime() if hasattr(idx, "to_pydatetime") else list(idx)
+    times: list[datetime] = []
+    values: list[float] = []
+    for t, f in zip(times_py, flux, strict=False):
+        if not np.isfinite(f) or f <= 0.0:
+            continue
+        t = t.replace(tzinfo=timezone.utc) if t.tzinfo is None else t.astimezone(timezone.utc)
+        if t.date() != target_date:
+            continue
+        times.append(t)
+        values.append(float(f))
+    return times, values
+
+
+def _pack_goes_series(times: list[datetime], values: list[float]) -> dict:
+    """Store a day compactly without moving any timestamp.
+
+    Times become the first instant plus run-length encoded steps in ms
+    (e.g. [[1000, 5000], [999, 1]]); flux keeps four significant figures.
+    """
+    t0_ms = round(times[0].timestamp() * 1000)
+    epochs = [round(t.timestamp() * 1000) for t in times]
+    steps: list[list[int]] = []
+    for previous, current in zip(epochs, epochs[1:], strict=False):
+        delta = current - previous
+        if steps and steps[-1][0] == delta:
+            steps[-1][1] += 1
+        else:
+            steps.append([delta, 1])
+    return {"t0_ms": t0_ms, "steps_ms": steps, "xrsb": [float(f"{value:.4g}") for value in values]}
+
+
+def _unpack_goes_series(series: dict) -> tuple[list[int], list[float]]:
+    """Return (epoch milliseconds, flux) from a packed day."""
+    epochs = [series["t0_ms"]]
+    for delta, count in series["steps_ms"]:
+        for _ in range(count):
+            epochs.append(epochs[-1] + delta)
+    return epochs, series["xrsb"]
+
+
+def _iso_ms(epoch_ms: float) -> str:
+    instant = datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc)
+    return f"{instant.strftime('%Y-%m-%dT%H:%M:%S')}.{instant.microsecond // 1000:03d}Z"
+
+
+def _fetch_goes_xrsb_sync(date_str: str) -> dict:
+    """Download one GOES XRS-B science product for a full UTC day.
+
+    Returns {"satellite": int, "product": "flx1s"|"avg1m", "series": packed}.
+    The downloaded NetCDF file is removed once read; the database keeps the
+    packed series.
     """
     try:
-        from sunpy import timeseries as ts
         from sunpy.net import Fido
         from sunpy.net import attrs as a
     except ImportError as exc:
@@ -2264,65 +2348,33 @@ def _fetch_goes_xrsb_sync(date_str: str) -> dict:
     start = target.strftime("%Y-%m-%d 00:00:00")
     end = target.strftime("%Y-%m-%d 23:59:59")
     os.makedirs(_GOES_CACHE_DIR, exist_ok=True)
-
-    sats = _preferred_goes_satellites(target.year)
     last_err: Exception | None = None
 
-    for sat in sats:
-        try:
-            logger.info("Searching GOES-%d XRS for %s in SunPy archive…", sat, date_str)
+    for sat in _preferred_goes_satellites(target.year):
+        for product in _GOES_PRODUCTS:
             try:
                 query = Fido.search(
                     a.Time(start, end),
                     a.Instrument.xrs,
                     a.goes.SatelliteNumber(sat),
+                    a.Resolution(product),
                 )
-            except AttributeError:
-                # Older alternative API
-                query = Fido.search(
-                    a.Time(start, end),
-                    a.Instrument("XRS"),
-                    a.goes.SatelliteNumber(sat),
-                )
-            if len(query) == 0 or sum(len(t) for t in query) == 0:
-                continue
-
-            paths = Fido.fetch(query, path=os.path.join(_GOES_CACHE_DIR, "{file}"))
-            if len(paths) == 0:
-                continue
-
-            tseries = ts.TimeSeries(list(paths), concatenate=True)
-            df = tseries.to_dataframe()
-            numeric_cols = [c for c in df.columns if np.issubdtype(df[c].dtype, np.number)]
-            if not numeric_cols:
-                continue
-
-            col_b = _pick_xrsb_column(numeric_cols) or numeric_cols[-1]
-            flux = np.asarray(df[col_b].values, dtype=float)
-
-            idx = df.index
-            times_py = idx.to_pydatetime() if hasattr(idx, "to_pydatetime") else list(idx)
-
-            out_times: list[str] = []
-            out_flux: list[float] = []
-            for t, f in zip(times_py, flux, strict=False):
-                if not np.isfinite(f) or f <= 0.0:
+                if len(query) == 0 or sum(len(t) for t in query) == 0:
                     continue
-                if hasattr(t, "tzinfo") and t.tzinfo is None:
-                    t = t.replace(tzinfo=timezone.utc)
-                if not (target.date() == t.date() if hasattr(t, "date") else True):
-                    continue
-                ms = t.microsecond // 1000 if hasattr(t, "microsecond") else 0
-                out_times.append(f"{t.strftime('%Y-%m-%dT%H:%M:%S')}.{ms:03d}Z")
-                out_flux.append(float(f))
-
-            if out_times:
-                logger.info("GOES-%d XRS: %d valid samples", sat, len(out_times))
-                return {"times": out_times, "xrsb": out_flux, "satellite": sat}
-        except Exception as exc:
-            logger.debug("GOES-%d failed: %s", sat, exc)
-            last_err = exc
-            continue
+                paths = Fido.fetch(query, path=os.path.join(_GOES_CACHE_DIR, "{file}"))
+                try:
+                    for path in paths:
+                        times, values = _goes_xrsb_series(path, target.date())
+                        if times:
+                            logger.info("GOES-%d XRS %s: %d valid samples", sat, product, len(times))
+                            return {"satellite": sat, "product": product, "series": _pack_goes_series(times, values)}
+                finally:
+                    for path in paths:
+                        with suppress(OSError):
+                            os.remove(path)
+            except Exception as exc:
+                logger.debug("GOES-%d %s failed: %s", sat, product, exc)
+                last_err = exc
 
     raise RuntimeError(
         f"No GOES/XRS data found for {date_str}"
@@ -2330,54 +2382,101 @@ def _fetch_goes_xrsb_sync(date_str: str) -> dict:
     )
 
 
-@app.get("/api/goes", response_model=GoesResponse)
-async def get_goes(date: str = Query(..., description="Date YYYY-MM-DD")):
-    """Return GOES XRS-B flux (0.1–0.8 nm channel) for a full UTC day.
+def _store_goes_day(date: str, payload: dict) -> None:
+    """Save a day and keep at most GOES_CACHE_MAX_DAYS, dropping the oldest stored."""
+    with session_scope() as session:
+        session.merge(GoesDay(date=date, payload=payload, updated_at=datetime.now(timezone.utc)))
+        session.flush()
+        stale = session.scalars(
+            select(GoesDay).order_by(GoesDay.updated_at.desc(), GoesDay.date.desc()).offset(_goes_max_days())
+        ).all()
+        for row in stale:
+            session.delete(row)
 
-    Source: SunPy/Fido archive (NOAA NGDC / NCEI). Covers from approximately
-    1986 onwards across all GOES satellite generations.
+
+def _goes_window(value: str | None, name: str) -> float | None:
+    if value is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid {name}: '{value}'")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp() * 1000
+
+
+@app.get("/api/goes", response_model=GoesResponse)
+async def get_goes(
+    date: str = Query(..., description="Date YYYY-MM-DD"),
+    start: str | None = Query(None, description="Optional ISO UTC start of the returned interval"),
+    end: str | None = Query(None, description="Optional ISO UTC end of the returned interval"),
+):
+    """Return GOES XRS-B flux (0.1–0.8 nm channel) for a UTC day.
+
+    Source: SunPy/Fido archive (NOAA NCEI science products). With start/end
+    only the samples inside that interval are returned.
     """
     try:
-        datetime.strptime(date, "%Y-%m-%d")
+        day = datetime.strptime(date, "%Y-%m-%d").date()
     except ValueError:
         raise HTTPException(status_code=422, detail=f"Invalid date format: '{date}'")
+    start_ms, end_ms = _goes_window(start, "start"), _goes_window(end, "end")
 
+    payload = None
     try:
         with session_scope() as session:
             cached_day = session.get(GoesDay, date)
-            if cached_day:
-                return GoesResponse(**cached_day.payload)
+            # Rows written before payload format 2 mixed two products; refetch them.
+            if cached_day and cached_day.payload.get("format") == _GOES_PAYLOAD_FORMAT:
+                payload = cached_day.payload
     except Exception as exc:
         logger.debug("Database GOES cache unavailable: %s", exc)
 
-    loop = asyncio.get_event_loop()
-    try:
-        result = await loop.run_in_executor(_GOES_EXECUTOR, _fetch_goes_xrsb_sync, date)
-    except Exception as exc:
-        logger.warning("GOES not available for %s: %s", date, exc)
-        return GoesResponse(
-            date=date,
-            available=False,
-            reason="GOES/XRS data are temporarily unavailable for this date; inspect server logs using the request id",
-            times=[],
-            xrsb=[],
-            satellite=None,
+    if payload is None:
+        recent = (datetime.now(timezone.utc).date() - day).days < _GOES_PUBLICATION_DELAY_DAYS
+        unavailable_reason = (
+            "GOES science data for this date are not published yet; NOAA releases them a few days after the UTC day ends"
+            if recent else
+            "GOES/XRS data are temporarily unavailable for this date; inspect server logs using the request id"
         )
+        with _GOES_UNAVAILABLE_LOCK:
+            now = time.monotonic()
+            for key in [key for key, until in _GOES_UNAVAILABLE_UNTIL.items() if until <= now]:
+                del _GOES_UNAVAILABLE_UNTIL[key]
+            known_unavailable = date in _GOES_UNAVAILABLE_UNTIL
+        if known_unavailable:
+            return GoesResponse(date=date, available=False, reason=unavailable_reason, times=[], xrsb=[])
+        loop = asyncio.get_event_loop()
+        try:
+            result = await loop.run_in_executor(_GOES_EXECUTOR, _fetch_goes_xrsb_sync, date)
+        except Exception as exc:
+            logger.warning("GOES not available for %s: %s", date, exc)
+            with _GOES_UNAVAILABLE_LOCK:
+                _GOES_UNAVAILABLE_UNTIL[date] = time.monotonic() + _goes_unavailable_retry_seconds()
+            return GoesResponse(date=date, available=False, reason=unavailable_reason, times=[], xrsb=[])
+        payload = {"format": _GOES_PAYLOAD_FORMAT, **result}
+        try:
+            _store_goes_day(date, payload)
+        except Exception as exc:
+            logger.debug("Could not persist GOES cache: %s", exc)
 
-    response = GoesResponse(
+    epochs, flux = _unpack_goes_series(payload["series"])
+    times: list[str] = []
+    values: list[float] = []
+    for epoch_ms, value in zip(epochs, flux, strict=True):
+        if (start_ms is None or epoch_ms >= start_ms) and (end_ms is None or epoch_ms <= end_ms):
+            times.append(_iso_ms(epoch_ms))
+            values.append(value)
+    return GoesResponse(
         date=date,
         available=True,
         reason="",
-        times=result["times"],
-        xrsb=result["xrsb"],
-        satellite=result.get("satellite"),
+        times=times,
+        xrsb=values,
+        satellite=payload.get("satellite"),
+        product=payload.get("product"),
     )
-    try:
-        with session_scope() as session:
-            session.merge(GoesDay(date=date, payload=response.model_dump()))
-    except Exception as exc:
-        logger.debug("Could not persist GOES cache: %s", exc)
-    return response
 
 
 # uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000

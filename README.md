@@ -339,6 +339,8 @@ principales son:
 | `FITS_CACHE_MIN_IDLE_MINUTES` | `60` | protege ficheros recién descargados o modificados frente al borrado |
 | `FITS_CACHE_MIN_FREE_GB` | `5` | espacio libre que se intenta preservar en el volumen |
 | `FITS_CACHE_PRUNE_APPLY` | `false` | `false` simula; `true` activa la limpieza programada |
+| `GOES_CACHE_MAX_DAYS` | `60` | días GOES guardados en la base; al superarlo se borran los guardados hace más tiempo |
+| `GOES_UNAVAILABLE_RETRY_MINUTES` | `30` | minutos antes de volver a buscar en NOAA un día sin datos publicados |
 
 `.env.example` contiene también los valores específicos de Docker Compose. No
 subas `.env`, contraseñas, archivos FITS ni bases de datos al repositorio.
@@ -457,7 +459,8 @@ La caché FITS no sustituye por completo la conexión a internet:
   desde el índice diario vivo de FHNW/ETHZ; sin acceso a ese índice pueden
   faltar aunque el catálogo esté guardado.
 - La superposición **GOES** depende de NOAA/SunPy y puede no estar disponible
-  sin conexión.
+  sin conexión. NOAA publica los datos científicos unos días después de cada
+  día UTC, por lo que los días más recientes pueden aparecer como no publicados.
 - *Spectral overview* y *Combine* comparten un único worker y se ejecutan en
   cola. El resto del portal sigue disponible mientras terminan.
 
