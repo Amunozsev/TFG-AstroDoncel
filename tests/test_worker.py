@@ -146,6 +146,45 @@ def test_worker_does_not_publish_internal_error_paths(monkeypatch):
             session.commit()
 
 
+@pytest.mark.parametrize(("retryable", "expected"), [(False, "failed"), (True, "queued")])
+def test_only_archive_failures_are_retried(monkeypatch, retryable, expected):
+    task_id = str(uuid.uuid4())
+    with SessionLocal() as session:
+        session.add(TaskRecord(id=task_id, task_type="test_failure", status="queued", payload={}, max_attempts=3))
+        session.commit()
+
+    def handler(_task):
+        raise worker.TaskFailure("Incompatible frequency axis", retryable=retryable)
+
+    monkeypatch.setitem(worker.HANDLERS, "test_failure", handler)
+    try:
+        assert worker.run_once()
+        with SessionLocal() as session:
+            task = session.get(TaskRecord, task_id)
+            assert (task.status, task.error) == (expected, "Incompatible frequency axis")
+    finally:
+        with SessionLocal() as session:
+            session.delete(session.get(TaskRecord, task_id))
+            session.commit()
+
+
+def test_worker_loop_survives_database_errors(monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    calls = []
+
+    def flaky_run_once():
+        calls.append(1)
+        if len(calls) == 1:
+            raise OperationalError("SELECT 1", {}, Exception("connection lost"))
+        return True
+
+    monkeypatch.setattr(worker, "run_once", flaky_run_once)
+    monkeypatch.setattr(worker.time, "sleep", lambda _seconds: None)
+    worker._serve(poll_seconds=0.01, max_iterations=2)
+    assert len(calls) == 2
+
+
 def test_stale_running_task_is_requeued():
     init_db()
     task_id = str(uuid.uuid4())

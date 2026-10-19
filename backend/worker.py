@@ -26,7 +26,16 @@ class TaskCancelled(Exception):
 
 
 class TaskFailure(ValueError):
-    """An actionable, path-free scientific task error safe to show publicly."""
+    """An actionable, path-free scientific task error safe to show publicly.
+
+    Most failures depend only on the input files (incompatible axes, gaps), so
+    running the task again would give the same result. ``retryable`` marks the
+    ones caused by the remote archive, which may succeed on a later attempt.
+    """
+
+    def __init__(self, message: str, *, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 def _update(task_id: str, **values) -> None:
@@ -242,7 +251,10 @@ def _spectral_overview(task: TaskRecord) -> dict:
         })
 
     if not any(result["status"] == "ok" for result in station_results):
-        raise TaskFailure("No FITS observations were available inside the requested UTC interval")
+        raise TaskFailure(
+            "No FITS observations were available inside the requested UTC interval",
+            retryable=any(errors_by_station.values()),
+        )
 
     payload = {
         "start_at": start_at.isoformat(),
@@ -282,7 +294,10 @@ def _combine_time(task: TaskRecord) -> dict:
         _check_cancelled(task.id)
         path = core._download_from_ethz(station, date, filename)
         if not path:
-            raise TaskFailure(f"Could not retrieve {filename}. Check archive availability and retry.")
+            raise TaskFailure(
+                f"Could not retrieve {filename}. Check archive availability and retry.",
+                retryable=True,
+            )
         try:
             raw, freqs, time_values, header = core._load_raw_cached(path)
         except Exception as exc:
@@ -380,7 +395,8 @@ def run_once() -> bool:
         _update(task.id, status="cancelled", error=str(exc))
     except Exception as exc:
         logger.exception("Task %s (%s) failed", task.id, task.task_type)
-        status = "queued" if task.attempts < task.max_attempts else "failed"
+        retryable = getattr(exc, "retryable", True)
+        status = "queued" if retryable and task.attempts < task.max_attempts else "failed"
         error = str(exc) if isinstance(exc, TaskFailure) else "Task processing failed; inspect server logs using the task id"
         _update(task.id, status=status, error=error)
     return True
@@ -392,25 +408,52 @@ def main() -> None:
     parser.add_argument("--poll-seconds", type=float, default=2.0)
     parser.add_argument("--cleanup-only", action="store_true")
     args = parser.parse_args()
-    init_db()
-    recover_stale_tasks()
-    cleanup_completed_tasks()
-    if args.cleanup_only:
-        return
-    last_recovery = time.monotonic()
-    last_cleanup = time.monotonic()
-    while True:
-        worked = run_once()
+    if args.once or args.cleanup_only:
+        init_db()
+        recover_stale_tasks()
+        cleanup_completed_tasks()
         if args.once:
-            return
+            run_once()
+        return
+    _serve(args.poll_seconds)
+
+
+def _serve(poll_seconds: float, max_iterations: int | None = None) -> None:
+    """Poll for tasks until stopped, surviving temporary database outages.
+
+    A lost database connection must not end the process: in the single-host
+    deployment the API is stopped together with the worker. Errors are logged
+    and retried with an increasing pause; a task interrupted mid-run stays
+    ``running`` and ``recover_stale_tasks`` puts it back in the queue.
+    """
+    ready = False
+    failures = 0
+    last_recovery = last_cleanup = time.monotonic()
+    iteration = 0
+    while max_iterations is None or iteration < max_iterations:
+        iteration += 1
+        try:
+            if not ready:
+                init_db()
+                recover_stale_tasks()
+                cleanup_completed_tasks()
+                ready = True
+            worked = run_once()
+            if time.monotonic() - last_recovery >= 60:
+                recover_stale_tasks()
+                last_recovery = time.monotonic()
+            if time.monotonic() - last_cleanup >= 3600:
+                cleanup_completed_tasks()
+                last_cleanup = time.monotonic()
+            failures = 0
+        except Exception:
+            failures += 1
+            pause = min(60.0, poll_seconds * 2 ** min(failures, 5))
+            logger.exception("Worker loop error (%d in a row); retrying in %.0f s", failures, pause)
+            time.sleep(pause)
+            continue
         if not worked:
-            time.sleep(args.poll_seconds)
-        if time.monotonic() - last_recovery >= 60:
-            recover_stale_tasks()
-            last_recovery = time.monotonic()
-        if time.monotonic() - last_cleanup >= 3600:
-            cleanup_completed_tasks()
-            last_cleanup = time.monotonic()
+            time.sleep(poll_seconds)
 
 
 if __name__ == "__main__":
