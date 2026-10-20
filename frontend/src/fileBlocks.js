@@ -45,8 +45,11 @@ export function selectCombineBlocks(files, selectedFilename, limit = 4) {
     if (stamp === context.time) file = selected;
     const start = seconds(`${stamp.slice(0, 2)}:${stamp.slice(2, 4)}:${stamp.slice(4, 6)}`);
     if (start === null) break;
-    if (previous !== null && Math.abs(start - previous - BLOCK_SECONDS) > CLOCK_TOLERANCE_SECONDS) {
-      notice = 'Selection stops at a gap or overlapping block; use Spectral overview for irregular intervals.';
+    // Stop only at a clear gap. A block that starts early may still continue
+    // the previous one; the server checks the real sample times and rejects
+    // true overlaps.
+    if (previous !== null && start - previous - BLOCK_SECONDS > CLOCK_TOLERANCE_SECONDS) {
+      notice = 'Selection stops at a gap; use Spectral overview for irregular intervals.';
       break;
     }
     picked.push(file.filename);

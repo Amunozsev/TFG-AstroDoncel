@@ -2011,8 +2011,9 @@ def get_spectrogram_zoom(
 
     Uses the raw-data LRU cache so repeated zoom requests on the same file
     do not re-parse the FITS. Background subtraction and optional RFI cleaning
-    are recomputed on the slice only, so contrast is optimised for the zoomed
-    region — intentional behaviour.
+    use the whole duration of the selected channels, as in the overview, so
+    zoomed intensities stay comparable with the full view; only the colour
+    range (vmin/vmax) is computed on the zoomed region.
     """
     try:
         datetime.strptime(date, "%Y-%m-%d")
@@ -2082,19 +2083,11 @@ def get_spectrogram_zoom(
                 ),
             )
 
-        # ── Slice ─────────────────────────────────────────────────────────────
-        data_slice = data_raw[row0:row1, col0:col1]
+        # ── Process the selected channels over the whole file, then slice ─────
+        data_rows = data_raw[row0:row1, :]
         if scale_mode == "median_db":
-            data_slice = data_slice * (2500.0 / 255.0 / 25.4)
-        freqs_slice = freqs_arr[row0:row1]
-        time_slice: list[str] = time_labels[col0:col1]
-
-        # Decimate only if the slice is still very wide
-        if data_slice.shape[1] > _MAX_ZOOM_COLS:
-            data_slice, time_slice = _decimate_time(data_slice, time_slice, _MAX_ZOOM_COLS)
-
-        # ── Process on the slice ──────────────────────────────────────────────
-        data_proc = _subtract_background(data_slice)
+            data_rows = data_rows * (2500.0 / 255.0 / 25.4)
+        data_proc = _subtract_background(data_rows)
         rfi_masked: list[int] = []
         rfi_stats: dict = {}
         if sahan_filter:
@@ -2105,6 +2098,13 @@ def get_spectrogram_zoom(
                 min_component_size=rfi_min_component,
                 impulsive=rfi_impulsive,
             )
+        data_proc = data_proc[:, col0:col1]
+        freqs_slice = freqs_arr[row0:row1]
+        time_slice: list[str] = time_labels[col0:col1]
+
+        # Decimate only if the slice is still very wide
+        if data_proc.shape[1] > _MAX_ZOOM_COLS:
+            data_proc, time_slice = _decimate_time(data_proc, time_slice, _MAX_ZOOM_COLS)
 
         vmin, vmax = _percentile_clip_global(data_proc.astype(float))
 

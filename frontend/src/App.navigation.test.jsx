@@ -407,7 +407,9 @@ describe('combine selection', () => {
     expect(result.focusCode).toBeNull();
   });
 
-  it('stops at missing or overlapping blocks and never hides a partial interval', () => {
+  it('stops at missing blocks and leaves early-starting blocks to the server', () => {
+    const early = ['16:00:00', '16:14:00'].map((t) => file(t));
+    expect(selectCombineBlocks(early, early[0].filename).filenames).toHaveLength(2);
     const files = ['16:00:00', '16:15:00', '16:45:00', '17:00:00'].map((t) => file(t));
     const result = selectCombineBlocks(files, files[0].filename);
     expect(result.filenames).toHaveLength(2);

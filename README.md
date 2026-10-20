@@ -103,9 +103,9 @@ observarse. Las coordenadas se aprenden de las cabeceras FITS; los valores
 manuales solo son una aproximación temporal para el mapa.
 
 Los trabajos costosos, como un resumen espectral largo o la combinación de
-bloques, se envían a una cola persistente. La interfaz muestra sus estados
-`queued`, `running`, `succeeded`, `failed` o `cancelled` y permite cancelar los
-que todavía no han terminado.
+bloques, se envían a una cola persistente. La interfaz sigue su estado
+(`queued`, `running`, `succeeded`, `failed` o `cancelled`); una tarea que aún no
+ha terminado se cancela desde la API con `POST /api/tasks/{id}/cancel`.
 
 ### Enlaces directos a una observación
 

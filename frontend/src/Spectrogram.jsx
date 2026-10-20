@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { OBSERVATORY_COLOR_SCALE, Plot } from './plotly';
 import { apiFetch } from './api';
+import { rfiQuery } from './analysisManifest';
 
 // All colorscales defined as explicit RGB arrays so they work regardless of the
 // Plotly.js bundle version. Mirrors the colormap set in Sahan's FITS Analyzer.
@@ -110,7 +111,6 @@ export default function Spectrogram({
   layers, layerState,
   date, showGoes, colormap, zmin, zmax,
   triggerLoad, hasLoaded, loading, error,
-  useSahanFilter, rfiParams,
   compareMode, autoContrastZoom, rulerMode,
   burstResults,
   theme = 'dark',
@@ -244,11 +244,7 @@ export default function Spectrogram({
             t1: String(t1),
             f0: String(Math.min(f0, f1)),
             f1: String(Math.max(f0, f1)),
-            sahan_filter: String(useSahanFilter),
-            rfi_z_thresh: String(rfiParams?.zThresh ?? 6.0),
-            rfi_occupancy: String(rfiParams?.occupancy ?? 0.15),
-            rfi_min_component: String(rfiParams?.minComponent ?? 9),
-            rfi_impulsive: String(rfiParams?.impulsive ?? true),
+            ...rfiQuery(layer.rfi),
             scale_mode: layer.scale_mode ?? 'relative',
           });
           try {
@@ -683,7 +679,7 @@ export default function Spectrogram({
       <div className="main-header">
         <h2>
           {headerTitle}
-          {useSahanFilter && layers.length > 0 && (
+          {layers[0]?.rfi && (
             <span className="header-status rfi">RFI v2 active</span>
           )}
           {zoomFetching && (

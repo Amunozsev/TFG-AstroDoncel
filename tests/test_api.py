@@ -85,6 +85,24 @@ def test_selected_nas_file_works_without_remote_archive(tmp_path, monkeypatch):
     assert list(cache.iterdir()) == []
 
 
+def test_zoom_keeps_the_full_file_background(tmp_path, monkeypatch):
+    # A channel that brightens halfway: zooming on the bright half must not
+    # subtract a background estimated from that half only.
+    filename = "MRO_20240101_120000.fit"
+    data = np.array([[1, 1, 1, 1, 9, 9, 9, 9], [2, 2, 2, 2, 2, 2, 2, 2]], dtype=float)
+    fits.PrimaryHDU(data, header=fits.Header({
+        "DATE-OBS": "2024-01-01", "TIME-OBS": "12:00:00",
+        "CRVAL1": 0, "CDELT1": 0.25, "CRVAL2": 80, "CDELT2": -10,
+    })).writeto(tmp_path / filename)
+    monkeypatch.setattr(core, "DATA_DIR_LOCAL", str(tmp_path))
+    response = client.get("/api/spectrogram/zoom", params={
+        "station": "MRO", "date": "2024-01-01", "filename": filename,
+        "t0": "2024-01-01T12:00:01Z", "t1": "2024-01-01T12:00:02Z", "f0": 60, "f1": 90,
+    })
+    assert response.status_code == 200
+    assert response.json()["z"] == [[8.0] * 4, [0.0] * 4]
+
+
 def test_detector_response_retains_model_provenance(monkeypatch):
     from backend import burst_detect
 

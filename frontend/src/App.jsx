@@ -1,6 +1,6 @@
 import { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react';
 import { API_BASE_URL, apiFetch } from './api';
-import { buildAnalysisManifest, downloadManifest } from './analysisManifest';
+import { buildAnalysisManifest, downloadManifest, rfiQuery } from './analysisManifest';
 import { describeBurstResult } from './burstResult';
 import { fileForEvent } from './eventNavigation';
 import { displayBlockTime, selectCombineBlocks } from './fileBlocks';
@@ -258,9 +258,9 @@ export default function App() {
     station,
     layers,
     processing: {
-      rfi_enabled: useSahanFilter,
-      rfi_parameters: rfiParams,
-      intensity_scale: scaleMode,
+      rfi_enabled: Boolean(layers[0]?.rfi),
+      rfi_parameters: layers[0]?.rfi ?? null,
+      intensity_scale: layers[0]?.scale_mode ?? scaleMode,
       background_method: 'per-channel 25th percentile',
     },
     display: {
@@ -483,7 +483,10 @@ export default function App() {
         }
 
         if (controller.signal.aborted) return;
-        setLayers(newLayers);
+        // Keep the RFI settings each layer was computed with: the controls can
+        // change afterwards, and zoom, export and manifest must match the data.
+        const appliedRfi = useSahanFilter ? { ...rfiParams } : null;
+        setLayers(newLayers.map((layer) => ({ ...layer, rfi: appliedRfi })));
         setFailedStations(newFailed);
 
         // Preserve existing state for stations already loaded; initialise new ones
@@ -1103,7 +1106,7 @@ export default function App() {
                     <p className="tool-subgroup-title">Download and share</p>
                     <div className="tool-action-grid">
                       <a className="btn-tool" title="Download the unmodified source observation" href={`${API_BASE_URL}/api/files/download?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename })}`}>Download original FITS</a>
-                      <a className="btn-tool" title="Export the displayed processing result and its scientific axes as FITS" href={`${API_BASE_URL}/api/spectrogram/export?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename, scale_mode: layers[0].scale_mode ?? 'relative', rfi: useSahanFilter, rfi_z_thresh: rfiParams.zThresh, rfi_occupancy: rfiParams.occupancy, rfi_min_component: rfiParams.minComponent, rfi_impulsive: rfiParams.impulsive })}`}>Export processed FITS</a>
+                      <a className="btn-tool" title="Export the displayed processing result and its scientific axes as FITS" href={`${API_BASE_URL}/api/spectrogram/export?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename, scale_mode: layers[0].scale_mode ?? 'relative', ...rfiQuery(layers[0].rfi, 'rfi') })}`}>Export processed FITS</a>
                       <button className="btn-tool" type="button" onClick={copyObservationLink} title="Copy a link that opens this exact FITS block">Copy observation link</button>
                       <button className="btn-tool" type="button" onClick={exportAnalysisManifest} title="Save selected files, units, processing settings and provenance as JSON">Export analysis manifest</button>
                     </div>
@@ -1437,8 +1440,6 @@ export default function App() {
           hasLoaded={hasLoaded}
           loading={fetchLoading}
           error={fetchError}
-          useSahanFilter={useSahanFilter}
-          rfiParams={rfiParams}
           compareMode={compareMode}
           autoContrastZoom={autoContrastZoom}
           rulerMode={rulerMode}

@@ -439,8 +439,8 @@ def list_events(
             ]
         return [{
             "id": row.id, "source": row.source, "source_label": source_label(row.source),
-            "started_at": row.started_at.replace(tzinfo=timezone.utc).isoformat(),
-            "ended_at": row.ended_at.replace(tzinfo=timezone.utc).isoformat(),
+            "started_at": _as_utc(row.started_at).isoformat(),
+            "ended_at": _as_utc(row.ended_at).isoformat(),
             "burst_type": row.burst_type, "intensity": row.intensity,
             "min_lon": row.min_lon, "mid_lon": row.mid_lon, "max_lon": row.max_lon,
             "stations": row.stations, "score": row.score, "metadata": row.metadata_json,
