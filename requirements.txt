@@ -10,6 +10,8 @@ pydantic==2.13.4
 astropy==8.0.0
 numpy==2.5.0
 scipy==1.18.0
+# Renders the burst-type detector input image (backend/burst_types.py)
+pillow==12.3.0
 
 # GOES/XRS overlay through SunPy/Fido
 sunpy[net,timeseries]==8.0.0
