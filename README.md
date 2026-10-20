@@ -126,6 +126,14 @@ Plotly.
 
 - **Drift ruler:** dos clics sobre el espectrograma miden `Δt`, `Δf` y la tasa
   de deriva en MHz/s.
+- **Type II analysis:** se dibuja con clics una región alrededor del burst y se
+  extrae la frecuencia de máxima intensidad de cada instante (por encima de 3σ
+  del ruido). Se ajusta `f = a·t⁻ᵇ` y, con el modelo de Newkirk (fold 1–4) y
+  emisión fundamental o armónica, se estiman altura y velocidad del choque con
+  sus incertidumbres. Los puntos atípicos se excluyen con un clic. La sección
+  experimental de *band-splitting* usa dos bandas marcadas para estimar la
+  compresión, el número de Mach de Alfvén y el campo magnético. Exporta CSV y
+  JSON; el cálculo está en `backend/type_ii.py`.
 - **Light curve:** traza la intensidad frente al tiempo en hasta ocho
   frecuencias. La curva aparece **bajo el espectrograma y comparte su eje
   temporal**, con los mismos márgenes, de modo que cada pico se lee sobre la

@@ -113,6 +113,7 @@ export default function Spectrogram({
   triggerLoad, hasLoaded, loading, error,
   compareMode, autoContrastZoom, rulerMode,
   burstResults,
+  onPlotClick, extraTraces = [], headerExtra = null,
   theme = 'dark',
 }) {
   const [goesData, setGoesData] = useState(null);
@@ -347,10 +348,15 @@ export default function Spectrogram({
 
   // ── Ruler click handler ──────────────────────────────────────────────────
   function handlePlotClick(ev) {
-    if (!rulerMode || !ev?.points?.length) return;
+    if (!ev?.points?.length) return;
     const pt = ev.points[0];
     if (pt.x == null || pt.y == null) return;
     const yref = pt.data?.yaxis || 'y';
+    if (!rulerMode) {
+      // Other tools (type II analysis) draw on the primary panel only.
+      if (yref === 'y') onPlotClick?.({ x: pt.x, y: pt.y });
+      return;
+    }
     setRulerPoints((prev) =>
       prev.length >= 2 ? [{ x: pt.x, y: pt.y, yref }] : [...prev, { x: pt.x, y: pt.y, yref }]
     );
@@ -667,6 +673,15 @@ export default function Spectrogram({
     }
   }
 
+  traces.push(...extraTraces);
+  // Markers would make Plotly autorange past the observation and shift the
+  // plot under the user's next click, so pin the primary axes to the data.
+  const primary = layers[0];
+  if (extraTraces.length > 0 && primary?.time_axis?.length > 1 && primary.freq_axis?.length > 1) {
+    layout.xaxis = { ...layout.xaxis, autorange: false, range: [primary.time_axis[0], primary.time_axis[primary.time_axis.length - 1]] };
+    layout.yaxis = { ...layout.yaxis, autorange: false, range: [Math.min(...primary.freq_axis), Math.max(...primary.freq_axis)] };
+  }
+
   // ── Header title ─────────────────────────────────────────────────────────
   const headerTitle = (() => {
     if (layers.length === 0) return 'e-CALLISTO Spain · Solar Spectrogram Portal';
@@ -696,6 +711,7 @@ export default function Spectrogram({
                 : `Ruler: click ${2 - rulerPoints.length} more point${rulerPoints.length === 1 ? '' : 's'}`}
             </span>
           )}
+          {headerExtra}
         </h2>
         <div className="main-header-actions">
           {isZoomed && (

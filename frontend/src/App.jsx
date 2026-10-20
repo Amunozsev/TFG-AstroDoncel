@@ -4,6 +4,8 @@ import { buildAnalysisManifest, downloadManifest, rfiQuery } from './analysisMan
 import { describeBurstResult } from './burstResult';
 import { fileForEvent } from './eventNavigation';
 import { displayBlockTime, selectCombineBlocks } from './fileBlocks';
+import { TypeIIResult, TypeIIStatus } from './TypeIIPanel';
+import { useTypeII } from './useTypeII';
 import { observationDateRange, observationPath, parseObservationSearch, writeObservationUrl } from './observationUrl';
 import './App.css';
 
@@ -161,6 +163,7 @@ export default function App() {
   // Toolbar tabs / tools
   const [activeTab, setActiveTab]           = useState(null);
   const [rulerMode, setRulerMode]           = useState(false);
+  const [typeIIOpen, setTypeIIOpen]         = useState(false);
   const [showHeaderViewer, setShowHeaderViewer] = useState(false);
   const [headerLayerIdx, setHeaderLayerIdx] = useState(0);
 
@@ -168,6 +171,7 @@ export default function App() {
   const [burstResults, setBurstResults]     = useState({});
   const [burstDetecting, setBurstDetecting] = useState(false);
   const [taskStatus, setTaskStatus]         = useState(null);
+  const typeII = useTypeII(layers[0], typeIIOpen);
   const [lightCurveResult, setLightCurveResult] = useState(null);
   const [shareStatus, setShareStatus]       = useState('');
   const taskRunRef = useRef(0);
@@ -1016,6 +1020,14 @@ export default function App() {
                 >
                   {rulerMode ? 'Drift ruler · on' : 'Drift ruler'}
                 </button>
+                <button
+                  className={`btn-tool${typeIIOpen ? ' active' : ''}`}
+                  onClick={() => { setTypeIIOpen(true); setRulerMode(false); setActiveTab(null); }}
+                  disabled={layers.length === 0}
+                  title="Fit the drift of a type II burst and estimate shock height, speed and magnetic field"
+                >
+                  Type II analysis
+                </button>
                 <button className="btn-tool" onClick={() => { setHeaderLayerIdx(0); setShowHeaderViewer(true); }} disabled={layers.length === 0} title="Show scientific metadata stored in the current FITS header">FITS header</button>
                 <button
                   className="btn-tool tool-action-wide"
@@ -1444,8 +1456,14 @@ export default function App() {
           autoContrastZoom={autoContrastZoom}
           rulerMode={rulerMode}
           burstResults={burstResults}
+          onPlotClick={typeII.onPlotClick}
+          extraTraces={typeII.traces}
+          headerExtra={typeIIOpen ? <TypeIIStatus t2={typeII} /> : null}
           theme={theme}
         />
+        {typeIIOpen && layers.length > 0 && (
+          <TypeIIResult t2={typeII} theme={theme} onClose={() => setTypeIIOpen(false)} />
+        )}
         {currentLightCurve && (
           <LightCurveResult
             result={currentLightCurve}

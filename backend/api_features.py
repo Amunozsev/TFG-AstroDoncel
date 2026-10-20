@@ -390,6 +390,128 @@ def export_processed_fits(
     )
 
 
+class RfiSettings(BaseModel):
+    zThresh: float = Field(default=6.0, ge=0.5, le=20.0)
+    occupancy: float = Field(default=0.15, ge=0.01, le=1.0)
+    minComponent: int = Field(default=9, ge=1, le=500)
+    impulsive: bool = True
+
+
+# Points are (UTC instant, frequency in MHz), as read from the plot axes.
+TimeFreqPoint = tuple[str, float]
+
+
+class TypeIIRequest(BaseModel):
+    station: str
+    date: str
+    filename: str
+    fold: int = Field(default=1, ge=1, le=4)
+    harmonic: bool = False
+
+
+class BackboneRequest(TypeIIRequest):
+    polygon: list[TimeFreqPoint] = Field(min_length=3, max_length=200)
+    rfi: RfiSettings | None = None
+    scale_mode: str = Field(default="relative", pattern="^(relative|median_db)$")
+
+
+class ShockRequest(TypeIIRequest):
+    points: list[TimeFreqPoint] = Field(min_length=3, max_length=20000)
+
+
+class BandSplittingRequest(TypeIIRequest):
+    upper: list[TimeFreqPoint] = Field(min_length=3, max_length=500)
+    lower: list[TimeFreqPoint] = Field(min_length=3, max_length=500)
+
+
+def _type_ii_file(request: TypeIIRequest):
+    """Load the request's FITS and return (data, freqs, offsets_s, start_utc)."""
+    from backend import main as core
+
+    try:
+        path = _resolve_file(request.station, request.date, request.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    data, freqs, time_axis, header = core._load_raw_cached(path)
+    return data, freqs, core._time_offsets_seconds(time_axis, header), core._observation_start(header)
+
+
+def _seconds(points: list[TimeFreqPoint], start: datetime) -> tuple[list[float], list[float]]:
+    from backend import main as core
+
+    try:
+        times = [(core._parse_utc(instant) - start).total_seconds() for instant, _ in points]
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Point times must be ISO-8601 UTC instants") from exc
+    return times, [freq for _, freq in points]
+
+
+def _utc(start: datetime, seconds) -> list[str]:
+    return [(start + timedelta(seconds=float(value))).isoformat().replace("+00:00", "Z") for value in seconds]
+
+
+@router.post("/type2/backbone")
+def type_ii_backbone(request: BackboneRequest):
+    """Maximum-intensity frequency at each instant inside the drawn burst region."""
+    from backend import main as core
+    from backend import type_ii
+
+    data, freqs, offsets, start = _type_ii_file(request)
+    if request.scale_mode == "median_db":
+        data = data * (2500.0 / 255.0 / 25.4)
+    processed = core._subtract_background(data)
+    if request.rfi:
+        processed, _channels, _stats = core._mitigate_rfi(
+            processed,
+            z_thresh=request.rfi.zThresh,
+            occupancy_thresh=request.rfi.occupancy,
+            min_component_size=request.rfi.minComponent,
+            impulsive=request.rfi.impulsive,
+        )
+    polygon_s, polygon_mhz = _seconds(request.polygon, start)
+    try:
+        times, peak_freqs = type_ii.backbone_points(processed, freqs, offsets, list(zip(polygon_s, polygon_mhz, strict=True)))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"time_utc": _utc(start, times), "time_s": times.tolist(), "freq_mhz": peak_freqs.tolist()}
+
+
+@router.post("/type2/shock")
+def type_ii_shock(request: ShockRequest):
+    """Power-law drift fit and Newkirk shock height and speed."""
+    from backend import type_ii
+
+    _data, _freqs, _offsets, start = _type_ii_file(request)
+    times, freqs = _seconds(request.points, start)
+    try:
+        result = type_ii.shock_parameters(times, freqs, fold=request.fold, harmonic=request.harmonic)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    result["curve"]["time_utc"] = _utc(start, result["curve"]["time_s"])
+    return result
+
+
+@router.post("/type2/band-splitting")
+def type_ii_band_splitting(request: BandSplittingRequest):
+    """Experimental magnetic field estimate from split type II lanes."""
+    from backend import type_ii
+
+    _data, _freqs, _offsets, start = _type_ii_file(request)
+    try:
+        result = type_ii.band_splitting(
+            *_seconds(request.upper, start), *_seconds(request.lower, start),
+            fold=request.fold, harmonic=request.harmonic,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    for fit in (result["upper_fit"], result["lower_fit"]):
+        curve_s = np.linspace(fit["t_start_s"], fit["t_end_s"], 50)
+        fit["curve_time_utc"] = _utc(start, curve_s)
+        fit["curve_freq_mhz"] = (fit["a"] * np.power(curve_s, -fit["b"])).tolist()
+    result["profile"]["time_utc"] = _utc(start, result["profile"]["time_s"])
+    return result
+
+
 @router.post("/tasks", status_code=202)
 def create_task(task: TaskCreate):
     allowed = {"spectral_overview", "combine_time"}
