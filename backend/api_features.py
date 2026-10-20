@@ -403,7 +403,7 @@ def create_task(task: TaskCreate):
     options = dict(task.options)
     if task.type == "spectral_overview":
         requested_stations = options.get("stations", [station])
-        max_stations = int(os.environ.get("OVERVIEW_MAX_STATIONS", "120"))
+        max_stations = int(os.environ.get("OVERVIEW_MAX_STATIONS", "6"))
         if not isinstance(requested_stations, list) or not 1 <= len(requested_stations) <= max_stations:
             raise HTTPException(
                 status_code=422,
@@ -419,7 +419,7 @@ def create_task(task: TaskCreate):
             options.get("end_at", (default_start + timedelta(days=1)).isoformat()),
             "end_at",
         )
-        max_hours = float(os.environ.get("OVERVIEW_MAX_HOURS", "72"))
+        max_hours = float(os.environ.get("OVERVIEW_MAX_HOURS", "24"))
         if end_at <= start_at or end_at - start_at > timedelta(hours=max_hours):
             raise HTTPException(
                 status_code=422,

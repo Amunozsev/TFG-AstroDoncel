@@ -162,6 +162,14 @@ def _spectral_overview(task: TaskRecord) -> dict:
                 | set(core._list_ethz_files(station, date))
             )
             work.extend((station, date, filename) for filename in filenames)
+    # Memory grows with the number of files (stations with several receivers
+    # publish many per hour), so cap it before downloading anything.
+    max_files = int(os.environ.get("OVERVIEW_MAX_FILES", "400"))
+    if len(work) > max_files:
+        raise TaskFailure(
+            f"The selection covers {len(work)} FITS files (limit {max_files}). "
+            "Choose fewer stations or a shorter interval."
+        )
 
     loaded_by_station: dict[str, list[dict]] = {station: [] for station in stations}
     errors_by_station: dict[str, int] = {station: 0 for station in stations}

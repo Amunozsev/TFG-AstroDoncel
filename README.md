@@ -328,8 +328,9 @@ principales son:
 | `MAX_ACTIVE_TASKS` | `100` | límite de trabajos activos |
 | `TASK_STALE_MINUTES` | `15` | recuperación de trabajos interrumpidos |
 | `TASK_RETENTION_DAYS` | `30` | retención de tareas terminadas |
-| `OVERVIEW_MAX_STATIONS` | `120` | máximo de estaciones por resumen |
-| `OVERVIEW_MAX_HOURS` | `72` | intervalo máximo de un resumen |
+| `OVERVIEW_MAX_STATIONS` | `6` | máximo de estaciones por resumen |
+| `OVERVIEW_MAX_HOURS` | `24` | intervalo máximo de un resumen |
+| `OVERVIEW_MAX_FILES` | `400` | máximo de ficheros FITS por resumen; limita la memoria del worker |
 | `MAX_FITS_DOWNLOAD_BYTES` | `134217728` | tamaño máximo de una descarga FITS |
 | `BURST_CATALOG_SOURCE` | automático | `uah_mysql` en el NAS; `dearce_v3` sin MySQL configurado |
 | `BURST_SOURCE_MYSQL_*` | sin valor | host, puerto, base, usuario, contraseña y tabla/vista de solo lectura |

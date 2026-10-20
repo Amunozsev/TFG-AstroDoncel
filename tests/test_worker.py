@@ -185,6 +185,20 @@ def test_worker_loop_survives_database_errors(monkeypatch):
     assert len(calls) == 2
 
 
+def test_overview_over_file_limit_fails_before_downloading(monkeypatch):
+    monkeypatch.setenv("OVERVIEW_MAX_FILES", "2")
+    monkeypatch.setattr(core, "_list_local_fits_files", lambda station, date: [])
+    monkeypatch.setattr(core, "_list_ethz_files", lambda station, date: [
+        f"MRO_20240101_{hour:02d}0000_59.fit.gz" for hour in range(3)
+    ])
+    monkeypatch.setattr(core, "_download_from_ethz", lambda *_args: pytest.fail("downloaded despite the limit"))
+    task = TaskRecord(id=str(uuid.uuid4()), payload={"station": "MRO", "date": "2024-01-01", "options": {}})
+
+    with pytest.raises(worker.TaskFailure, match="3 FITS files") as failure:
+        worker._spectral_overview(task)
+    assert not failure.value.retryable
+
+
 def test_stale_running_task_is_requeued():
     init_db()
     task_id = str(uuid.uuid4())
