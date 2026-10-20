@@ -1,0 +1,8 @@
+# Separate environment for training the burst-type detector on an NVIDIA GPU
+# (tools/train_burst_types.py). The API never imports these packages: it serves
+# the exported ONNX model with onnxruntime.
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.7.0+cu128
+torchvision==0.22.0+cu128
+ultralytics==8.4.183
+onnx==1.23.2
