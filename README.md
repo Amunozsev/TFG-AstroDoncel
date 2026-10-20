@@ -328,6 +328,7 @@ principales son:
 | `MAX_ACTIVE_TASKS` | `100` | límite de trabajos activos |
 | `TASK_STALE_MINUTES` | `15` | recuperación de trabajos interrumpidos |
 | `TASK_RETENTION_DAYS` | `30` | retención de tareas terminadas |
+| `TASK_RESULTS_MAX_GB` | `2` | tamaño máximo de `task_results/`; se borran primero los resultados más antiguos |
 | `OVERVIEW_MAX_STATIONS` | `6` | máximo de estaciones por resumen |
 | `OVERVIEW_MAX_HOURS` | `24` | intervalo máximo de un resumen |
 | `OVERVIEW_MAX_FILES` | `400` | máximo de ficheros FITS por resumen; limita la memoria del worker |
@@ -339,7 +340,8 @@ principales son:
 | `FITS_CACHE_MAX_AGE_DAYS` | `90` | antigüedad máxima de los FITS descargados |
 | `FITS_CACHE_MIN_IDLE_MINUTES` | `60` | protege ficheros recién descargados o modificados frente al borrado |
 | `FITS_CACHE_MIN_FREE_GB` | `5` | espacio libre que se intenta preservar en el volumen |
-| `FITS_CACHE_PRUNE_APPLY` | `false` | `false` simula; `true` activa la limpieza programada |
+| `FITS_CACHE_PRUNE_APPLY` | `true` | `true` aplica la limpieza programada; `false` solo la simula |
+| `RUN_CACHE_MAINTENANCE` | `1` | imagen única (Railway): ejecuta la limpieza de caché junto a API y worker |
 | `GOES_CACHE_MAX_DAYS` | `60` | días GOES guardados en la base; al superarlo se borran los guardados hace más tiempo |
 | `GOES_UNAVAILABLE_RETRY_MINUTES` | `30` | minutos antes de volver a buscar en NOAA un día sin datos publicados |
 
@@ -431,11 +433,13 @@ Para actualizar después:
 ```bash
 git pull --ff-only
 docker compose up --build -d
+docker image prune -f
 docker compose ps
 curl --fail http://127.0.0.1:8080/ready
 ```
 
-Las migraciones se ejecutan antes de arrancar la API. Mantén una sola instancia
+`docker image prune -f` borra las imágenes anteriores que deja cada
+reconstrucción. Las migraciones se ejecutan antes de arrancar la API. Mantén una sola instancia
 del servicio `worker` salvo que se valide expresamente el consumo de CPU y el
 comportamiento de la cola en el NAS.
 
@@ -466,16 +470,17 @@ La caché FITS no sustituye por completo la conexión a internet:
   cola. El resto del portal sigue disponible mientras terminan.
 
 El servicio `cache-maintenance` comprueba periódicamente tamaño, antigüedad y
-espacio libre de `/data`. Solo ve la caché descargada: el archivo e-CALLISTO se
-monta exclusivamente en API/worker y siempre como solo lectura. La primera
-ejecución debe permanecer con `FITS_CACHE_PRUNE_APPLY=false`; revisa:
+espacio libre de `/data` y borra los FITS descargados que superan los límites.
+Solo ve la caché descargada: el archivo e-CALLISTO se monta exclusivamente en
+API/worker y siempre como solo lectura. En la imagen única de Railway se ejecuta
+dentro del mismo contenedor. Para revisar qué borra:
 
 ```bash
 docker compose logs cache-maintenance
 ```
 
-Cuando los límites sean correctos, cambia la variable a `true` y recrea el
-servicio. `tools/prune_cache.py` ofrece además una simulación manual. El borrado
+`FITS_CACHE_PRUNE_APPLY=false` deja la limpieza en simulación.
+`tools/prune_cache.py` ofrece además una simulación manual. El borrado
 exige que la carpeta contenga la marca creada por la aplicación y vuelve a
 comprobar que cada fichero no haya cambiado desde que se planificó.
 
@@ -532,7 +537,7 @@ en `ASTRODONCEL_TEST_MYSQL_URL`.
   Cuando una fuente opcional falla, el resto de la API continúa operativo y la
   interfaz indica el fallback o la ausencia de datos.
 - `cache-maintenance` y `tools/prune_cache.py` solo actúan sobre FITS de la caché
-  marcada. El modo programado no borra mientras `FITS_CACHE_PRUNE_APPLY=false`.
+  marcada. Con `FITS_CACHE_PRUNE_APPLY=false` el modo programado solo simula.
 
 Copias de seguridad del stack Compose:
 
@@ -556,7 +561,7 @@ restauración.
 | `/ready` no responde tras arrancar | migraciones o PostgreSQL aún iniciando | `docker compose logs -f migrate api` |
 | Una estación no muestra ficheros ese día | no hay observaciones publicadas o el archivo remoto no responde | prueba otra fecha y revisa los logs de la API |
 | **Burst Reports** está vacío en el NAS | MySQL no es alcanzable desde la red Docker, rechaza el usuario, la tabla no es compatible o la fuente no está configurada | revisa `docker compose logs api`, comprueba escucha y permisos internos con la cuenta de solo lectura y fija `BURST_SOURCE_MYSQL_TABLE` si hay varias candidatas |
-| La caché sigue creciendo | la limpieza está en simulación o sus límites aún no se alcanzan | revisa `docker compose logs cache-maintenance`; valida el plan y después activa `FITS_CACHE_PRUNE_APPLY=true` |
+| La caché sigue creciendo | sus límites aún no se alcanzan o `FITS_CACHE_PRUNE_APPLY=false` | revisa `docker compose logs cache-maintenance` y los valores `FITS_CACHE_*` |
 | *Combine* falla con «Incompatible frequency axis» | los bloques no comparten la misma configuración de receptor | selecciona otro bloque o limita la combinación al mismo `focus_code` |
 
 ## Créditos y procedencia

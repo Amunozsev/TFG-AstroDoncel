@@ -86,36 +86,63 @@ def recover_stale_tasks(stale_minutes: int | None = None) -> int:
     return recovered
 
 
+_TERMINAL_STATUSES = ("succeeded", "failed", "cancelled")
+
+
+def _remove_artifact(result_root: str, task_id: str) -> int:
+    """Delete the strictly named artifact of one task and return the bytes freed."""
+    try:
+        valid_id = str(uuid.UUID(task_id)) == task_id
+    except ValueError:
+        valid_id = False
+    if not valid_id:
+        return 0
+    path = os.path.realpath(os.path.join(result_root, f"{task_id}.json.gz"))
+    if os.path.commonpath((result_root, path)) != result_root:
+        return 0
+    try:
+        size = os.path.getsize(path)
+        os.remove(path)
+    except FileNotFoundError:
+        return 0
+    return size
+
+
+def _results_size(result_root: str) -> int:
+    try:
+        return sum(entry.stat().st_size for entry in os.scandir(result_root) if entry.is_file())
+    except FileNotFoundError:
+        return 0
+
+
 def cleanup_completed_tasks(retention_days: int | None = None) -> int:
-    """Delete expired terminal tasks and only their strictly named artifacts."""
+    """Delete expired terminal tasks, then the oldest results beyond the size limit."""
     days = retention_days if retention_days is not None else int(os.environ.get("TASK_RETENTION_DAYS", "30"))
     if days < 1:
         raise ValueError("TASK_RETENTION_DAYS must be at least 1")
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    max_bytes = float(os.environ.get("TASK_RESULTS_MAX_GB", "2")) * 1024**3
     removed = 0
     result_root = os.path.realpath(RESULT_DIR)
+    terminal = select(TaskRecord).where(TaskRecord.status.in_(_TERMINAL_STATUSES))
     with session_scope() as session:
-        expired = session.scalars(select(TaskRecord).where(
-            TaskRecord.status.in_(["succeeded", "failed", "cancelled"]),
-            TaskRecord.updated_at < cutoff,
-        )).all()
-        for task in expired:
-            # A cancellation can arrive just after publication but before the
-            # result is saved. Such terminal tasks still own their UUID artifact.
-            artifact = f"{task.id}.json.gz"
-            try:
-                valid_id = str(uuid.UUID(task.id)) == task.id
-            except ValueError:
-                valid_id = False
-            if valid_id:
-                artifact_path = os.path.realpath(os.path.join(result_root, artifact))
-                if os.path.commonpath((result_root, artifact_path)) == result_root:
-                    try:
-                        os.remove(artifact_path)
-                    except FileNotFoundError:
-                        pass
+        # A cancellation can arrive just after publication but before the
+        # result is saved. Such terminal tasks still own their UUID artifact.
+        for task in session.scalars(terminal.where(TaskRecord.updated_at < cutoff)).all():
+            _remove_artifact(result_root, task.id)
             session.delete(task)
             removed += 1
+        # Retention alone does not bound disk use: a few large overviews can
+        # fill the volume well within the retention period.
+        used = _results_size(result_root)
+        for task in session.scalars(terminal.order_by(TaskRecord.updated_at)).all():
+            if used <= max_bytes:
+                break
+            freed = _remove_artifact(result_root, task.id)
+            if freed:
+                used -= freed
+                session.delete(task)
+                removed += 1
     return removed
 
 

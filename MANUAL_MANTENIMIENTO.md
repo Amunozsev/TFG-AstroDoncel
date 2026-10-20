@@ -78,6 +78,7 @@ Después:
 ```bash
 git pull --ff-only
 docker compose up --build -d
+docker image prune -f
 docker compose ps
 curl --fail http://127.0.0.1:8080/ready
 ```
@@ -155,13 +156,22 @@ tres datos. El nombre FITS debe pertenecer a esa estación y fecha. Si el archiv
 no está en la caché ni en el archivo local, la aplicación intenta descargarlo de
 e-CALLISTO.
 
-## 7. Control del almacenamiento FITS
+## 7. Control del almacenamiento y la memoria
 
-Los FITS descargados se guardan en `APP_DATA_SOURCE` para no repetir descargas.
-No se borran de inmediato después de usarlos. El servicio `cache-maintenance`
-aplica una política independiente al archivo e-CALLISTO original.
+Todo lo que la aplicación escribe en disco tiene un límite y se limpia solo:
 
-Configuración inicial propuesta:
+| Qué ocupa disco | Límite por defecto | Quién lo limpia |
+|---|---|---|
+| FITS descargados (`APP_DATA_SOURCE`) | 20 GiB, 90 días y al menos 5 GiB libres | servicio `cache-maintenance`, cada 6 h |
+| Resultados de tareas (`task_results/`) | 30 días y 2 GiB en total | worker, cada hora |
+| Series GOES | 60 días en la base; los ficheros descargados se borran tras leerlos | API |
+| Logs de los contenedores | 3 ficheros de 10 MB por servicio | Docker |
+| Copias de seguridad (`backups/`) | sin cachés; se conservan las 5 últimas | `scripts/backup.sh` |
+| Imágenes antiguas de Docker | — | `docker image prune -f` al actualizar (sección 4) |
+
+La base de datos solo crece con el catálogo de eventos, del orden de megabytes.
+
+Valores de la caché FITS (en `.env`):
 
 ```dotenv
 FITS_CACHE_MAX_GB=20
@@ -169,32 +179,22 @@ FITS_CACHE_MAX_AGE_DAYS=90
 FITS_CACHE_MIN_IDLE_MINUTES=60
 FITS_CACHE_MIN_FREE_GB=5
 FITS_CACHE_PRUNE_INTERVAL_HOURS=6
-FITS_CACHE_PRUNE_APPLY=false
+FITS_CACHE_PRUNE_APPLY=true
+TASK_RESULTS_MAX_GB=2
 ```
 
-Los límites significan: intentar que la caché no supere 20 GiB, retirar archivos
-de más de 90 días y conservar al menos 5 GiB libres. Ningún FITS descargado o
-modificado durante la última hora se borra; la aplicación no registra la fecha
-del último acceso de cada usuario.
-
-Primero se deja en simulación:
+Ningún FITS descargado o modificado durante la última hora se borra. Para ver
+qué se ha borrado:
 
 ```bash
 docker compose logs --tail 200 cache-maintenance
 ```
 
-Las líneas `WOULD DELETE` muestran qué borraría. Después de revisar con el
-responsable del NAS que 20/90/5 son límites adecuados, cambia:
-
-```dotenv
-FITS_CACHE_PRUNE_APPLY=true
-```
-
-y recrea únicamente ese servicio:
+Con `FITS_CACHE_PRUNE_APPLY=false` la limpieza solo simula: las líneas
+`WOULD DELETE` muestran qué borraría. Tras cambiar un valor, recrea ese servicio:
 
 ```bash
 docker compose up -d --force-recreate cache-maintenance
-docker compose logs -f cache-maintenance
 ```
 
 Protecciones incorporadas:
@@ -206,16 +206,20 @@ Protecciones incorporadas:
 - exige la marca `.astrodoncel-cache` creada por la API;
 - antes de borrar comprueba que tamaño y fecha no hayan cambiado.
 
-La herramienta manual también simula por defecto:
+La herramienta manual simula por defecto:
 
 ```bash
 docker compose run --rm cache-maintenance python -m tools.prune_cache --data-dir /data
 ```
 
-No hace falta respaldar la caché descargada para conservar información
-científica original: cualquier FITS eliminado puede volver a obtenerse del
-archivo local o remoto. Sí conviene respaldar PostgreSQL y los artefactos que se
-quieran conservar.
+Cualquier FITS eliminado puede volver a obtenerse del archivo local o remoto,
+por lo que la caché no forma parte de las copias de seguridad.
+
+**Memoria del worker.** El contenedor `worker` está limitado a 1 GB
+(`WORKER_MEMORY_LIMIT`) y un *Spectral overview* admite como máximo 400 FITS
+(`OVERVIEW_MAX_FILES`), unos 570 MB de pico. Si el NAS dispone de RAM de sobra y
+se quieren resúmenes mayores, pueden subirse ambos a la vez, por ejemplo
+`WORKER_MEMORY_LIMIT=1536m` y `OVERVIEW_MAX_FILES=600`.
 
 ## 8. Proxy inverso y HTTPS
 
@@ -242,7 +246,9 @@ sh scripts/backup.sh
 ```
 
 El script guarda `postgres.dump`, `app-data.tar.gz` y sus hashes en una carpeta
-fechada dentro de `backups/`. Para copiar solo PostgreSQL:
+fechada dentro de `backups/`. No incluye los FITS ni GOES descargados, que pueden
+volver a obtenerse, y conserva solo las 5 copias más recientes (`BACKUP_KEEP=10
+sh scripts/backup.sh` conserva 10). Para copiar solo PostgreSQL:
 
 ```bash
 sh scripts/backup.sh --database-only
@@ -266,7 +272,7 @@ NAS; no debe improvisarse sobre la instancia activa.
 | Una tarea no avanza | `docker compose logs worker` |
 | Burst Reports está vacío | `docker compose logs api`; revisar usuario, host y tabla MySQL |
 | No aparece un FITS | revisar fecha/estación y la salida de API al acceder a e-CALLISTO |
-| El disco sigue creciendo | comprobar el log y `FITS_CACHE_PRUNE_APPLY` |
+| El disco sigue creciendo | comprobar el log de `cache-maintenance`, `FITS_CACHE_PRUNE_APPLY` y `backups/` |
 | HTTPS falla, pero `localhost:8080` funciona | revisar certificado y regla del proxy Synology |
 
 Para seguir un problema en tiempo real:

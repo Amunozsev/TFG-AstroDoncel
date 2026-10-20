@@ -46,13 +46,13 @@ def run_once() -> None:
         min_idle_minutes=_float_env("FITS_CACHE_MIN_IDLE_MINUTES", 60.0),
         min_free_gb=_float_env("FITS_CACHE_MIN_FREE_GB", 5.0),
     )
-    apply = _bool_env("FITS_CACHE_PRUNE_APPLY")
+    apply = _bool_env("FITS_CACHE_PRUNE_APPLY", default=True)
     print_plan(plan, apply=apply)
-    if apply:
+    if not apply:
+        logger.info("FITS cache maintenance is in dry-run mode; no files were deleted")
+    elif plan.victims:
         deleted = apply_plan(plan)
         logger.info("FITS cache maintenance deleted %d files", len(deleted))
-    else:
-        logger.info("FITS cache maintenance is in dry-run mode; no files were deleted")
 
 
 def _request_stop(_signum: int, _frame: object) -> None:

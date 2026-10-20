@@ -22,7 +22,10 @@ docker compose cp db:/tmp/astrodoncel.dump "$backup_dir/postgres.dump"
 docker compose exec -T db rm -f /tmp/astrodoncel.dump
 
 if [ "$database_only" -eq 0 ]; then
-    docker compose exec -T api tar -czf /tmp/app-data.tar.gz -C /data .
+    # Downloaded FITS and GOES files can be fetched again; leave them out.
+    docker compose exec -T api tar -czf /tmp/app-data.tar.gz -C /data \
+        --exclude='*.fit' --exclude='*.fits' --exclude='*.fit.gz' --exclude='*.fits.gz' \
+        --exclude=./goes_cache .
     docker compose cp api:/tmp/app-data.tar.gz "$backup_dir/app-data.tar.gz"
     docker compose exec -T api rm -f /tmp/app-data.tar.gz
 fi
@@ -43,3 +46,9 @@ fi
 ) > "$backup_dir/SHA256SUMS.txt"
 
 echo "Backup created at $backup_dir"
+
+keep=${BACKUP_KEEP:-5}
+ls -1 "$repo_root/backups" | sort -r | tail -n +"$((keep + 1))" | while read -r old; do
+    rm -rf "$repo_root/backups/$old"
+    echo "Removed old backup $old"
+done

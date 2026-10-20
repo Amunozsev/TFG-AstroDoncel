@@ -146,6 +146,30 @@ def test_worker_does_not_publish_internal_error_paths(monkeypatch):
             session.commit()
 
 
+def test_results_over_size_limit_remove_oldest_first(tmp_path, monkeypatch):
+    now = datetime.now(timezone.utc)
+    older, newer = str(uuid.uuid4()), str(uuid.uuid4())
+    with SessionLocal() as session:
+        for task_id, age in ((older, 2), (newer, 1)):
+            session.add(TaskRecord(
+                id=task_id, task_type="combine_time", status="succeeded", payload={},
+                updated_at=now - timedelta(days=age),
+            ))
+            (tmp_path / f"{task_id}.json.gz").write_bytes(b"x" * 10)
+        session.commit()
+    monkeypatch.setattr(worker, "RESULT_DIR", str(tmp_path))
+    monkeypatch.setenv("TASK_RESULTS_MAX_GB", str(15 / 1024**3))
+    try:
+        assert worker.cleanup_completed_tasks(retention_days=30) == 1
+        assert [path.name for path in tmp_path.iterdir()] == [f"{newer}.json.gz"]
+    finally:
+        with SessionLocal() as session:
+            for task_id in (older, newer):
+                if task := session.get(TaskRecord, task_id):
+                    session.delete(task)
+            session.commit()
+
+
 @pytest.mark.parametrize(("retryable", "expected"), [(False, "failed"), (True, "queued")])
 def test_only_archive_failures_are_retried(monkeypatch, retryable, expected):
     task_id = str(uuid.uuid4())

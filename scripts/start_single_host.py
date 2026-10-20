@@ -43,12 +43,18 @@ def _terminate(processes: list[subprocess.Popen]) -> None:
             process.kill()
 
 
+def _enabled(name: str) -> bool:
+    return os.environ.get(name, "1").strip().lower() not in {"0", "false", "no"}
+
+
 def main() -> int:
     _run_migrations()
     port = os.environ.get("PORT", "8000")
     commands = []
-    if os.environ.get("RUN_TASK_WORKER", "1").strip().lower() not in {"0", "false", "no"}:
+    if _enabled("RUN_TASK_WORKER"):
         commands.append(("worker", [sys.executable, "-m", "backend.worker"]))
+    if _enabled("RUN_CACHE_MAINTENANCE"):
+        commands.append(("cache-maintenance", [sys.executable, "-m", "tools.cache_maintenance"]))
     commands.append(("api", [
         sys.executable, "-m", "uvicorn", "backend.main:app",
         "--host", "0.0.0.0", "--port", port, "--workers", "1",
