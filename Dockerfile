@@ -17,7 +17,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     SERVE_FRONTEND=1 \
     FRONTEND_DIST_DIR=/app/frontend/dist \
     DATA_DIR_LOCAL=/data \
-    TASK_RESULT_DIR=/data/task_results
+    TASK_RESULT_DIR=/data/task_results \
+    MALLOC_ARENA_MAX=2
 
 WORKDIR /app
 RUN groupadd --gid 10001 astrodoncel \
