@@ -18,6 +18,7 @@ def main() -> None:
     parser.add_argument("--model", default="yolo11s.pt", help="pretrained COCO weights")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch", type=int, default=16)
+    parser.add_argument("--patience", type=int, default=20, help="stop after this many epochs without improvement")
     parser.add_argument("--name", default="burst_types")
     args = parser.parse_args()
 
@@ -30,6 +31,7 @@ def main() -> None:
         epochs=args.epochs,
         imgsz=1024,      # image width of backend.burst_types.spectrogram_image
         batch=args.batch,
+        patience=args.patience,
         seed=0,
         deterministic=True,
         # Flipping a spectrogram reverses time or frequency: a drifting burst
