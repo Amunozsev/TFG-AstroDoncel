@@ -37,8 +37,8 @@ jobs:
       ASTRODONCEL_TEST_DATABASE_URL: postgresql+psycopg://astrodoncel:test-password@127.0.0.1:5432/astrodoncel_test
       ASTRODONCEL_TEST_MYSQL_URL: mysql+pymysql://studio_reader:test-source-password@127.0.0.1:3307/burst_source_test
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12", cache: pip }
       - run: pip install -r requirements-dev.txt
       - run: ruff check backend tests migrations tools scripts/start_single_host.py
@@ -53,8 +53,8 @@ jobs:
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: frontend } }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with: { node-version: 22, cache: npm, cache-dependency-path: frontend/package-lock.json }
       - run: npm ci --no-audit
       - run: npm run lint
@@ -84,7 +84,7 @@ jobs:
     needs: [backend, frontend]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build and start the complete stack
         run: sh scripts/docker-up.sh
       - name: Verify proxy, API and migrations
