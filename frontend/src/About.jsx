@@ -25,7 +25,7 @@ export default function About() {
         </article>
         <article>
           <h2>Sahan S. Liyanage</h2>
-          <p>The e-CALLISTO FITS Analyzer and Burst_No_Burst projects by <strong>Sahan S. Liyanage</strong> are reference implementations for processing, RFI mitigation, comparison, measurement and burst-detection workflows adapted here with project-specific changes and tests.</p>
+          <p>The e-CALLISTO FITS Analyzer and Burst_No_Burst projects by <strong>Sahan S. Liyanage</strong> are reference implementations for processing, RFI mitigation, comparison and measurement workflows adapted here with project-specific changes and tests.</p>
           <p className="about-links"><a href="https://github.com/SaanDev/e-Callisto_FITS_Analyzer" target="_blank" rel="noreferrer">e-CALLISTO FITS Analyzer</a><a href="https://doi.org/10.1093/rasti/rzag056" target="_blank" rel="noreferrer">Published software article</a></p>
         </article>
         <article>

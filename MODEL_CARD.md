@@ -1,52 +1,60 @@
-# Model card — AstroDoncel Studio burst detector
+# Model card — AstroDoncel Studio burst-type detector
 
 ## Intended use
 
-The bundled model screens e-CALLISTO spectrograms for binary burst/no-burst candidates. Its output is an experimental aid for expert review, not an authoritative event classification, an alerting system, or a replacement for the official catalogue.
+The bundled model detects solar radio bursts in one e-CALLISTO FITS file and classifies each one as type II, III, IIIs (III storm), IV or V. Each detection is a box with its type, a confidence score and its extent in UTC and MHz. It is an aid for expert review, not an authoritative event classification, an alerting system or a replacement for the official catalogue. Catalogue types and model detections are kept separate.
 
-AstroDoncel never infers a solar-burst type from this network. Official catalogue types remain separate from the file-level detection response.
+Types IV and V are flagged as experimental in every response: they had few training examples and their test confidence intervals are wide.
 
-## Bundle identity
+## Model identity
 
-- Bundle: `deploy_20260218T113917Z`
-- Model version: `20260218T113917Z`
-- Runtime: ONNX Runtime, CPU provider
-- ONNX SHA-256: `ab40e7a529e617f64b5d9b3332519a7ffc82707dac19361e0ba3a2563fb38ecf`
-- Source checkpoint SHA-256 recorded upstream: `54e071b9cf9a0013409c81d5866462b73158a98ed505bca2e0f23086a6685bb8`
-- Decision threshold: `0.60`
-- Exploratory candidate threshold: `0.40`
+- Architecture: YOLO11s (Ultralytics 8.4.183), fine-tuned from COCO weights
+- Model version: `v4_pseudo`
+- Runtime: ONNX Runtime, CPU provider (opset 17, float32, fixed 1×3×416×1024 input)
+- ONNX SHA-256: `5d3540affb74a233241793ce802d41d876e76ad6449dd6e6fe7f181538e0a4ff`
+- Confidence threshold: `0.32` (maximum F1 on validation, fixed before testing)
+- Non-maximum suppression: per class, IoU `0.7`
 
-The API returns the effective threshold, candidate threshold, model version, ONNX hash, inference method and localization method with each inference.
+`backend/model/burst_types/config.json` stores these values. The API returns the model version, ONNX hash and threshold with each inference. Detections are returned to the browser and are not stored in the catalogue.
 
 ## Processing contract
 
-The versioned `runtime_config.json` defines the contract: non-negative `log1p`, running 0.2-quantile background with a 121-sample window, robust normalization per frequency, RFI mitigation, clipping to `[-6, 12]`, non-overlapping 128×128 windows and top-8 mean MIL pooling. Event postprocessing uses a smoothing kernel of 5 and at least 3 event windows.
+Training and inference share `backend.burst_types.spectrogram_image`: the FITS matrix as the portal shows it by default (robust background subtraction, no RFI filter, 2–98 % intensity clip), in FITS channel order, resized to 1024×400 grey levels. The image is padded with 8 rows (value 114) above and below to 416×1024 and repeated on three channels. A box maps to time proportionally to the file samples and to frequency through the FITS channel it covers.
 
-The `visual_fallback` / `visual_candidate` localizer is a separate heuristic, identified by `event_source` and `localization_method`. Current-file detections are returned to the browser; this endpoint does not persist them in the catalogue.
+## Training data
 
-## Metrics supplied with the upstream bundle
+- **Labelled data:** dataset of Wang et al. (2025, ApJS): 8,752 e-CALLISTO images (May 2020 – Nov 2022, 56 stations) with 10,833 boxes (III 8,210; IIIs 1,857; II 464; V 237; IV 65). Every image was re-rendered from its original FITS with the contract above and its boxes were converted from the plot area to the file.
+- **Negatives:** 875 burst-free files from the dataset's own stations and receivers over the same period, at least 30 min away from any event of the monthly e-CALLISTO burst list.
+- **Partition:** 70/15/15 by observation day, so that files of the same event never appear in two partitions; the draw whose class shares are closest to the target was kept.
+- **Rare classes:** repeat factor sampling (threshold 0.1) and catalogue-guided pseudo-labels for II, IV and V from 2023–2024 files: the model proposes the box, the e-CALLISTO burst list gives the type. The final training set has 9,592 images.
+- **Augmentation:** Ultralytics defaults without flips (they would reverse time or frequency).
 
-The deployment profile reports 99 evaluation samples at threshold 0.60:
+## Test results
 
-| Metric | Reported value |
-|---|---:|
-| PR-AUC | 0.7575 |
-| ROC-AUC | 0.7808 |
-| Precision | 0.7037 |
-| Recall | 0.7600 |
-| F1 | 0.7308 |
-| False alerts/hour | 1.0218 |
+Single evaluation on the held-out test partition (1,299 files: 1,175 with bursts, 124 without), COCO matching, 95 % intervals from 1,000 bootstrap resamples of images:
 
-These values are upstream-reported metadata, not independently reproduced by this repository. The bundle does not identify the dataset, stations, date range, class balance or train/validation/test partition well enough to audit leakage or generalization. Event recall at IoU 0.1 is not reported.
+| Class | Boxes | mAP50 [95 % CI] | mAP50-95 |
+|---|---:|---|---:|
+| II | 64 | 0.75 [0.63–0.86] | 0.42 |
+| III | 1,068 | 0.87 [0.85–0.89] | 0.39 |
+| IIIs | 298 | 0.76 [0.72–0.81] | 0.52 |
+| IV (experimental) | 10 | 0.50 [0.20–0.78] | 0.20 |
+| V (experimental) | 31 | 0.74 [0.60–0.86] | 0.48 |
+| Mean of classes | — | 0.72 | 0.40 |
+| Any burst (type ignored) | 1,471 | 0.85 [0.83–0.87] | 0.44 |
 
-## Limitations and required validation
+At the operating threshold: boxes in 6 of the 124 burst-free files (4.8 %); per station (≥20 test boxes, type ignored, IoU 0.5) recall 0.73–0.93 and precision 0.61–0.92. The main confusion is III ↔ IIIs.
 
-- Performance can change by station, receiver/focus code, epoch, frequency coverage and RFI environment.
-- The network is binary; it does not distinguish Types II, III, IV or V.
-- The probability is a model score and must not be interpreted as a calibrated physical probability without a calibration study.
-- The visual localizer is heuristic and has no independent validation set documented here.
-- Before academic claims or operational deployment, create a versioned representative dataset, freeze train/validation/test partitions, reproduce the metrics and report confidence intervals and per-station results.
+On the same test files the previous binary CNN+MIL detector found 54 % of the files with bursts (82 % counting its candidates) with false alarms in 43–52 % of the burst-free files; this model finds 94.5 % with 4.8 % false alarms.
 
-## Provenance and licence status
+## Limitations
 
-The architecture and original deployment bundle were supplied from Sahan S. Liyanage's `Burst_No_Burst` work and adapted for ONNX serving in AstroDoncel. The source checkpoint `model.pt` is deliberately excluded from the public tree; the optional export tool requires an authorised local copy. Exact upstream commit, dataset licence and permission to redistribute the runtime `model.onnx` are not encoded in the supplied bundle and remain to be confirmed in writing. Before making a public release, obtain that permission or distribute the model separately under its applicable terms.
+- Train, validation and test come from the same dataset and period (different days); performance on other years, stations or receivers can be lower. A qualitative check on 2025–2026 files placed boxes on real bursts but missed some faint type III bursts.
+- Types IV and V have very few examples; their metrics are uncertain.
+- The confidence is a detection score, not a calibrated physical probability.
+- The monthly burst list used to pick negatives is not exhaustive, so a few negatives may contain faint uncatalogued bursts.
+- Per-station performance varies with frequency coverage and RFI environment.
+
+## Reproducibility
+
+`tools/burst_dataset.py` builds the dataset (partition, negatives, conversion, repeat factor sampling, pseudo-labels), `tools/train_burst_types.py` trains the model and `tools/evaluate_burst_types.py` computes the test report. They run in a separate environment (`requirements-train.txt`).

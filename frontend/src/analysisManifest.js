@@ -45,8 +45,8 @@ export function buildAnalysisManifest({
     catalogue: { id: 'deployment-configured', label: 'Deployment-configured Burst Reports source' },
     interpretation: {
       measured: ['FITS time axis', 'FITS frequency axis', 'instrumental intensity'],
-      inferred: ['CNN+MIL candidate probability'],
-      heuristic: ['visual candidate localization', 'Xmatch nominal block interval'],
+      inferred: ['burst type detections (YOLO model)'],
+      heuristic: ['Xmatch nominal block interval'],
       experimental: [],
     },
     provenance: [

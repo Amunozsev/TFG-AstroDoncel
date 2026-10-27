@@ -60,9 +60,6 @@ frontend/public/datos_prueba.json
 /memoria/
 /MEMORIA_BORRADOR.*
 
-# Pesos fuente para desarrollo ML; producción usa el modelo ONNX
-/backend/model/burst_detector/*.pt
-
 # Reference docs and third-party analyzer (large, not part of the project source)
 /docs/
 /e-Callisto_FITS_Analyzer-master/

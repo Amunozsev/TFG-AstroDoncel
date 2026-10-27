@@ -23,7 +23,8 @@ del proyecto.
 - Crear resúmenes espectrales de intervalos y unir bloques consecutivos en un
   espectrograma continuo, que se dibuja bajo la observación actual.
 - Exportar FITS procesados, CSV y manifiestos reproducibles.
-- Ejecutar detección experimental de bursts mediante CNN+MIL con ONNX Runtime.
+- Detectar y clasificar bursts (tipos II, III, IIIs, IV y V) con un modelo YOLO
+  servido con ONNX Runtime.
 - Consultar **Burst Reports**, estadísticas y Xmatch desde la base actual del
   portal UAH; los catálogos mensuales permanecen como fuente alternativa.
 - Visualizar la red de estaciones y su estado reciente en un mapa interactivo.
@@ -138,10 +139,10 @@ Plotly.
   frecuencias. La curva aparece **bajo el espectrograma y comparte su eje
   temporal**, con los mismos márgenes, de modo que cada pico se lee sobre la
   misma escala UTC. Se puede exportar a CSV o cerrar sin perder la observación.
-- **Detect current file (ML):** clasifica el FITS principal cargado con el
-  modelo CNN+MIL experimental. Muestra siempre probabilidad, umbral y resultado;
-  una clasificación positiva puede no producir un intervalo localizado y debe
-  revisarse visualmente.
+- **Detect current file (ML):** detecta los bursts del FITS principal cargado y
+  dibuja una caja por burst sobre el espectrograma, con un color por tipo. La
+  lista muestra tipo, inicio y fin en UTC, banda en MHz y confianza; los tipos
+  IV y V se marcan como experimentales. Las cajas se pueden ocultar.
 - **Spectral overview:** crea en el worker una vista reducida de un intervalo
   UTC más largo para las estaciones seleccionadas.
 - **Combine current + next blocks:** parte del FITS seleccionado y une hasta
@@ -300,10 +301,10 @@ VITE_API_BASE_URL=http://localhost:8000
 |---|---|
 | `requirements.txt` | runtime de la API, procesamiento científico, ONNX y persistencia |
 | `requirements-dev.txt` | runtime más pruebas, Ruff y auditoría de dependencias |
-| `requirements-ml.txt` | runtime más PyTorch CPU y ONNX para exportar un modelo autorizado |
+| `requirements-train.txt` | PyTorch CUDA y Ultralytics para entrenar y exportar el detector (entorno aparte) |
 
 La API de producción no importa PyTorch. El modelo se sirve con ONNX Runtime;
-PyTorch solo es necesario para `tools/export_onnx.py`.
+PyTorch solo es necesario para entrenar (`tools/train_burst_types.py`).
 
 Instalación de un perfil:
 
@@ -327,7 +328,7 @@ principales son:
 | `TASK_RESULT_DIR` | `data/task_results` | artefactos de trabajos persistentes |
 | `ECALLISTO_DATA_DIR` | ruta NAS histórica | archivo FITS local opcional y de solo lectura |
 | `FRONTEND_ORIGINS` | orígenes Vite locales | lista CORS separada por comas |
-| `BURST_MODEL_DIR` | modelo incluido | bundle ONNX del detector |
+| `BURST_MODEL_DIR` | modelo incluido | carpeta con el modelo ONNX del detector y su `config.json` |
 | `BURST_INTRA_OP_THREADS` | `1` | hilos CPU de ONNX Runtime |
 | `STATION_REFRESH_MINUTES` | `60` | cadencia del inventario remoto |
 | `STATION_RETENTION_DAYS` | `90` | tiempo que se conserva una estación conocida |
@@ -582,7 +583,7 @@ restauración.
   alternativa explícita.
 - **Sahan S. Liyanage:** `e-Callisto_FITS_Analyzer` v2.8.0 y `Burst_No_Burst`,
   usados como implementaciones de referencia para partes del procesamiento,
-  interacción y detección, adaptadas y verificadas en este proyecto.
+  la mitigación de RFI y la interacción, adaptadas y verificadas en este proyecto.
 - **Ecosistema abierto:** FastAPI, Astropy, SunPy, NumPy, SciPy, SQLAlchemy,
   ONNX Runtime, React, Vite y Plotly.
 
