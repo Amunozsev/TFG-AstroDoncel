@@ -1,7 +1,7 @@
 import { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react';
 import { API_BASE_URL, apiFetch } from './api';
 import { buildAnalysisManifest, downloadManifest, rfiQuery } from './analysisManifest';
-import { describeBurstResult } from './burstResult';
+import { burstStyle, describeDetections } from './burstTypes';
 import { fileForEvent } from './eventNavigation';
 import { displayBlockTime, selectCombineBlocks } from './fileBlocks';
 import { TypeIIResult, TypeIIStatus } from './TypeIIPanel';
@@ -167,9 +167,10 @@ export default function App() {
   const [showHeaderViewer, setShowHeaderViewer] = useState(false);
   const [headerLayerIdx, setHeaderLayerIdx] = useState(0);
 
-  // Automatic burst detection (CNN+MIL): { [station]: BurstDetectResponse }
+  // Automatic burst detection and classification: { [station]: BurstDetectResponse }
   const [burstResults, setBurstResults]     = useState({});
   const [burstDetecting, setBurstDetecting] = useState(false);
+  const [showBurstBoxes, setShowBurstBoxes] = useState(true);
   const [taskStatus, setTaskStatus]         = useState(null);
   const typeII = useTypeII(layers[0], typeIIOpen);
   const [lightCurveResult, setLightCurveResult] = useState(null);
@@ -1033,7 +1034,7 @@ export default function App() {
                   className="btn-tool tool-action-wide"
                   onClick={handleDetectBursts}
                   disabled={layers.length === 0 || burstDetecting}
-                  title="Classify the primary FITS block with the experimental CNN+MIL model"
+                  title="Detect and classify the bursts of the primary FITS block (types II, III, IIIs, IV, V)"
                 >
                   {burstDetecting ? 'Detecting…' : 'Detect current file (ML)'}
                 </button>
@@ -1041,17 +1042,35 @@ export default function App() {
               {rulerMode && <p className="tool-help">Select two points on the plot. The header reports Δt, Δf and drift rate.</p>}
               {burstDetecting && <p className="detection-pending" role="status">Running experimental inference on the current FITS block…</p>}
               {Object.entries(burstResults).map(([st, result]) => {
-                const summary = describeBurstResult(result);
+                const summary = describeDetections(result);
                 return (
                   <article key={st} className={`detection-result ${summary.status}`} aria-live="polite">
                     <header><strong>{st}</strong><span>{summary.label}</span></header>
-                    <p>{summary.detail}</p>
+                    {summary.detail && <p>{summary.detail}</p>}
+                    {result.detections?.length > 0 && (
+                      <>
+                        <ul className="detection-list">
+                          {result.detections.map((d) => {
+                            const { label, color } = burstStyle(d.type);
+                            return (
+                              <li key={`${d.type}-${d.start_utc}-${d.freq_high_mhz}`}>
+                                <i style={{ borderColor: color, borderStyle: d.experimental ? 'dashed' : 'solid' }} aria-hidden="true" />
+                                <strong>{label}{d.experimental && <small> exp.</small>}</strong>
+                                <span>{d.start_utc.slice(11, 19)}–{d.end_utc.slice(11, 19)} UTC</span>
+                                <span>{d.freq_low_mhz.toFixed(0)}–{d.freq_high_mhz.toFixed(0)} MHz</span>
+                                <span title="Model confidence">{d.score.toFixed(2)}</span>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                        <label className="control-checkbox">
+                          <input type="checkbox" checked={showBurstBoxes} onChange={(e) => setShowBurstBoxes(e.target.checked)} />
+                          Show boxes on the spectrogram
+                        </label>
+                      </>
+                    )}
                     {result.available && (
-                      <dl>
-                        <div><dt>Probability</dt><dd>{result.file_score.toFixed(3)}</dd></div>
-                        <div><dt>Burst threshold</dt><dd>{result.threshold.toFixed(3)}</dd></div>
-                        <div><dt>Model</dt><dd>{result.model_version}</dd></div>
-                      </dl>
+                      <p className="detection-model">Model {result.model_version} · confidence ≥ {result.threshold}</p>
                     )}
                   </article>
                 );
@@ -1455,7 +1474,7 @@ export default function App() {
           compareMode={compareMode}
           autoContrastZoom={autoContrastZoom}
           rulerMode={rulerMode}
-          burstResults={burstResults}
+          burstResults={showBurstBoxes ? burstResults : {}}
           onPlotClick={typeII.onPlotClick}
           extraTraces={typeII.traces}
           headerExtra={typeIIOpen ? <TypeIIStatus t2={typeII} /> : null}

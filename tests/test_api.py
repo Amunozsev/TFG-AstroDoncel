@@ -103,25 +103,27 @@ def test_zoom_keeps_the_full_file_background(tmp_path, monkeypatch):
     assert response.json()["z"] == [[8.0] * 4, [0.0] * 4]
 
 
-def test_detector_response_retains_model_provenance(monkeypatch):
-    from backend import burst_detect
+def test_detector_response_keeps_detections_and_provenance(monkeypatch):
+    from backend import burst_types
 
-    monkeypatch.setattr(burst_detect, "is_available", lambda: (True, ""))
+    monkeypatch.setattr(burst_types, "is_available", lambda: (True, ""))
     monkeypatch.setattr(core, "_download_from_ethz", lambda *_args, **_kwargs: "synthetic.fit")
     monkeypatch.setattr(core, "_load_raw_cached", lambda *_args: (
         np.ones((2, 3)), np.array([80, 45]), np.arange(3), {"DATE-OBS": "2024-01-01"},
     ))
-    result = {
-        "file_score": 0.8, "threshold": 0.6, "events": [], "inference_ms": 1,
-        "model_sha256": "a" * 64, "inference_method": "cnn_mil_onnx",
-        "localization_method": "sahan_window_postprocess", "bundle_name": "test-bundle",
+    detection = {
+        "type": "type4", "score": 0.5, "experimental": True,
+        "start_utc": "2024-01-01T12:00:00.000Z", "end_utc": "2024-01-01T12:01:00.000Z",
+        "start_s": 0.0, "end_s": 60.0, "freq_low_mhz": 45.0, "freq_high_mhz": 80.0,
     }
-    monkeypatch.setattr(burst_detect, "detect_bursts", lambda *_args: result)
+    result = {"model_version": "v4_pseudo", "model_sha256": "a" * 64, "threshold": 0.32,
+              "detections": [detection], "inference_ms": 1}
+    monkeypatch.setattr(burst_types, "detect", lambda *_args: result)
     response = client.get("/api/burst/detect", params={
         "station": "MRO", "date": "2024-01-01", "filename": "MRO_20240101_120000.fit",
     })
     assert response.status_code == 200
-    for key in ("model_sha256", "inference_method", "localization_method", "bundle_name"):
+    for key in ("model_version", "model_sha256", "threshold", "detections"):
         assert response.json()[key] == result[key]
 
 

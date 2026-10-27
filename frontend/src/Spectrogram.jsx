@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { OBSERVATORY_COLOR_SCALE, Plot } from './plotly';
 import { apiFetch } from './api';
 import { rfiQuery } from './analysisManifest';
+import { burstStyle } from './burstTypes';
 
 // All colorscales defined as explicit RGB arrays so they work regardless of the
 // Plotly.js bundle version. Mirrors the colormap set in Sahan's FITS Analyzer.
@@ -434,35 +435,31 @@ export default function Spectrogram({
 
   const srcFor = (layer) => (isZoomed && zoomPatches[layer.station]) ? zoomPatches[layer.station] : layer;
 
-  // ── ML burst-event highlights (amber boxes + score labels) ────────────────
+  // ── ML burst detections (one box per burst, coloured by type) ─────────────
+  // Experimental types (IV, V) get a dashed outline.
   const addBurstShapes = (layer, axisId) => {
     const res = burstResults?.[layer.station];
-    if (!res?.available || !res.events?.length) return;
-    for (const ev of res.events) {
-      if (!ev.start_utc || !ev.end_utc) continue;
-      const isFallback = ev.source === 'visual_fallback'
-        || res.event_source === 'visual_fallback'
-        || res.event_source === 'visual_candidate';
-      const scoreText = Number.isFinite(ev.peak_score) ? ev.peak_score.toFixed(2) : '?';
+    if (!res?.available || !res.detections?.length) return;
+    for (const d of res.detections) {
+      const { label, color } = burstStyle(d.type);
       layout.shapes.push({
         type: 'rect',
         xref: 'x',
         yref: axisId,
-        x0: ev.start_utc, x1: ev.end_utc,
-        y0: ev.freq_band_mhz[0], y1: ev.freq_band_mhz[1],
-        line: { color: '#fbbf24', width: isFallback ? 1.25 : 1.6, dash: isFallback ? 'dash' : 'dot' },
-        fillcolor: isFallback ? 'rgba(251,191,36,0.07)' : 'rgba(251,191,36,0.10)',
+        x0: d.start_utc, x1: d.end_utc,
+        y0: d.freq_low_mhz, y1: d.freq_high_mhz,
+        line: { color, width: 1.6, dash: d.experimental ? 'dash' : 'solid' },
         layer: 'above',
       });
       layout.annotations.push({
         xref: 'x',
         yref: axisId,
-        x: ev.start_utc,
-        y: ev.freq_band_mhz[1],
+        x: d.start_utc,
+        y: d.freq_high_mhz,
         xanchor: 'left', yanchor: 'bottom',
-        text: `${isFallback ? 'cand ' : ''}p=${scoreText}`,
+        text: `${label} ${d.score.toFixed(2)}`,
         showarrow: false,
-        font: { color: '#fbbf24', size: 9 },
+        font: { color, size: 10 },
         bgcolor: plotTheme.annotation,
       });
     }

@@ -13,7 +13,7 @@ import Statistics from './Statistics';
 import Spectrogram from './Spectrogram';
 import { apiFetch, apiUrl } from './api';
 import { buildAnalysisManifest } from './analysisManifest';
-import { describeBurstResult } from './burstResult';
+import { describeDetections } from './burstTypes';
 import { fileForEvent } from './eventNavigation';
 import { blockForEvent, expandXmatchRows } from './xmatch';
 
@@ -260,13 +260,14 @@ describe('analysis panels', () => {
     expect(screen.queryByRole('button', { name: 'MRO' })).not.toBeInTheDocument();
   });
 
-  it('reports a positive file even when event localization is empty', () => {
-    const summary = describeBurstResult({
-      available: true, is_burst: true, is_candidate: false,
-      file_score: 0.81, threshold: 0.6, events: [],
+  it('counts detections and warns about experimental burst types', () => {
+    const summary = describeDetections({
+      available: true, threshold: 0.32,
+      detections: [{ type: 'type3', experimental: false }, { type: 'type4', experimental: true }],
     });
-    expect(summary.label).toBe('Burst detected');
-    expect(summary.detail).toMatch(/no reliable time-frequency interval/i);
+    expect(summary.label).toBe('2 bursts detected');
+    expect(summary.detail).toMatch(/experimental/i);
+    expect(describeDetections({ available: true, threshold: 0.32, detections: [] }).label).toBe('No bursts detected');
   });
 
   it('never reuses the previous station filename for a catalogue event', () => {

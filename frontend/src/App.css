@@ -832,14 +832,14 @@ button:disabled { cursor: not-allowed; }
 .detection-result header span { padding: 0.18rem 0.45rem; border-radius: 99px; color: var(--text-muted); background: var(--surface-3); font-size: 0.64rem; font-weight: 750; }
 .detection-result.burst { border-color: color-mix(in srgb, var(--danger) 55%, var(--border)); }
 .detection-result.burst header span { color: var(--danger-text); background: color-mix(in srgb, var(--danger) 18%, var(--surface-3)); }
-.detection-result.candidate { border-color: color-mix(in srgb, var(--warning) 55%, var(--border)); }
-.detection-result.candidate header span { color: var(--warning-text); background: color-mix(in srgb, var(--warning) 16%, var(--surface-3)); }
 .detection-result.clear header span { color: var(--success-text); background: color-mix(in srgb, var(--success) 15%, var(--surface-3)); }
 .detection-result p { margin: 0; color: var(--text-muted); font-size: 0.7rem; line-height: 1.5; }
-.detection-result dl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.45rem; margin: 0; }
-.detection-result dl div { display: grid; gap: 0.15rem; min-width: 0; }
-.detection-result dt { color: var(--text-subtle); font-size: 0.6rem; }
-.detection-result dd { margin: 0; overflow-wrap: anywhere; color: var(--text); font-size: 0.68rem; font-variant-numeric: tabular-nums; }
+.detection-result .detection-model { color: var(--text-subtle); font-size: 0.62rem; }
+.detection-list { display: grid; gap: 0.3rem; max-height: 14rem; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
+.detection-list li { display: grid; grid-template-columns: 0.7rem 2.6rem 1fr auto auto; align-items: center; gap: 0.45rem; color: var(--text); font-size: 0.68rem; font-variant-numeric: tabular-nums; }
+.detection-list i { width: 0.6rem; height: 0.6rem; border: 2px solid; border-radius: 2px; }
+.detection-list small { color: var(--text-subtle); font-size: 0.58rem; font-weight: 600; }
+.detection-list span:last-child { color: var(--text-muted); }
 
 .tool-guide { display: grid; gap: 0; margin: 0; padding: 0 0.95rem 0.95rem; }
 .tool-guide div { display: grid; gap: 0.2rem; padding: 0.65rem 0; border-top: 1px solid var(--border); }

@@ -512,6 +512,18 @@ class CombinedSpectrogramResponse(BaseModel):
     failed: list[dict]   # [{station, reason}, ...] for stations with no data
 
 
+class BurstDetection(BaseModel):
+    type: str              # type2, type3, type3s, type4 or type5
+    score: float           # model confidence, 0-1
+    experimental: bool     # IV and V: few training examples, wide test intervals
+    start_utc: str
+    end_utc: str
+    start_s: float
+    end_s: float
+    freq_low_mhz: float
+    freq_high_mhz: float
+
+
 class BurstDetectResponse(BaseModel):
     model_config = {"protected_namespaces": ()}  # allow the model_version field
 
@@ -521,19 +533,10 @@ class BurstDetectResponse(BaseModel):
     available: bool
     reason: str = ""
     model_version: str | None = None
-    bundle_name: str | None = None
     model_sha256: str | None = None
-    inference_method: str | None = None
-    localization_method: str | None = None
     threshold: float | None = None
-    candidate_threshold: float | None = None
-    file_score: float | None = None
-    is_burst: bool | None = None
-    is_candidate: bool | None = None
-    n_windows: int | None = None
     inference_ms: float | None = None
-    event_source: str | None = None
-    events: list[dict] = Field(default_factory=list)
+    detections: list[BurstDetection] = Field(default_factory=list)
 
 
 class GoesResponse(BaseModel):
@@ -1426,9 +1429,9 @@ def readiness():
             session.execute(text("SELECT 1"))
     except Exception:
         database = "degraded"
-    from backend import burst_detect
+    from backend import burst_types
 
-    model_ok, model_reason = burst_detect.is_available()
+    model_ok, model_reason = burst_types.is_available()
     payload = {
         "status": "ok" if database == "ok" else "degraded",
         "database": database,
@@ -2138,10 +2141,10 @@ def get_spectrogram_zoom(
         raise HTTPException(status_code=500, detail="Zoom processing failed; use the request id to inspect server logs") from exc
 
 
-# ── Automatic burst detection (CNN+MIL from Burst_No_Burst by Sahan) ─────────
+# ── Automatic burst detection and classification (YOLO11s, ONNX) ─────────────
 
-# Single worker: CPU inference is heavy and the model bundle is a shared
-# singleton — serialising requests avoids thrashing.
+# Single thread: one file takes well under a second and the ONNX session is a
+# shared singleton, so serialising requests is enough (no task worker needed).
 _BURST_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="burst")
 
 
@@ -2151,15 +2154,13 @@ async def detect_burst(
     date: str = Query(..., description="Observation date, format YYYY-MM-DD"),
     filename: str = Query(..., description="Exact FITS filename (as shown in the overview)"),
 ):
-    """Run the trained CNN+MIL burst classifier on one FITS file.
+    """Detect and classify the solar radio bursts of one FITS file.
 
-    Ported from Burst_No_Burst by Sahan: model-specific preprocessing
-    (log1p → running-quantile baseline → per-frequency normalisation → RFI
-    mitigation → clipping), 128×128 windowing, window CNN scoring and MIL
-    bag pooling. Returns the file-level burst probability, the calibrated
-    threshold and the candidate event intervals (time + frequency band).
+    Each detection is a box with its burst type (II, III, IIIs, IV, V), the
+    model confidence and its extent in UTC and MHz. IV and V are flagged as
+    experimental.
 
-    ONNX Runtime is optional: when it or the model bundle is unavailable, the
+    ONNX Runtime is optional: when it or the model is unavailable, the
     endpoint answers with ``available=false`` and a reason instead of failing.
     """
     try:
@@ -2169,9 +2170,9 @@ async def detect_burst(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    from backend import burst_detect  # deferred: inference runtime stays optional
+    from backend import burst_types  # deferred: inference runtime stays optional
 
-    ok, reason = burst_detect.is_available()
+    ok, reason = burst_types.is_available()
     if not ok:
         return BurstDetectResponse(
             station=station, date=date, filename=filename,
@@ -2194,7 +2195,7 @@ async def detect_burst(
         data_raw, freqs, time_arr, header = _load_raw_cached(fits_path)
         time_s = _time_offsets_seconds(time_arr, header)
         obs_start = _observation_start(header)
-        return burst_detect.detect_bursts(data_raw, freqs, time_s, obs_start)
+        return burst_types.detect(data_raw, freqs, time_s, obs_start)
 
     loop = asyncio.get_event_loop()
     try:
@@ -2203,11 +2204,8 @@ async def detect_burst(
         logger.exception("Burst detection failed for %s: %s", filename, exc)
         raise HTTPException(status_code=500, detail="Burst detection failed; use the request id to inspect server logs") from exc
 
-    logger.info(
-        "Burst detection %s: score=%.3f (threshold %.2f), %d event(s), %.0f ms",
-        filename, result["file_score"], result["threshold"],
-        len(result["events"]), result["inference_ms"],
-    )
+    logger.info("Burst detection %s: %d detection(s), %.0f ms",
+                filename, len(result["detections"]), result["inference_ms"])
     return BurstDetectResponse(
         station=station, date=date, filename=filename,
         available=True, **result,
