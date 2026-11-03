@@ -1,22 +1,21 @@
-"""Type II radio burst kinematics: drift fit, Newkirk shock and band-splitting.
-
-The method follows the desktop e-CALLISTO FITS Analyzer (S. S. Liyanage),
-written here from the underlying relations:
+"""Type II radio burst kinematics: Newkirk shock speed and band-splitting.
 
 * plasma frequency  f_p [MHz] = 8.98e-3 * sqrt(n_e [cm^-3]);
 * Newkirk (1961) corona multiplied by a fold factor n:
   n_e(R) = n * 4.2e4 * 10**(4.32 / R), with R in solar radii, so
   R = 4.32 / log10(f_p**2 / (n * 8.98e-3**2 * 4.2e4));
-* shock speed v = R_sun * |dR/df| * |df/dt| from the fitted drift;
+* every backbone point becomes a height R(t) and a straight line fitted to
+  R(t) gives the shock speed: the slope does not depend on where the time
+  axis starts, so one block or two joined blocks give the same speed;
 * band-splitting: compression X = (f_upper / f_lower)**2, Alfvén Mach number
   of a perpendicular shock in a low-beta plasma
   M_A = sqrt(X (X + 5) / (2 (4 - X)))  (Vršnak et al. 2002), Alfvén speed
   v_A = v / M_A and B = v_A * sqrt(mu_0 * m_p * n_e) with the upstream
   (lower band) density.
 
-Times are seconds since the start of the FITS observation; the power law
-f = a * t**(-b) needs t > 0. Newkirk heights and everything derived from them
-are model-dependent estimates; band-splitting results are experimental.
+Times are seconds since the start of the loaded observation. Newkirk heights
+and everything derived from them are model-dependent estimates;
+band-splitting results are experimental.
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from scipy.optimize import curve_fit
+from scipy.stats import linregress
 
 R_SUN_KM = 695_700.0  # IAU 2015 nominal solar radius
 PLASMA_FREQ_COEFF_MHZ = 8.98e-3
@@ -41,9 +40,9 @@ def _points(times_s, freqs_mhz) -> tuple[np.ndarray, np.ndarray]:
     f = np.asarray(freqs_mhz, dtype=float).ravel()
     if t.shape != f.shape:
         raise ValueError("Times and frequencies must have the same length.")
-    keep = np.isfinite(t) & np.isfinite(f) & (t > 0) & (f > 0)
+    keep = np.isfinite(t) & np.isfinite(f) & (f > 0)
     if np.count_nonzero(keep) < 3:
-        raise ValueError("At least three points with time > 0 s and frequency > 0 MHz are needed.")
+        raise ValueError("At least three points with frequency > 0 MHz are needed.")
     order = np.argsort(t[keep])
     return t[keep][order], f[keep][order]
 
@@ -91,42 +90,6 @@ def _inside_polygon(x, y, vertices) -> np.ndarray:
     return inside
 
 
-def _power_law(t, a, b):
-    return a * np.power(t, -b)
-
-
-def fit_power_law(times_s, freqs_mhz) -> dict:
-    """Least-squares fit of f = a * t**(-b) with parameter covariance."""
-    t, f = _points(times_s, freqs_mhz)
-    # Start from the straight line in log-log space, then fit in linear space
-    # so that every point weighs by its frequency error, as measured.
-    slope, intercept = np.polyfit(np.log(t), np.log(f), 1)
-    p0 = (float(np.exp(intercept)), max(float(-slope), 1e-6))
-    try:
-        (a, b), cov = curve_fit(_power_law, t, f, p0=p0, bounds=([0, 0], [np.inf, np.inf]), maxfev=10000)
-    except RuntimeError as exc:
-        raise ValueError("The power-law fit did not converge for these points.") from exc
-    residuals = f - _power_law(t, a, b)
-    ss_tot = float(np.sum((f - f.mean()) ** 2))
-    return {
-        "a": float(a), "b": float(b), "covariance": cov.tolist(),
-        "a_err": float(math.sqrt(cov[0, 0])), "b_err": float(math.sqrt(cov[1, 1])),
-        "r2": 1.0 - float(np.sum(residuals**2)) / ss_tot if ss_tot > 0 else 0.0,
-        "rmse": float(np.sqrt(np.mean(residuals**2))),
-        "points": int(t.size), "t_start_s": float(t[0]), "t_end_s": float(t[-1]),
-    }
-
-
-def _drift(fit: dict, t: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """df/dt of the fitted law and its 1-sigma error from the full covariance."""
-    a, b = fit["a"], fit["b"]
-    drift = -a * b * np.power(t, -b - 1)
-    jacobian = np.stack([-b * np.power(t, -b - 1), -a * np.power(t, -b - 1) * (1 - b * np.log(t))])
-    cov = np.asarray(fit["covariance"])
-    error = np.sqrt(np.einsum("in,ij,jn->n", jacobian, cov, jacobian))
-    return drift, error
-
-
 def newkirk_height(freq_mhz, fold: int) -> np.ndarray:
     """Heliocentric height in solar radii where f is the local plasma frequency."""
     ratio = np.square(np.asarray(freq_mhz, dtype=float)) / (fold * _NEWKIRK_F2_MHZ2)
@@ -135,54 +98,65 @@ def newkirk_height(freq_mhz, fold: int) -> np.ndarray:
     return NEWKIRK_EXPONENT / np.log10(ratio)
 
 
-def _kinematics(freq, drift, freq_err, drift_err, fold):
-    """Height, speed and their 1-sigma errors for fundamental-emission values."""
-    log_ratio = np.log(np.square(freq) / (fold * _NEWKIRK_F2_MHZ2))
-    height = newkirk_height(freq, fold)
-    dheight_df = 2 * NEWKIRK_EXPONENT * math.log(10) / (freq * log_ratio**2)
-    speed = R_SUN_KM * dheight_df * np.abs(drift)
-    # ln v = ln|df/dt| - ln f - 2 ln(ln ratio) + const, so d ln v / df = -(1 + 4/L) / f.
-    speed_err = speed * np.sqrt(
-        (drift_err / np.abs(drift)) ** 2 + (freq_err * (1 + 4 / log_ratio) / freq) ** 2
-    )
-    return height, dheight_df * freq_err, speed, speed_err
+def fit_height_time(times_s, freqs_mhz, fold: int = 1, harmonic: bool = False) -> dict:
+    """Straight line R(t) = R0 + v t through the Newkirk heights of the points.
 
-
-def shock_parameters(times_s, freqs_mhz, fold: int = 1, harmonic: bool = False) -> dict:
-    """Fit the type II backbone and derive Newkirk shock height and speed.
-
-    For harmonic emission the observed frequency and drift are halved first,
-    since the density model applies to the fundamental plasma frequency.
+    For harmonic emission the observed frequency is halved first, since the
+    density model applies to the fundamental plasma frequency.
     """
     if fold not in (1, 2, 3, 4):
         raise ValueError("The Newkirk fold must be 1, 2, 3 or 4.")
     t, observed = _points(times_s, freqs_mhz)
-    fit = fit_power_law(t, observed)
     harmonic_number = 2 if harmonic else 1
-    fitted = _power_law(t, fit["a"], fit["b"]) / harmonic_number
-    drift, drift_err = (value / harmonic_number for value in _drift(fit, t))
-    freq_err = fit["rmse"] / harmonic_number
-    height, height_err, speed, speed_err = _kinematics(fitted, drift, freq_err, drift_err, fold)
+    line = linregress(t, newkirk_height(observed / harmonic_number, fold))
+    if line.slope <= 0:
+        raise ValueError("The points must drift to lower frequencies (an outward shock).")
+    fit = {
+        "fold": fold, "harmonic": harmonic,
+        "height0_rsun": float(line.intercept), "speed_rsun_s": float(line.slope),
+        "speed_km_s": float(line.slope) * R_SUN_KM, "speed_err_km_s": float(line.stderr) * R_SUN_KM,
+        "r2": float(line.rvalue**2), "points": int(t.size), "t_start_s": float(t[0]), "t_end_s": float(t[-1]),
+    }
+    fit["rmse_mhz"] = float(np.sqrt(np.mean((observed - fitted_frequency(t, fit)) ** 2)))
+    return fit
+
+
+def fitted_height(t, fit: dict) -> np.ndarray:
+    return fit["height0_rsun"] + fit["speed_rsun_s"] * np.asarray(t, dtype=float)
+
+
+def fitted_frequency(t, fit: dict) -> np.ndarray:
+    """Observed frequency (MHz) of the fitted line, inverting the Newkirk model."""
+    fundamental = np.sqrt(fit["fold"] * _NEWKIRK_F2_MHZ2 * np.power(10.0, NEWKIRK_EXPONENT / fitted_height(t, fit)))
+    return fundamental * (2 if fit["harmonic"] else 1)
+
+
+def _fitted_drift(t, fit: dict) -> np.ndarray:
+    """df/dt in MHz/s of the fitted line: (df/dR) * v."""
+    height = fitted_height(t, fit)
+    return -fitted_frequency(t, fit) * NEWKIRK_EXPONENT * math.log(10) / (2 * height**2) * fit["speed_rsun_s"]
+
+
+def shock_parameters(times_s, freqs_mhz, fold: int = 1, harmonic: bool = False) -> dict:
+    """Shock speed from the height-time line and the fitted curve for the plot."""
+    fit = fit_height_time(times_s, freqs_mhz, fold, harmonic)
+    t, _ = _points(times_s, freqs_mhz)
+    ends = np.array([t[0], t[-1]])
+    height, freq, drift = fitted_height(ends, fit), fitted_frequency(ends, fit), _fitted_drift(ends, fit)
     return {
         "fit": fit,
         "fold": fold,
         "harmonic": harmonic,
         "curve": {
             "time_s": t.tolist(),
-            "fit_freq_mhz": (fitted * harmonic_number).tolist(),
-            "height_rsun": height.tolist(),
-            "speed_km_s": speed.tolist(),
+            "fit_freq_mhz": fitted_frequency(t, fit).tolist(),
+            "height_rsun": fitted_height(t, fit).tolist(),
         },
         "summary": {
-            # "Initial" is the first fitted instant: the highest frequency of the burst.
-            "start_freq_mhz": float(fitted[0]), "start_freq_err_mhz": freq_err,
-            "start_drift_mhz_s": float(drift[0]), "start_drift_err_mhz_s": float(drift_err[0]),
-            "start_height_rsun": float(height[0]), "start_height_err_rsun": float(height_err[0]),
-            "start_speed_km_s": float(speed[0]), "start_speed_err_km_s": float(speed_err[0]),
-            # Means over the interval; the deviations describe variation, not error.
-            "mean_drift_mhz_s": float(drift.mean()), "std_drift_mhz_s": float(drift.std()),
-            "mean_height_rsun": float(height.mean()), "std_height_rsun": float(height.std()),
-            "mean_speed_km_s": float(speed.mean()), "std_speed_km_s": float(speed.std()),
+            "speed_km_s": fit["speed_km_s"], "speed_err_km_s": fit["speed_err_km_s"],
+            "start_freq_mhz": float(freq[0]), "end_freq_mhz": float(freq[1]),
+            "start_drift_mhz_s": float(drift[0]), "end_drift_mhz_s": float(drift[1]),
+            "start_height_rsun": float(height[0]), "end_height_rsun": float(height[1]),
         },
     }
 
@@ -208,27 +182,23 @@ def band_splitting(upper_s, upper_mhz, lower_s, lower_mhz, fold: int = 1, harmon
     shock, so the shock speed and the density for B come from the lower lane.
     Both fits are only compared where their time ranges overlap.
     """
-    if fold not in (1, 2, 3, 4):
-        raise ValueError("The Newkirk fold must be 1, 2, 3 or 4.")
-    upper_fit = fit_power_law(upper_s, upper_mhz)
-    lower_fit = fit_power_law(lower_s, lower_mhz)
+    upper_fit = fit_height_time(upper_s, upper_mhz, fold, harmonic)
+    lower_fit = fit_height_time(lower_s, lower_mhz, fold, harmonic)
     start = max(upper_fit["t_start_s"], lower_fit["t_start_s"])
     end = min(upper_fit["t_end_s"], lower_fit["t_end_s"])
     if end <= start:
         raise ValueError("The upper and lower lanes must overlap in time.")
     t = np.linspace(start, end, _BAND_SAMPLES)
     harmonic_number = 2 if harmonic else 1
-    upper = _power_law(t, upper_fit["a"], upper_fit["b"]) / harmonic_number
-    lower = _power_law(t, lower_fit["a"], lower_fit["b"]) / harmonic_number
+    upper = fitted_frequency(t, upper_fit) / harmonic_number
+    lower = fitted_frequency(t, lower_fit) / harmonic_number
     compression = np.square(upper / lower)
     mach = alfven_mach(compression)
-    drift, drift_err = (value / harmonic_number for value in _drift(lower_fit, t))
-    height, _height_err, speed, _speed_err = _kinematics(
-        lower, drift, lower_fit["rmse"] / harmonic_number, drift_err, fold
-    )
+    speed = lower_fit["speed_km_s"]
     alfven_speed = speed / mach
     density = np.square(lower / PLASMA_FREQ_COEFF_MHZ)
     field = magnetic_field_gauss(alfven_speed, density)
+    height = fitted_height(t, lower_fit)
 
     def stats(values):
         return {"mean": float(np.mean(values)), "std": float(np.std(values))}
@@ -247,7 +217,7 @@ def band_splitting(upper_s, upper_mhz, lower_s, lower_mhz, fold: int = 1, harmon
             "relative_bandwidth": stats((upper - lower) / lower),
             "compression_ratio": stats(compression),
             "alfven_mach": stats(mach),
-            "shock_speed_km_s": stats(speed),
+            "shock_speed_km_s": {"value": speed, "error": lower_fit["speed_err_km_s"]},
             "alfven_speed_km_s": stats(alfven_speed),
             "magnetic_field_g": stats(field),
             "height_rsun": stats(height),

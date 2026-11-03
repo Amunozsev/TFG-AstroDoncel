@@ -102,7 +102,7 @@ def test_rfi_masks_persistent_hot_channel():
 def test_processed_fits_contains_provenance_and_both_axes(monkeypatch, scale_mode):
     header = fits.Header({"DATE-OBS": "2024-01-01", "TIME-OBS": "12:00:00", "CDELT1": 1.0})
     raw = np.arange(12, dtype=float).reshape(3, 4)
-    monkeypatch.setattr(api_features, "_resolve_file", lambda *_args: "synthetic.fit")
+    monkeypatch.setattr(core, "_download_from_ethz", lambda *_args, **_kwargs: "synthetic.fit")
     monkeypatch.setattr(
         core,
         "_load_raw_cached",
@@ -111,7 +111,7 @@ def test_processed_fits_contains_provenance_and_both_axes(monkeypatch, scale_mod
     monkeypatch.setattr(core, "_subtract_background", lambda data: data - 1.0)
 
     response = api_features.export_processed_fits(
-        station="MRO", date="2024-01-01", filename="MRO_20240101_120000.fit", rfi=False, scale_mode=scale_mode,
+        station="MRO", date="2024-01-01", filename="MRO_20240101_120000.fit", filenames=None, rfi=False, scale_mode=scale_mode,
     )
     with fits.open(io.BytesIO(response.body), checksum=True) as hdus:
         assert [hdu.name for hdu in hdus] == ["PRIMARY", "FREQUENCY_AXIS", "TIME_AXIS"]

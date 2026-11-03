@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from './api';
+import { blockFilenames, layerKey } from './fileBlocks';
 
 export const TYPE_II_COLORS = { region: '#a3e635', points: '#38bdf8', fit: '#f87171', upper: '#e879f9', lower: '#fb923c', excluded: '#64748b' };
 const COLORS = TYPE_II_COLORS;
@@ -23,7 +24,7 @@ export const asPairs = (points) => points.map((p) => [String(p.x), p.y]);
  * calculation runs in the API so the physics stays in one tested module.
  */
 export function useTypeII(layer, active) {
-  const fileKey = layer ? `${layer.station}:${layer.date}:${layer.filename}` : '';
+  const fileKey = layer ? layerKey(layer) : '';
   const [state, setState] = useState({ fileKey });
   const [pickMode, setPickMode] = useState(null);
   const [polygon, setPolygon] = useState([]);
@@ -45,7 +46,7 @@ export function useTypeII(layer, active) {
     setPickMode(null); setPolygon([]); setBackbone(null); setExcluded(new Set());
     setShock(null); setUpper([]); setLower([]); setBandInput(null); setBand(null); setError(null);
   }
-  const source = layer ? { station: layer.station, date: layer.date, filename: layer.filename } : null;
+  const source = layer ? { station: layer.station, date: layer.date, filename: layer.filename, filenames: blockFilenames(layer) } : null;
 
   const onPlotClick = useCallback((point) => {
     if (!active || !pickMode) return;

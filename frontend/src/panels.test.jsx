@@ -532,6 +532,16 @@ describe('request cancellation and empty dates', () => {
     expect(screen.getByTestId('plotly-chart').dataset.traces).not.toContain('XRS-B');
   });
 
+  it('sends both block names when a joined observation is plotted', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ times: [], curves: [] }) });
+    vi.stubGlobal('fetch', fetchMock);
+    const names = ['MRO_20240101_120000.fit', 'MRO_20240101_121500.fit'];
+    render(<LightCurvePanel embedded layer={{ station: 'MRO', date: '2024-01-01', filename: names[0], filenames: names }} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Plot light curve' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(new URL(fetchMock.mock.calls[0][0]).searchParams.getAll('filenames')).toEqual(names);
+  });
+
   it('does not deliver a light curve after its source panel unmounts', async () => {
     let resolve;
     const onCurve = vi.fn();

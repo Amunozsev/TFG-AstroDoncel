@@ -37,7 +37,15 @@ from sqlalchemy import select
 from backend import catalog, catalog_mysql
 from backend.api_features import router as feature_router
 from backend.db import FitsFile, GoesDay, Station, init_db, session_scope
-from backend.security import fits_focus_code, safe_join, validate_date, validate_filename_context, validate_station
+from backend.observation import Observation, ObservationError, join_blocks
+from backend.security import (
+    fits_focus_code,
+    safe_join,
+    validate_date,
+    validate_filename_context,
+    validate_observation_filenames,
+    validate_station,
+)
 from backend.version import APP_NAME, APP_VERSION
 
 logging.basicConfig(level=logging.INFO)
@@ -494,6 +502,7 @@ class SpectrogramResponse(BaseModel):
     station: str
     date: str
     filename: str
+    filenames: list[str] = Field(default_factory=list)  # blocks actually used, chronological
     time_axis: list[str]
     freq_axis: list[float]
     z: list[list[float]]
@@ -530,6 +539,7 @@ class BurstDetectResponse(BaseModel):
     station: str
     date: str
     filename: str
+    filenames: list[str] = Field(default_factory=list)
     available: bool
     reason: str = ""
     model_version: str | None = None
@@ -1307,6 +1317,40 @@ def _parse_utc(s: str) -> datetime:
     return parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+# ── Observation (one block, or two consecutive blocks of one receiver) ───────
+
+def _block_paths(station: str, date: str, names: list[str]) -> list[str]:
+    """Local paths of already validated block names; FileNotFoundError if one is missing."""
+    paths = []
+    for name in names:
+        path = _download_from_ethz(station, date, filename=name)
+        if not path:
+            raise FileNotFoundError(f"Could not retrieve '{name}' for '{station}' on {date}.")
+        paths.append(path)
+    return paths
+
+
+def _requested_blocks(station: str, date: str, filename: str | None, filenames: list[str] | None) -> list[str]:
+    """Validate the block names of an interactive request (``filenames`` wins); HTTP 422 if invalid."""
+    try:
+        station = validate_station(station)
+        validate_date(date)
+        return validate_observation_filenames(filename, filenames, station, date)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def open_observation(station: str, date: str, filename: str | None, filenames: list[str] | None) -> Observation:
+    """Validate, resolve and join the requested block(s). Raises HTTPException (404 or 422)."""
+    names = _requested_blocks(station, date, filename, filenames)
+    try:
+        return join_blocks(_block_paths(station, date, names))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ObservationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 # ── Single-station pipeline helper ───────────────────────────────────────────
 
 def _build_spectrogram(
@@ -1314,6 +1358,7 @@ def _build_spectrogram(
     date: str,
     filename: str | None = None,
     sahan_filter: bool = False,
+    filenames: list[str] | None = None,
     max_time_bins: int | None = None,
     rfi_z_thresh: float = 6.0,
     rfi_occupancy: float = 0.15,
@@ -1332,13 +1377,9 @@ def _build_spectrogram(
     """
     station = validate_station(station)
     validate_date(date)
-    if filename:
-        filename = validate_filename_context(filename, station, date)
-        fits_path = _download_from_ethz(station, date, filename=filename)
-        if not fits_path:
-            raise FileNotFoundError(
-                f"Could not retrieve '{filename}' for '{station}' on {date}."
-            )
+    names = validate_observation_filenames(filename, filenames, station, date) if (filename or filenames) else []
+    if names:
+        fits_paths = _block_paths(station, date, names)
     else:
         fits_path = _download_from_ethz(station, date)
         if not fits_path:
@@ -1346,17 +1387,21 @@ def _build_spectrogram(
                 f"No file found for station '{station}' on {date}. "
                 "Check the station name or whether the ETHZ server (soleil.i4ds.ch) is reachable."
             )
+        fits_paths = [fits_path]
 
-    logger.info("Processing %s", fits_path)
+    logger.info("Processing %s", fits_paths)
+    fits_path = fits_paths[0]
     try:
-        data_raw, freqs, time_arr, header = _load_raw_cached(fits_path)
+        observation = join_blocks(fits_paths)
+        data_raw, freqs, header = observation.data, observation.freqs, observation.header
         if scale_mode not in {"relative", "median_db"}:
             raise ValueError("scale_mode must be relative or median_db")
         if scale_mode == "median_db":
             data_raw = data_raw * (2500.0 / 255.0 / 25.4)
-        _record_station_coords(station, header)  # learn the real site from its data
-        _record_fits_metadata(station, fits_path, header)
-        time_labels = _times_to_utc(time_arr, header)
+        for block_path, block_header in zip(fits_paths, observation.headers, strict=True):
+            _record_station_coords(station, block_header)  # learn the real site from its data
+            _record_fits_metadata(station, block_path, block_header)
+        time_labels = observation.time_labels
 
         if max_time_bins is not None:
             data, time_labels = _decimate_time(data_raw, time_labels, max_time_bins)
@@ -1392,7 +1437,8 @@ def _build_spectrogram(
         return SpectrogramResponse(
             station=station,
             date=date,
-            filename=os.path.basename(fits_path),
+            filename=observation.filenames[0],
+            filenames=observation.filenames,
             time_axis=time_labels,
             freq_axis=np.round(np.asarray(freqs, dtype=float), 3).tolist(),
             z=np.round(data_out, 4).tolist(),
@@ -1404,6 +1450,8 @@ def _build_spectrogram(
             unit="dB" if scale_mode == "median_db" else "relative digits",
             scale_mode=scale_mode,
         )
+    except ObservationError:
+        raise
     except Exception as exc:
         raise RuntimeError(f"Error processing FITS '{fits_path}': {exc}") from exc
 
@@ -1807,6 +1855,7 @@ def get_spectrogram(
     station: str = Query(..., description="e-Callisto station, e.g. SPAIN-SIGUENZA"),
     date: str = Query(..., description="Observation date, format YYYY-MM-DD"),
     filename: str = Query(default=None, description="Specific FITS filename"),
+    filenames: list[str] | None = Query(default=None, description="One or two consecutive blocks of one receiver; wins over filename"),
     file_path: str | None = Query(default=None, deprecated=True, include_in_schema=False),
     sahan_filter: bool = Query(default=False, description="Apply full RFI cleaning"),
     max_time_bins: int = Query(default=None, ge=1, description="Decimate time axis to at most N columns (overview mode)"),
@@ -1833,8 +1882,8 @@ def get_spectrogram(
     try:
         station = validate_station(station)
         validate_date(date)
-        if filename:
-            filename = validate_filename_context(filename, station, date)
+        if filename or filenames:
+            validate_observation_filenames(filename, filenames, station, date)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -1842,6 +1891,7 @@ def get_spectrogram(
         return _build_spectrogram(
             station, date,
             filename=filename,
+            filenames=filenames,
             sahan_filter=sahan_filter,
             max_time_bins=max_time_bins,
             rfi_z_thresh=rfi_z_thresh,
@@ -1852,6 +1902,8 @@ def get_spectrogram(
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except ObservationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("Unexpected error processing spectrogram for %s %s", station, date)
         raise HTTPException(status_code=500, detail="Spectrogram processing failed; use the request id to inspect server logs") from exc
@@ -1998,7 +2050,8 @@ _MAX_ZOOM_COLS = 2400
 def get_spectrogram_zoom(
     station: str = Query(..., description="e-Callisto station"),
     date: str = Query(..., description="Observation date, format YYYY-MM-DD"),
-    filename: str = Query(..., description="Exact filename already shown in the overview"),
+    filename: str | None = Query(default=None, description="Exact filename already shown in the overview"),
+    filenames: list[str] | None = Query(default=None, description="One or two consecutive blocks; wins over filename"),
     t0: str = Query(..., description="Start time ISO-8601 UTC (from Plotly xaxis.range)"),
     t1: str = Query(..., description="End time ISO-8601 UTC (from Plotly xaxis.range)"),
     f0: float = Query(..., description="Start frequency MHz (from Plotly yaxis.range)"),
@@ -2023,26 +2076,12 @@ def get_spectrogram_zoom(
     except ValueError:
         raise HTTPException(status_code=422, detail=f"Invalid date format: '{date}'")
 
-    # Resolve the FITS file (must already be local — overview guarantees this)
-    try:
-        station = validate_station(station)
-        filename = validate_filename_context(filename, station, date)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    local_path = safe_join(DATA_DIR_LOCAL, filename)
-    if os.path.isfile(local_path):
-        fits_path = local_path
-    else:
-        fits_path = _download_from_ethz(station, date, filename=filename)
-    if not fits_path:
-        raise HTTPException(
-            status_code=404,
-            detail=f"File '{filename}' not found for station '{station}' on {date}.",
-        )
+    observation = open_observation(station, date, filename, filenames)
+    station = validate_station(station)
 
     try:
-        data_raw, freqs, time_arr, header = _load_raw_cached(fits_path)
-        time_labels: list[str] = _times_to_utc(time_arr, header)
+        data_raw, freqs, header = observation.data, observation.freqs, observation.header
+        time_labels: list[str] = observation.time_labels
 
         # ── Column indices (time) ─────────────────────────────────────────────
         try:
@@ -2121,7 +2160,8 @@ def get_spectrogram_zoom(
         return SpectrogramResponse(
             station=station,
             date=date,
-            filename=filename,
+            filename=observation.filenames[0],
+            filenames=observation.filenames,
             time_axis=time_slice,
             freq_axis=np.round(np.asarray(freqs_slice, dtype=float), 3).tolist(),
             z=np.round(data_out, 4).tolist(),
@@ -2137,7 +2177,7 @@ def get_spectrogram_zoom(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.exception("Zoom failed for %s %s: %s", station, filename, exc)
+        logger.exception("Zoom failed for %s %s: %s", station, observation.filenames, exc)
         raise HTTPException(status_code=500, detail="Zoom processing failed; use the request id to inspect server logs") from exc
 
 
@@ -2152,9 +2192,10 @@ _BURST_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="burst")
 async def detect_burst(
     station: str = Query(..., description="e-Callisto station"),
     date: str = Query(..., description="Observation date, format YYYY-MM-DD"),
-    filename: str = Query(..., description="Exact FITS filename (as shown in the overview)"),
+    filename: str | None = Query(default=None, description="Exact FITS filename (as shown in the overview)"),
+    filenames: list[str] | None = Query(default=None, description="One or two consecutive blocks; wins over filename"),
 ):
-    """Detect and classify the solar radio bursts of one FITS file.
+    """Detect and classify the solar radio bursts of one FITS file (or two consecutive ones).
 
     Each detection is a box with its burst type (II, III, IIIs, IV, V), the
     model confidence and its extent in UTC and MHz. IV and V are flagged as
@@ -2163,51 +2204,38 @@ async def detect_burst(
     ONNX Runtime is optional: when it or the model is unavailable, the
     endpoint answers with ``available=false`` and a reason instead of failing.
     """
-    try:
-        station = validate_station(station)
-        validate_date(date)
-        filename = validate_filename_context(filename, station, date)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    names = _requested_blocks(station, date, filename, filenames)
+    station = validate_station(station)
 
     from backend import burst_types  # deferred: inference runtime stays optional
 
     ok, reason = burst_types.is_available()
     if not ok:
         return BurstDetectResponse(
-            station=station, date=date, filename=filename,
+            station=station, date=date, filename=names[0], filenames=names,
             available=False, reason=reason,
         )
 
-    # Resolve the FITS file (usually already local — the overview loaded it)
-    local_path = safe_join(DATA_DIR_LOCAL, filename)
-    if os.path.isfile(local_path):
-        fits_path = local_path
-    else:
-        fits_path = _download_from_ethz(station, date, filename=filename)
-    if not fits_path:
-        raise HTTPException(
-            status_code=404,
-            detail=f"File '{filename}' not found for station '{station}' on {date}.",
-        )
-
     def _run() -> dict:
-        data_raw, freqs, time_arr, header = _load_raw_cached(fits_path)
-        time_s = _time_offsets_seconds(time_arr, header)
-        obs_start = _observation_start(header)
-        return burst_types.detect(data_raw, freqs, time_s, obs_start)
+        observation = open_observation(station, date, None, names)
+        return burst_types.detect(
+            observation.data, observation.freqs, observation.offsets_s, observation.start,
+            observation.block_samples,
+        )
 
     loop = asyncio.get_event_loop()
     try:
         result = await loop.run_in_executor(_BURST_EXECUTOR, _run)
+    except HTTPException:
+        raise
     except Exception as exc:
-        logger.exception("Burst detection failed for %s: %s", filename, exc)
+        logger.exception("Burst detection failed for %s: %s", names, exc)
         raise HTTPException(status_code=500, detail="Burst detection failed; use the request id to inspect server logs") from exc
 
     logger.info("Burst detection %s: %d detection(s), %.0f ms",
-                filename, len(result["detections"]), result["inference_ms"])
+                names, len(result["detections"]), result["inference_ms"])
     return BurstDetectResponse(
-        station=station, date=date, filename=filename,
+        station=station, date=date, filename=names[0], filenames=names,
         available=True, **result,
     )
 

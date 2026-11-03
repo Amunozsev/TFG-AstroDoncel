@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Plot } from './plotly';
 import { apiFetch } from './api';
+import { addBlockParams, layerKey } from './fileBlocks';
 
 function exportCsv(result) {
   const { data, source } = result;
@@ -84,6 +85,7 @@ export default function LightCurvePanel({ layer, theme = 'dark', embedded = fals
   const [data, setData] = useState(null);
   const [status, setStatus] = useState('');
   const requestRef = useRef(null);
+  const layerId = layer ? layerKey(layer) : '';
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -91,7 +93,7 @@ export default function LightCurvePanel({ layer, theme = 'dark', embedded = fals
       setStatus('');
     });
     return () => requestRef.current?.abort();
-  }, [layer?.station, layer?.date, layer?.filename]);
+  }, [layerId]);
 
   async function load() {
     if (!layer) return;
@@ -114,6 +116,7 @@ export default function LightCurvePanel({ layer, theme = 'dark', embedded = fals
       date: layer.date,
       filename: layer.filename,
     });
+    addBlockParams(params, layer);
     frequencies.forEach((value) => params.append('freq_mhz', String(value)));
 
     try {
@@ -123,7 +126,7 @@ export default function LightCurvePanel({ layer, theme = 'dark', embedded = fals
       if (controller.signal.aborted) return;
       const result = {
         data: payload,
-        source: { station: layer.station, date: layer.date, filename: layer.filename },
+        source: { station: layer.station, date: layer.date, filename: layer.filename, filenames: layer.filenames },
       };
       setData(result);
       onCurve?.(result);

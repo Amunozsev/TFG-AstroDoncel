@@ -20,10 +20,11 @@ function exportShockCsv(t2) {
   const { backbone, excluded, shock, source } = t2;
   const rows = [['UTC', 'time_s', 'observed_freq_mhz', 'used_in_fit']];
   backbone.time_utc.forEach((time, i) => rows.push([time, backbone.time_s[i], backbone.freq_mhz[i], !excluded.has(i)]));
-  rows.push([], ['UTC', 'time_s', 'fit_freq_mhz', 'height_rsun', 'shock_speed_km_s']);
+  rows.push([], ['UTC', 'time_s', 'fit_freq_mhz', 'height_rsun']);
   shock.curve.time_s.forEach((time, i) => rows.push([
-    shock.curve.time_utc[i], time, shock.curve.fit_freq_mhz[i], shock.curve.height_rsun[i], shock.curve.speed_km_s[i],
+    shock.curve.time_utc[i], time, shock.curve.fit_freq_mhz[i], shock.curve.height_rsun[i],
   ]));
+  rows.push([], ['shock_speed_km_s', 'shock_speed_err_km_s'], [shock.summary.speed_km_s, shock.summary.speed_err_km_s]);
   download(`type-ii-${source.station}-${source.date}.csv`, rows.map((row) => row.join(',')).join('\r\n'), 'text/csv;charset=utf-8');
 }
 
@@ -33,10 +34,9 @@ function exportJson(t2) {
     schema: 'astrodoncel.type-ii.v1',
     source,
     method: {
-      time_origin: 'seconds since the FITS observation start',
-      fit: 'least squares f = a * t^-b',
+      fit: 'least-squares line through the Newkirk heights, R(t) = R0 + v t',
       density_model: `Newkirk (1961) x ${shock?.fold ?? band?.fold} fold`,
-      emission: shock?.harmonic || band?.harmonic ? 'harmonic (frequencies and drift halved)' : 'fundamental',
+      emission: shock?.harmonic || band?.harmonic ? 'harmonic (frequencies halved)' : 'fundamental',
       band_splitting: 'experimental: Vrsnak et al. (2002) perpendicular low-beta shock, upstream (lower lane) density',
     },
     region: polygon.map((p) => [p.x, p.y]),
@@ -154,14 +154,11 @@ export function TypeIIResult({ t2, theme = 'dark', onClose }) {
           {s && (
             <table className="type-ii-table">
               <tbody>
-                <tr><th>Fit</th><td>f = {shock.fit.a.toFixed(2)} · t<sup>−{shock.fit.b.toFixed(3)}</sup> · R² {shock.fit.r2.toFixed(3)} · RMSE {shock.fit.rmse.toFixed(2)} MHz · {shock.fit.points} pts</td></tr>
-                <tr><th>Start frequency</th><td><Value value={s.start_freq_mhz} error={s.start_freq_err_mhz} /> MHz{shock.harmonic ? ' (fundamental)' : ''}</td></tr>
-                <tr><th>Start drift</th><td><Value value={s.start_drift_mhz_s} error={s.start_drift_err_mhz_s} digits={3} /> MHz/s</td></tr>
-                <tr><th>Mean drift</th><td><Value value={s.mean_drift_mhz_s} error={s.std_drift_mhz_s} digits={3} /> MHz/s (± spread)</td></tr>
-                <tr><th>Start shock height</th><td><Value value={s.start_height_rsun} error={s.start_height_err_rsun} digits={3} /> R☉</td></tr>
-                <tr><th>Mean shock height</th><td><Value value={s.mean_height_rsun} error={s.std_height_rsun} digits={3} /> R☉ (± spread)</td></tr>
-                <tr><th>Start shock speed</th><td><Value value={s.start_speed_km_s} error={s.start_speed_err_km_s} digits={0} /> km/s</td></tr>
-                <tr><th>Mean shock speed</th><td><Value value={s.mean_speed_km_s} error={s.std_speed_km_s} digits={0} /> km/s (± spread)</td></tr>
+                <tr><th>Shock speed</th><td><Value value={s.speed_km_s} error={s.speed_err_km_s} digits={0} /> km/s</td></tr>
+                <tr><th>Fit</th><td>R(t) = R₀ + v·t · R² {shock.fit.r2.toFixed(3)} · RMSE {shock.fit.rmse_mhz.toFixed(2)} MHz · {shock.fit.points} pts</td></tr>
+                <tr><th>Frequency</th><td><Value value={s.start_freq_mhz} /> → <Value value={s.end_freq_mhz} /> MHz</td></tr>
+                <tr><th>Drift</th><td><Value value={s.start_drift_mhz_s} digits={3} /> → <Value value={s.end_drift_mhz_s} digits={3} /> MHz/s</td></tr>
+                <tr><th>Shock height</th><td><Value value={s.start_height_rsun} digits={3} /> → <Value value={s.end_height_rsun} digits={3} /> R☉</td></tr>
               </tbody>
             </table>
           )}
@@ -191,11 +188,11 @@ export function TypeIIResult({ t2, theme = 'dark', onClose }) {
             />
             <table className="type-ii-table">
               <tbody>
+                <tr><th>Shock speed</th><td><Value value={band.summary.shock_speed_km_s.value} error={band.summary.shock_speed_km_s.error} digits={0} /> km/s (lower lane fit)</td></tr>
                 {[
                   ['Relative bandwidth', band.summary.relative_bandwidth, 3, ''],
                   ['Compression ratio X', band.summary.compression_ratio, 3, ''],
                   ['Alfvén Mach number', band.summary.alfven_mach, 2, ''],
-                  ['Shock speed', band.summary.shock_speed_km_s, 0, 'km/s'],
                   ['Alfvén speed', band.summary.alfven_speed_km_s, 0, 'km/s'],
                   ['Magnetic field', band.summary.magnetic_field_g, 3, 'G'],
                   ['Height', band.summary.height_rsun, 3, 'R☉'],

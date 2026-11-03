@@ -138,29 +138,78 @@ def _utc(start: datetime, seconds: float) -> str:
     return f"{ts.strftime('%Y-%m-%dT%H:%M:%S')}.{ts.microsecond // 1000:03d}Z"
 
 
-def detect(data_raw: np.ndarray, freqs: np.ndarray, time_s: np.ndarray, obs_start: datetime) -> dict:
-    """Detect and classify the bursts of one FITS file; JSON-serialisable result."""
+def merge_windows(windows: list[tuple[int, list]], window: int, n_samples: int, iou: float) -> list[tuple[float, ...]]:
+    """Join the detections of overlapping windows into whole-observation fractions.
+
+    ``windows`` holds (first sample, decode() boxes in window fractions). A box
+    is kept only by the window whose core contains its centre (central half of
+    the window; the first core reaches the start, the last one the end), so a
+    burst cut by a window edge is judged where the model saw it whole. A
+    per-class NMS is the safety net for boxes next to a core edge.
+    """
+    kept = []
+    for k, (first, boxes) in enumerate(windows):
+        low = 0 if k == 0 else first + window / 4
+        high = n_samples if k == len(windows) - 1 else first + 3 * window / 4
+        for x0, y0, x1, y1, score, cls in boxes:
+            g0, g1 = first + x0 * window, first + x1 * window
+            if low <= (g0 + g1) / 2 < high:
+                kept.append((g0 / n_samples, y0, g1 / n_samples, y1, score, cls))
+    if not kept:
+        return []
+    boxes = np.array(kept)
+    keep = _nms(boxes[:, :4] + boxes[:, 5:6] * 4096.0, boxes[:, 4], iou)
+    return [(*map(float, boxes[i, :5]), int(boxes[i, 5])) for i in keep]
+
+
+def detect(data_raw: np.ndarray, freqs: np.ndarray, time_s: np.ndarray, obs_start: datetime,
+           block_samples: list[int] | None = None) -> dict:
+    """Detect and classify the bursts of one FITS file; JSON-serialisable result.
+
+    The model was trained on single blocks, so joined blocks (``block_samples``
+    lists the samples of each) are scanned with block-sized windows at 50 %
+    stride instead of squashing 30 minutes into one image.
+    """
     model = _load_model()
     config = model["config"]
     t0 = time.perf_counter()
 
     size = config["input"]
     pad = (size["height"] - IMAGE_HEIGHT) // 2
-    image = np.full((size["height"], size["width"]), size["pad_value"], np.float32)
-    image[pad:pad + IMAGE_HEIGHT] = spectrogram_image(data_raw)
-    tensor = np.repeat(image[None, None] / 255.0, 3, axis=1).astype(np.float32)
     session = model["session"]
-    output = session.run(None, {session.get_inputs()[0].name: tensor})[0][0]
-    boxes = decode(output, config["confidence_threshold"], config["nms_iou"], pad)
+
+    def run(matrix: np.ndarray) -> list[tuple[float, ...]]:
+        image = np.full((size["height"], size["width"]), size["pad_value"], np.float32)
+        image[pad:pad + IMAGE_HEIGHT] = spectrogram_image(matrix)
+        tensor = np.repeat(image[None, None] / 255.0, 3, axis=1).astype(np.float32)
+        output = session.run(None, {session.get_inputs()[0].name: tensor})[0][0]
+        return decode(output, config["confidence_threshold"], config["nms_iou"], pad)
+
+    n = data_raw.shape[1]
+    window = int(np.median(block_samples)) if block_samples else n
+    if window >= n:
+        boxes = run(data_raw)
+    else:
+        stride = max(window // 2, 1)
+        firsts = list(range(0, n - window + 1, stride))
+        if firsts[-1] + window < n:
+            firsts.append(n - window)
+        boxes = merge_windows([(f, run(data_raw[:, f:f + window])) for f in firsts],
+                              window, n, config["nms_iou"])
 
     # The image spans the whole file: fraction x of its width is sample x * n.
     time_s = np.asarray(time_s, dtype=float)
     step = float(np.median(np.diff(time_s))) if time_s.size > 1 else 0.0
     first = float(time_s[0]) if time_s.size else 0.0
+    # Joined blocks may differ in cadence or meet with a small gap: read times from the real axis.
+    edges = np.append(time_s, time_s[-1] + step) if window < n else None
     detections = []
     for x0, y0, x1, y1, score, cls in boxes:
         physical = box_to_physical((x0, y0, x1, y1), step * time_s.size, np.asarray(freqs, dtype=float))
-        start_s, end_s = first + physical["start_s"], first + physical["end_s"]
+        if edges is None:
+            start_s, end_s = first + physical["start_s"], first + physical["end_s"]
+        else:
+            start_s, end_s = (float(v) for v in np.interp([x0 * n, x1 * n], np.arange(n + 1), edges))
         detections.append({
             "type": CLASSES[cls],
             "score": round(score, 3),

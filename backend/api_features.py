@@ -304,20 +304,22 @@ def download_fits(station: str, date: str, filename: str):
 
 
 @router.get("/lightcurve")
-def get_lightcurve(station: str, date: str, filename: str, freq_mhz: list[float] = Query(...)):
+def get_lightcurve(
+    station: str,
+    date: str,
+    freq_mhz: list[float] = Query(...),
+    filename: str | None = None,
+    filenames: list[str] | None = Query(default=None),
+):
     from backend import main as core
 
     if not 1 <= len(freq_mhz) <= 8:
         raise HTTPException(status_code=422, detail="Select between 1 and 8 frequencies")
     if not all(np.isfinite(value) for value in freq_mhz):
         raise HTTPException(status_code=422, detail="Frequencies must be finite numbers in MHz")
-    try:
-        path = _resolve_file(station, date, filename)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    data, frequencies, time_axis, header = core._load_raw_cached(path)
-    times = core._times_to_utc(time_axis, header)
-    processed = core._subtract_background(data)
+    observation = core.open_observation(station, date, filename, filenames)
+    frequencies, times = observation.freqs, observation.time_labels
+    processed = core._subtract_background(observation.data)
     curves = []
     for requested in freq_mhz:
         index = int(np.nanargmin(np.abs(np.asarray(frequencies) - requested)))
@@ -326,14 +328,18 @@ def get_lightcurve(station: str, date: str, filename: str, freq_mhz: list[float]
             "frequency_mhz": round(float(frequencies[index]), 3),
             "intensity": np.round(np.nan_to_num(processed[index], nan=0.0), 4).tolist(),
         })
-    return {"station": station, "date": date, "filename": filename, "times": times, "curves": curves, "unit": "relative digits"}
+    return {
+        "station": station, "date": date, "filename": observation.filenames[0], "filenames": observation.filenames,
+        "times": times, "curves": curves, "unit": "relative digits",
+    }
 
 
 @router.get("/spectrogram/export")
 def export_processed_fits(
     station: str,
     date: str,
-    filename: str,
+    filename: str | None = None,
+    filenames: list[str] | None = Query(default=None),
     rfi: bool = False,
     rfi_z_thresh: float = Query(default=6.0, ge=0.5, le=20.0),
     rfi_occupancy: float = Query(default=0.15, ge=0.01, le=1.0),
@@ -343,11 +349,8 @@ def export_processed_fits(
 ):
     from backend import main as core
 
-    try:
-        path = _resolve_file(station, date, filename)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    data, frequencies, time_axis, header = core._load_raw_cached(path)
+    observation = core.open_observation(station, date, filename, filenames)
+    data, frequencies, header = observation.data, observation.freqs, observation.header
     if scale_mode == "median_db":
         data = data * (2500.0 / 255.0 / 25.4)
     processed = core._subtract_background(data)
@@ -365,6 +368,13 @@ def export_processed_fits(
     export_header.add_history("AstroDoncel: per-frequency background subtraction applied")
     if scale_mode == "median_db":
         export_header.add_history("AstroDoncel: instrumental median_db scale factor 2500/255/25.4 applied")
+    joined = len(observation.filenames) > 1
+    if joined:
+        export_header.add_history(f"AstroDoncel: joined blocks {' + '.join(observation.filenames)}")
+        export_header.add_history(
+            f"AstroDoncel: {observation.overlap_samples_dropped} duplicated boundary sample(s) dropped; "
+            "measured times kept"
+        )
     export_header.add_history(f"AstroDoncel: RFI mitigation applied={rfi}")
     if rfi:
         export_header.add_history(
@@ -375,15 +385,17 @@ def export_processed_fits(
     frequency_axis = fits.BinTableHDU.from_columns([
         fits.Column(name="FREQUENCY_MHZ", format="D", array=np.asarray(frequencies, dtype=float)),
     ], name="FREQUENCY_AXIS")
-    offsets = core._time_offsets_seconds(time_axis, header)
-    utc_times = core._times_to_utc(time_axis, header)
+    offsets, utc_times = observation.offsets_s, observation.time_labels
     time_axis_hdu = fits.BinTableHDU.from_columns([
         fits.Column(name="TIME_OFFSET_S", format="D", unit="s", array=offsets),
         fits.Column(name="TIME_UTC", format="26A", array=np.asarray(utc_times, dtype="S26")),
     ], name="TIME_AXIS")
     buffer = io.BytesIO()
     fits.HDUList([primary, frequency_axis, time_axis_hdu]).writeto(buffer, checksum=True)
-    output = re.sub(r"\.fits?(?:\.gz)?$", "_processed.fits", os.path.basename(filename), flags=re.IGNORECASE)
+    output = re.sub(
+        r"\.fits?(?:\.gz)?$", "_joined_processed.fits" if joined else "_processed.fits",
+        observation.filenames[0], flags=re.IGNORECASE,
+    )
     return Response(
         buffer.getvalue(), media_type="application/fits",
         headers={"Content-Disposition": f'attachment; filename="{output}"'},
@@ -404,7 +416,8 @@ TimeFreqPoint = tuple[str, float]
 class TypeIIRequest(BaseModel):
     station: str
     date: str
-    filename: str
+    filename: str | None = None
+    filenames: list[str] | None = None  # one or two consecutive blocks; wins over filename
     fold: int = Field(default=1, ge=1, le=4)
     harmonic: bool = False
 
@@ -428,12 +441,8 @@ def _type_ii_file(request: TypeIIRequest):
     """Load the request's FITS and return (data, freqs, offsets_s, start_utc)."""
     from backend import main as core
 
-    try:
-        path = _resolve_file(request.station, request.date, request.filename)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    data, freqs, time_axis, header = core._load_raw_cached(path)
-    return data, freqs, core._time_offsets_seconds(time_axis, header), core._observation_start(header)
+    observation = core.open_observation(request.station, request.date, request.filename, request.filenames)
+    return observation.data, observation.freqs, observation.offsets_s, observation.start
 
 
 def _seconds(points: list[TimeFreqPoint], start: datetime) -> tuple[list[float], list[float]]:
@@ -478,7 +487,7 @@ def type_ii_backbone(request: BackboneRequest):
 
 @router.post("/type2/shock")
 def type_ii_shock(request: ShockRequest):
-    """Power-law drift fit and Newkirk shock height and speed."""
+    """Shock speed from a straight line through the Newkirk heights of the points."""
     from backend import type_ii
 
     _data, _freqs, _offsets, start = _type_ii_file(request)
@@ -507,7 +516,7 @@ def type_ii_band_splitting(request: BandSplittingRequest):
     for fit in (result["upper_fit"], result["lower_fit"]):
         curve_s = np.linspace(fit["t_start_s"], fit["t_end_s"], 50)
         fit["curve_time_utc"] = _utc(start, curve_s)
-        fit["curve_freq_mhz"] = (fit["a"] * np.power(curve_s, -fit["b"])).tolist()
+        fit["curve_freq_mhz"] = type_ii.fitted_frequency(curve_s, fit).tolist()
     result["profile"]["time_utc"] = _utc(start, result["profile"]["time_s"])
     return result
 

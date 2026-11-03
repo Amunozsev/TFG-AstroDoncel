@@ -1286,3 +1286,5 @@ button:disabled { cursor: not-allowed; }
 .type-ii-status { display: inline-flex; align-items: center; gap: 0.5rem; }
 .type-ii-status button { padding: 0.1rem 0.5rem; border: 1px solid currentColor; border-radius: var(--radius-sm); color: inherit; background: transparent; font: inherit; cursor: pointer; }
 .type-ii-status button:disabled { opacity: 0.5; cursor: default; }
+
+.block-join { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; }

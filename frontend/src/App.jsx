@@ -3,7 +3,7 @@ import { API_BASE_URL, apiFetch } from './api';
 import { buildAnalysisManifest, downloadManifest, rfiQuery } from './analysisManifest';
 import { burstStyle, describeDetections } from './burstTypes';
 import { fileForEvent } from './eventNavigation';
-import { displayBlockTime, selectCombineBlocks } from './fileBlocks';
+import { addBlockParams, adjacentBlock, displayBlockTime, layerKey, selectCombineBlocks } from './fileBlocks';
 import { TypeIIResult, TypeIIStatus } from './TypeIIPanel';
 import { useTypeII } from './useTypeII';
 import { observationDateRange, observationPath, parseObservationSearch, writeObservationUrl } from './observationUrl';
@@ -115,12 +115,16 @@ export default function App() {
   const [filesLoading, setFilesLoading]     = useState(false);
   const [filesError, setFilesError]         = useState(null);
   const [selectedFile, setSelectedFile]     = useState(null);
+  // Block joined with the selected one; tied to its base so any new selection drops it.
+  const [joined, setJoined]                 = useState(null);
+  const joinedFile = joined?.base === selectedFile ? joined.other : null;
   const [focusCode, setFocusCode]           = useState('all');
   const [pendingEvent, setPendingEvent]     = useState(() => initialObservation ? {
     station: initialObservation.station,
     date: initialObservation.date,
     startedAt: initialObservation.startedAt,
     filename: initialObservation.filename,
+    joinedFilename: initialObservation.joinedFilename,
     focusCode: initialObservation.focusCode,
   } : null);
   const [filesReloadKey, setFilesReloadKey] = useState(0);
@@ -218,6 +222,7 @@ export default function App() {
       date: observation.date,
       startedAt: observation.startedAt,
       filename: observation.filename,
+      joinedFilename: observation.joinedFilename,
       focusCode: observation.focusCode,
     });
     setFilesReloadKey((value) => value + 1);
@@ -327,6 +332,7 @@ export default function App() {
     setFilesContext(null);
     setFilesError(null);
     setSelectedFile(null);
+    setJoined(null);
     setCollapsedHours({});
     if (!st || !observationDateRange(dt)) {
       setFilesLoading(false);
@@ -415,6 +421,7 @@ export default function App() {
     }
     queueMicrotask(() => {
       setSelectedFile(nearest.filename);
+      setJoined(pendingEvent.joinedFilename ? { base: nearest.filename, other: pendingEvent.joinedFilename } : null);
       setFocusCode(nearest.focus_code ?? 'all');
       setShareStatus('');
       setPendingEvent(null);
@@ -479,6 +486,7 @@ export default function App() {
             ...rfiQS,
           });
           if (selectedFile) params.set('filename', selectedFile);
+          if (joinedFile) addBlockParams(params, { filenames: [selectedFile, joinedFile] });
           const res = await apiFetch(`/api/spectrogram?${params}`, { signal: controller.signal });
           if (!res.ok) {
             const body = await res.json().catch(() => ({}));
@@ -528,7 +536,15 @@ export default function App() {
     setBurstResults({}); // stale detections don't apply to a new load
     setShareStatus('');
     setTriggerLoad((n) => n + 1);
-    if (station && selectedFile) writeObservationUrl({ station, date, filename: selectedFile });
+    if (station && selectedFile) writeObservationUrl({ station, date, filename: selectedFile, joinedFilename: joinedFile });
+  }
+
+  function joinBlock(other) {
+    setJoined(other ? { base: selectedFile, other } : null);
+    setBurstResults({});
+    setShareStatus('');
+    setTriggerLoad((n) => n + 1);
+    writeObservationUrl({ station, date, filename: selectedFile, joinedFilename: other });
   }
 
   function changeObservationDate(nextDate) {
@@ -603,6 +619,7 @@ export default function App() {
         date: layer.date,
         filename: layer.filename,
       });
+      addBlockParams(params, layer);
       const res = await apiFetch(`/api/burst/detect?${params}`, { timeoutMs: 90_000, signal: controller.signal });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -651,6 +668,7 @@ export default function App() {
 
   const handleChipClick = useCallback((filename) => {
     setSelectedFile(filename);
+    setJoined(null);
     setHasLoaded(true);
     setBurstResults({});
     setTriggerLoad((n) => n + 1);
@@ -673,7 +691,7 @@ export default function App() {
 
   async function copyObservationLink() {
     if (!station || !selectedFile) return;
-    const path = observationPath({ station, date, filename: selectedFile });
+    const path = observationPath({ station, date, filename: selectedFile, joinedFilename: joinedFile });
     try {
       await navigator.clipboard.writeText(new URL(path, window.location.origin).href);
       setShareStatus('Link copied');
@@ -764,12 +782,20 @@ export default function App() {
     filesContext?.station === station && filesContext?.date === date ? files : [], selectedFile,
   );
   const combineFilenames = combineSelection.filenames;
+  const listedFiles = filesContext?.station === station && filesContext?.date === date ? files : [];
+  const adjacent = selectedFile ? {
+    previous: adjacentBlock(listedFiles, selectedFile, 'previous'),
+    next: adjacentBlock(listedFiles, selectedFile, 'next'),
+  } : {};
+  const loadedBlocks = layers[0]?.filenames?.length > 1 ? layers[0] : null;
+  const blockSpan = loadedBlocks?.time_axis?.length > 1 ? [loadedBlocks.time_axis[0], loadedBlocks.time_axis.at(-1)] : null;
 
   const currentLightCurve = lightCurveResult
     && layers[0]
     && lightCurveResult.source.station === layers[0].station
     && lightCurveResult.source.date === layers[0].date
     && lightCurveResult.source.filename === layers[0].filename
+    && String(lightCurveResult.source.filenames) === String(layers[0].filenames)
     ? lightCurveResult
     : null;
   const primaryTimeRange = layers[0]?.time_axis?.length > 1
@@ -782,6 +808,20 @@ export default function App() {
   const stationSourceStatus = describeStationSource(stationsSource, stationRetentionDays);
 
   const rfiStats = layers[0]?.rfi_stats ?? null;
+
+  // A burst cut by the block edge may continue in the neighbouring block.
+  function edgeHints(result) {
+    const times = layers[0]?.time_axis;
+    if (loadedBlocks || !times?.length || !result.detections?.length) return [];
+    const duration = (Date.parse(times.at(-1)) - Date.parse(times[0])) / 1000;
+    const touches = {
+      previous: result.detections.some((d) => d.start_s <= 10),
+      next: result.detections.some((d) => d.end_s >= duration - 10),
+    };
+    return [['previous', 'Join previous block'], ['next', 'Join next block']]
+      .filter(([side]) => touches[side] && adjacent[side])
+      .map(([side, label]) => ({ side, label }));
+  }
 
   // ── Tab panel contents ─────────────────────────────────────────────────────
   function renderTabPanel() {
@@ -995,7 +1035,7 @@ export default function App() {
       case 'lightcurve':
         return (
           <LightCurvePanel
-            key={layers[0] ? `${layers[0].station}:${layers[0].date}:${layers[0].filename}` : 'empty'}
+            key={layers[0] ? layerKey(layers[0]) : 'empty'}
             layer={layers[0]}
             theme={theme}
             embedded
@@ -1047,6 +1087,12 @@ export default function App() {
                   <article key={st} className={`detection-result ${summary.status}`} aria-live="polite">
                     <header><strong>{st}</strong><span>{summary.label}</span></header>
                     {summary.detail && <p>{summary.detail}</p>}
+                    {edgeHints(result).map(({ side, label }) => (
+                      <p key={side} className="tool-help" role="status">
+                        A detection reaches the {side === 'previous' ? 'start' : 'end'} of this block.{' '}
+                        <button type="button" className="btn-tool" onClick={() => joinBlock(adjacent[side])}>{label}</button>
+                      </p>
+                    ))}
                     {result.detections?.length > 0 && (
                       <>
                         <ul className="detection-list">
@@ -1137,7 +1183,7 @@ export default function App() {
                     <p className="tool-subgroup-title">Download and share</p>
                     <div className="tool-action-grid">
                       <a className="btn-tool" title="Download the unmodified source observation" href={`${API_BASE_URL}/api/files/download?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename })}`}>Download original FITS</a>
-                      <a className="btn-tool" title="Export the displayed processing result and its scientific axes as FITS" href={`${API_BASE_URL}/api/spectrogram/export?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename, scale_mode: layers[0].scale_mode ?? 'relative', ...rfiQuery(layers[0].rfi, 'rfi') })}`}>Export processed FITS</a>
+                      <a className="btn-tool" title="Export the displayed processing result and its scientific axes as FITS" href={`${API_BASE_URL}/api/spectrogram/export?${addBlockParams(new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename, scale_mode: layers[0].scale_mode ?? 'relative', ...rfiQuery(layers[0].rfi, 'rfi') }), layers[0])}`}>Export processed FITS</a>
                       <button className="btn-tool" type="button" onClick={copyObservationLink} title="Copy a link that opens this exact FITS block">Copy observation link</button>
                       <button className="btn-tool" type="button" onClick={exportAnalysisManifest} title="Save selected files, units, processing settings and provenance as JSON">Export analysis manifest</button>
                     </div>
@@ -1444,9 +1490,29 @@ export default function App() {
           </div>
           <div className="workspace-context" title={layers[0]?.filename ?? 'No FITS loaded'}>
             <span>{layers[0]?.station ?? 'No observation loaded'}</span>
-            {layers[0] && <small>{layers[0].date} · {layers[0].filename}</small>}
+            {layers[0] && <small>{layers[0].date} · {(layers[0].filenames ?? [layers[0].filename]).join(' + ')}</small>}
           </div>
         </div>
+
+        {layers.length === 1 && selectedStations.length === 1 && (
+          <div className="block-join" aria-label="Observation length">
+            {loadedBlocks ? (
+              <>
+                <span className="stat-chip" title={loadedBlocks.filenames.join('\n')}>
+                  2 blocks · ≈{Math.round((Date.parse(blockSpan[1]) - Date.parse(blockSpan[0])) / 60000)} min · {blockSpan[0].slice(11, 19)}–{blockSpan[1].slice(11, 19)} UTC
+                </span>
+                <button type="button" className="btn-tool" onClick={() => joinBlock(null)}>Back to single block</button>
+              </>
+            ) : (
+              <>
+                <button type="button" className="btn-tool" onClick={() => joinBlock(adjacent.previous)} disabled={!adjacent.previous || fetchLoading}
+                  title={adjacent.previous ? 'Add the 15-minute block before this one (about 30 min in total)' : 'No previous block of the same receiver in the file list'}>Join previous block</button>
+                <button type="button" className="btn-tool" onClick={() => joinBlock(adjacent.next)} disabled={!adjacent.next || fetchLoading}
+                  title={adjacent.next ? 'Add the 15-minute block after this one (about 30 min in total)' : 'No next block of the same receiver in the file list'}>Join next block</button>
+              </>
+            )}
+          </div>
+        )}
 
         {activeTab && <>
           <button className="workspace-drawer-scrim" aria-label={`Close ${PANEL_TITLES[activeTab]}`} onClick={() => setActiveTab(null)} />

@@ -66,10 +66,22 @@ def validate_combine_filenames(filenames: object, station: str, date: str) -> li
     # A compressed/uncompressed copy of one observation is not another block.
     identities = [re.sub(r"\.fits?(?:\.gz)?$", "", item, flags=re.IGNORECASE) for item in validated]
     if len(set(identities)) != len(validated):
-        raise ValueError("combine_time filenames must be unique observations, not copies of the same block")
+        raise ValueError("Filenames must be unique observations, not copies of the same block")
     if len({fits_focus_code(item) for item in validated}) != 1:
         raise ValueError("Cannot combine different receivers. Select consecutive blocks from the same focus code.")
     return validated
+
+
+def validate_observation_filenames(filename: str | None, filenames: object, station: str, date: str) -> list[str]:
+    """Blocks of one interactive observation: ``filenames`` wins over ``filename``; one or two blocks."""
+    names = filenames or ([filename] if filename else None)
+    if not isinstance(names, list) or not all(isinstance(item, str) for item in names):
+        raise ValueError("Provide filename or filenames")
+    if len(names) == 1:
+        return [validate_filename_context(names[0], station, date)]
+    if len(names) > 2:
+        raise ValueError("At most 2 consecutive blocks can be joined")
+    return validate_combine_filenames(names, station, date)
 
 
 def safe_join(root: str, filename: str) -> str:

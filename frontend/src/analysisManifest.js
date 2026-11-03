@@ -33,6 +33,7 @@ export function buildAnalysisManifest({
         station: layer.station,
         date_utc: layer.date,
         filename: layer.filename,
+        filenames: layer.filenames ?? [layer.filename],
         intensity_unit: layer.unit ?? layer.intensity_unit,
         frequency_unit: 'MHz',
         time_standard: 'UTC',

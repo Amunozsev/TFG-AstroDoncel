@@ -65,7 +65,7 @@ vi.mock('./LightCurvePanel', () => ({
 
 import App from './App';
 import { apiFetch } from './api';
-import { displayBlockTime, selectCombineBlocks } from './fileBlocks';
+import { adjacentBlock, displayBlockTime, selectCombineBlocks } from './fileBlocks';
 import { observationPath, parseObservationSearch } from './observationUrl';
 
 function response(data) {
@@ -378,6 +378,16 @@ describe('nominal block labels', () => {
     ['23:59:59', '00:00:00', true, 1],
   ])('%s displays as %s without mutating source time', (time, display, approximate, dayOffset) => {
     expect(displayBlockTime(time)).toEqual({ time: display, approximate, dayOffset });
+  });
+});
+
+describe('adjacent block', () => {
+  it('finds the neighbour of the same receiver and stops at gaps', () => {
+    const files = [file('16:00:00', '62'), file('16:15:00', '62'), file('16:15:00', '63'), file('16:45:00', '62')];
+    expect(adjacentBlock(files, files[0].filename, 'next')).toBe(files[1].filename);
+    expect(adjacentBlock(files, files[1].filename, 'previous')).toBe(files[0].filename);
+    expect(adjacentBlock(files, files[1].filename, 'next')).toBeNull();
+    expect(adjacentBlock(files, files[0].filename, 'previous')).toBeNull();
   });
 });
 

@@ -30,10 +30,12 @@ export function parseObservationSearch(search) {
   let station;
   let date;
   let filename;
+  let joinedFilename;
   try {
     station = parameter(params, 'station', 'estacion');
     date = parameter(params, 'date', 'fecha');
     filename = parameter(params, 'filename', 'archivo');
+    joinedFilename = params.get('joined');
   } catch (cause) {
     return { observation: null, error: cause.message };
   }
@@ -58,6 +60,14 @@ export function parseObservationSearch(search) {
   ) {
     return { observation: null, error: 'The FITS filename does not belong to the requested station and date.' };
   }
+  const joined = joinedFilename?.match(/^(?<station>.+)_(?<date>\d{8})_/);
+  if (joinedFilename && (
+    !FITS_RE.test(joinedFilename)
+    || joined.groups.station.toUpperCase() !== station.toUpperCase()
+    || joined.groups.date !== date.replaceAll('-', '')
+  )) {
+    return { observation: null, error: 'The joined FITS filename does not belong to the requested station and date.' };
+  }
   const timestamp = `${date}T${context.groups.time.slice(0, 2)}:${context.groups.time.slice(2, 4)}:${context.groups.time.slice(4, 6)}Z`;
   const instant = new Date(timestamp);
   if (!Number.isFinite(instant.getTime()) || instant.toISOString() !== timestamp.replace('Z', '.000Z')) {
@@ -68,6 +78,7 @@ export function parseObservationSearch(search) {
       station,
       date,
       filename,
+      joinedFilename: joinedFilename ?? null,
       focusCode: context.groups.focus ?? null,
       startedAt: timestamp,
     },
@@ -80,6 +91,7 @@ export function observationPath(observation, location = window.location) {
   params.set('station', observation.station);
   params.set('date', observation.date);
   params.set('filename', observation.filename);
+  if (observation.joinedFilename) params.set('joined', observation.joinedFilename);
   return `${location.pathname}?${params}${location.hash ?? ''}`;
 }
 

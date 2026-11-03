@@ -61,3 +61,39 @@ export function selectCombineBlocks(files, selectedFilename, limit = 4) {
   }
   return { filenames: picked, focusCode, notice };
 }
+
+// Neighbouring block of the same receiver that can be joined with `filename`
+// (direction 'previous' | 'next'); the server still checks the real sample times.
+export function adjacentBlock(files, filename, direction) {
+  const selected = filename.match(FILE_RE)?.groups;
+  if (!selected) return null;
+  const clock = (time) => seconds(`${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4, 6)}`);
+  const origin = clock(selected.time);
+  const sign = direction === 'next' ? 1 : -1;
+  let best = null;
+  for (const file of files) {
+    const info = file.filename.match(FILE_RE)?.groups;
+    if (!info || info.station !== selected.station || info.date !== selected.date
+      || (info.focus ?? null) !== (selected.focus ?? null)) continue;
+    const gap = sign * (clock(info.time) - origin);
+    if (gap > 0 && gap <= BLOCK_SECONDS + CLOCK_TOLERANCE_SECONDS && (!best || gap < best.gap)) {
+      best = { gap, filename: file.filename };
+    }
+  }
+  return best?.filename ?? null;
+}
+
+// Joined observations: a layer response lists the blocks it was built from.
+export function blockFilenames(source) {
+  return source?.filenames?.length > 1 ? source.filenames : undefined;
+}
+
+export function addBlockParams(params, source) {
+  blockFilenames(source)?.forEach((name) => params.append('filenames', name));
+  return params;
+}
+
+// Stable identity of what a layer shows (single block or joined pair).
+export const layerKey = (layer) => (
+  `${layer.station}:${layer.date}:${blockFilenames(layer)?.join('+') ?? layer.filename}`
+);

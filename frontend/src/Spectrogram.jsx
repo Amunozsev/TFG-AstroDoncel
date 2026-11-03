@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { OBSERVATORY_COLOR_SCALE, Plot } from './plotly';
 import { apiFetch } from './api';
+import { addBlockParams } from './fileBlocks';
 import { rfiQuery } from './analysisManifest';
 import { burstStyle } from './burstTypes';
 
@@ -249,6 +250,7 @@ export default function Spectrogram({
             ...rfiQuery(layer.rfi),
             scale_mode: layer.scale_mode ?? 'relative',
           });
+          addBlockParams(params, layer);
           try {
             const res = await apiFetch(
               `/api/spectrogram/zoom?${params}`,
@@ -717,7 +719,7 @@ export default function Spectrogram({
             </button>
           )}
           {layers.length === 1 && (
-            <span className="file-badge">{layers[0].filename}</span>
+            <span className="file-badge">{(layers[0].filenames ?? [layers[0].filename]).join(' + ')}</span>
           )}
         </div>
       </div>
