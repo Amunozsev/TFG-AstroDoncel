@@ -90,13 +90,7 @@ function hexToRgbTuple(hex) {
   ];
 }
 
-/**
- * Convert a hex colorscale into an rgba colorscale whose alpha grows with
- * intensity: fully transparent at the low end, maxAlpha at the high end.
- * This is what makes translucent overlay of several stations work — the dark
- * background of upper layers no longer hides the layers underneath; only
- * bright features (bursts) blend on top.
- */
+/** Hex colorscale → rgba whose alpha grows with intensity, so overlaid layers only show bright features. */
 function alphaColorscale(scale, maxAlpha = 0.85) {
   return scale.map(([t, c]) => {
     const [r, g, b] = hexToRgbTuple(c);
@@ -207,8 +201,7 @@ export default function Spectrogram({
   }, [showGoes, triggerLoad, hasLoaded, goesDate, goesStart, goesEnd]);
 
   // ── Layer preparation ────────────────────────────────────────────────────
-  // Drop layers with empty/malformed axes — prevents Plotly from stretching the
-  // X-axis across months when a secondary station returned stale/mismatched data.
+  // Layers with empty or malformed axes would stretch the time axis.
   const validLayers = layers.filter(
     (l) =>
       Array.isArray(l.time_axis) && l.time_axis.length > 0 &&
@@ -355,30 +348,33 @@ export default function Spectrogram({
     const pt = ev.points[0];
     if (pt.x == null || pt.y == null) return;
     const yref = pt.data?.yaxis || 'y';
-    if (!rulerMode) {
-      // Other tools (type II analysis) draw on the primary panel only.
-      if (yref === 'y') onPlotClick?.({ x: pt.x, y: pt.y });
-      return;
-    }
+    if (!rulerMode) return;
     setRulerPoints((prev) =>
       prev.length >= 2 ? [{ x: pt.x, y: pt.y, yref }] : [...prev, { x: pt.x, y: pt.y, yref }]
     );
   }
 
-  // react-plotly's own event binding (onRelayout/onClick props) silently loses
-  // the listeners after figure updates with plotly.js 3.x — this was the root
-  // cause of the unreliable high-res zoom. We bind manually on the graph div
-  // instead, re-attaching after every plot update (onInitialized + onUpdate run
-  // on the exact same code path that keeps react-plotly's internal sync alive).
-  // Handlers dereference refs so the latest closure always runs (no staleness).
+  // Type II points are read from the axes: plotly_click needs hover data first.
+  function handleDrawClick(ev) {
+    if (rulerMode || !onPlotClick || ev.target?.dataset?.subplot !== 'xy') return;
+    const { xaxis: xa, yaxis: ya } = ev.currentTarget._fullLayout;
+    const box = ev.currentTarget.getBoundingClientRect();
+    const ms = xa.p2c(ev.clientX - box.left - xa._offset);
+    onPlotClick({ x: new Date(ms).toISOString(), y: ya.p2c(ev.clientY - box.top - ya._offset) });
+  }
+
+  // react-plotly's event props lose their listeners after updates, so bind on the graph div.
   const relayoutRef = useRef(null);
   const clickRef = useRef(null);
+  const drawRef = useRef(null);
   useEffect(() => {
     relayoutRef.current = handleRelayout;
     clickRef.current = handlePlotClick;
+    drawRef.current = handleDrawClick;
   });
   const onRelayoutStable = useCallback((e) => relayoutRef.current?.(e), []);
   const onClickStable = useCallback((e) => clickRef.current?.(e), []);
+  const onDrawStable = useCallback((e) => drawRef.current?.(e), []);
   const bindPlotEvents = useCallback((_figure, gd) => {
     if (!gd?.on) return;
     // Idempotent: drop then re-add, so repeated onUpdate calls never stack
@@ -386,7 +382,9 @@ export default function Spectrogram({
     gd.removeListener?.('plotly_click', onClickStable);
     gd.on('plotly_relayout', onRelayoutStable);
     gd.on('plotly_click', onClickStable);
-  }, [onRelayoutStable, onClickStable]);
+    gd.removeEventListener?.('click', onDrawStable);
+    gd.addEventListener?.('click', onDrawStable);
+  }, [onRelayoutStable, onClickStable, onDrawStable]);
 
   const rulerMeasure = (() => {
     if (rulerPoints.length !== 2) return null;
@@ -417,9 +415,7 @@ export default function Spectrogram({
     paper_bgcolor: plotTheme.surface,
     plot_bgcolor: plotTheme.surface,
     margin: { t: 20, r: 110, b: 60, l: 70 },
-    // uirevision keeps the user's zoom across data updates (hi-res patch swaps,
-    // contrast/colormap tweaks). It only resets on a new load, a comparison-mode
-    // switch, or an explicit "Overview" click.
+    // Keeps the user's zoom across data updates.
     uirevision: `${triggerLoad}-${compareMode}-${resetRev}`,
     xaxis: {
       title: { text: 'Time (UTC)', font: { color: plotTheme.text } },
@@ -477,10 +473,7 @@ export default function Spectrogram({
   };
 
   if (compareMode === 'panels' && panelLayers.length > 0) {
-    // ── Stacked synchronised panels (one subplot per station, shared UT axis).
-    //    This is how Sahan's Multi-Station Comparison workspace renders — the
-    //    scientifically meaningful way to compare stations with different
-    //    frequency ranges.
+    // ── Stacked panels: one subplot per station, shared time axis.
     const N = panelLayers.length;
     const gap = N > 1 ? 0.05 : 0;
     const h = (1 - gap * (N - 1)) / N;
@@ -541,9 +534,7 @@ export default function Spectrogram({
     // Anchor the shared time axis to the bottom panel
     layout.xaxis.anchor = panelAxisId(N - 1);
   } else {
-    // ── Translucent overlay: first visible layer is the opaque base; upper
-    //    layers use an alpha-graded colorscale so their low-intensity
-    //    background is transparent and only bright bursts blend on top.
+    // ── Overlay: the first visible layer is opaque, upper ones use alphaColorscale.
     layout.yaxis = {
       title: { text: 'Frequency (MHz)', font: { color: plotTheme.text } },
       ...axisStyle,
@@ -609,17 +600,14 @@ export default function Spectrogram({
     }
 
     if (gTimes.length > 0) {
-      // In panels mode the flux curve is repeated on every panel (each on its
-      // own log axis overlaying that panel); in overlay mode a single curve
-      // overlays the shared y axis. GOES axes start at y8 (panels use y..y6).
+      // One flux curve per panel, on its own log axis from y8 up.
       const overlayTargets = compareMode === 'panels' && panelLayers.length > 0
         ? panelLayers.map((_, i) => panelAxisId(i))
         : ['y'];
       overlayTargets.forEach((targetAxis, i) => {
         const goesAxisNum = 8 + i;
         traces.push({
-          // SVG scatter (not scattergl): one trace per panel would need one
-          // WebGL context each, and browsers cap those. ~1k points is cheap.
+          // Not scattergl: browsers cap WebGL contexts.
           type: 'scatter',
           x: gTimes,
           y: gFlux,
