@@ -2,10 +2,7 @@
 .github
 .venv
 .vscode
-Sahan
-Anteproyecto
 backups
-capturas_correo_2026-07-19
 data
 tests
 tools/*
@@ -22,12 +19,5 @@ frontend/dist
 .env
 .env.*
 !.env.example
-.private
-local-notes
-memoria
-docs
-e-Callisto_FITS_Analyzer-master
-ecallistolib-main
-sahan
 *.log
 *.md

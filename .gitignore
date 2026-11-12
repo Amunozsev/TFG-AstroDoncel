@@ -48,25 +48,6 @@ frontend/coverage/
 # JSON generado por el script (artefacto derivado de /data)
 frontend/public/datos_prueba.json
 
-# Notas internas, handoffs y material personal/local
-/HANDOFF.md
-/ROADMAP_COMPLETO_TFG.md
-/Anteproyecto/
-/capturas_correo_*/
-/.private/
-/local-notes/
-
-# Memoria academica local; no se publica con el codigo
-/memoria/
-/MEMORIA_BORRADOR.*
-
-# Reference docs and third-party analyzer (large, not part of the project source)
-/docs/
-/e-Callisto_FITS_Analyzer-master/
-/ecallistolib-main/
-/Sahan/
-/sahan/
-
 # Archivos del sistema/IDE local
 .DS_Store
 Thumbs.db
