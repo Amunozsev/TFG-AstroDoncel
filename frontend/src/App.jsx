@@ -48,15 +48,6 @@ function Icon({ name }) {
   );
 }
 
-function BrandMark() {
-  return (
-    <svg className="app-brand-mark" viewBox="0 0 32 32" aria-hidden="true">
-      <circle cx="11" cy="16" r="6" fill="var(--primary)" />
-      <path d="M19.5 11.5c2.6 2.5 2.6 6.5 0 9M23.5 7.5c4.8 4.7 4.8 12.3 0 17M27.5 4c6.3 6.6 6.3 17.4 0 24" fill="none" stroke="var(--text-strong)" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 function initialTheme() {
   try { return localStorage.getItem('astrodoncel.theme') === 'light' ? 'light' : 'dark'; }
   catch { return 'dark'; }
@@ -1051,15 +1042,15 @@ export default function App() {
             <section className="tool-section" aria-labelledby="inspect-tools-title">
               <div className="tool-section-heading">
                 <div><span className="section-kicker">Current FITS</span><h3 id="inspect-tools-title">Inspect</h3></div>
-                <p>Measurements and diagnostics for the loaded block.</p>
               </div>
               <div className="tool-action-grid">
                 <button
-                  className={`btn-tool${rulerMode ? ' active' : ''}`}
-                  onClick={() => setRulerMode((current) => !current)}
-                  title="Click two points on the spectrogram to measure Δt, Δf and drift rate (MHz/s)"
+                  className="btn-tool"
+                  onClick={handleDetectBursts}
+                  disabled={layers.length === 0 || burstDetecting}
+                  title="Detect and classify the bursts of the primary FITS block (types II, III, IIIs, IV, V)"
                 >
-                  {rulerMode ? 'Drift ruler · on' : 'Drift ruler'}
+                  {burstDetecting ? 'Detecting…' : 'Detect current file (ML)'}
                 </button>
                 <button
                   className={`btn-tool${typeIIOpen ? ' active' : ''}`}
@@ -1069,15 +1060,14 @@ export default function App() {
                 >
                   Type II analysis
                 </button>
-                <button className="btn-tool" onClick={() => { setHeaderLayerIdx(0); setShowHeaderViewer(true); }} disabled={layers.length === 0} title="Show scientific metadata stored in the current FITS header">FITS header</button>
                 <button
-                  className="btn-tool tool-action-wide"
-                  onClick={handleDetectBursts}
-                  disabled={layers.length === 0 || burstDetecting}
-                  title="Detect and classify the bursts of the primary FITS block (types II, III, IIIs, IV, V)"
+                  className={`btn-tool${rulerMode ? ' active' : ''}`}
+                  onClick={() => setRulerMode((current) => !current)}
+                  title="Click two points on the spectrogram to measure Δt, Δf and drift rate (MHz/s)"
                 >
-                  {burstDetecting ? 'Detecting…' : 'Detect current file (ML)'}
+                  {rulerMode ? 'Drift ruler · on' : 'Drift ruler'}
                 </button>
+                <button className="btn-tool" onClick={() => { setHeaderLayerIdx(0); setShowHeaderViewer(true); }} disabled={layers.length === 0} title="Show scientific metadata stored in the current FITS header">FITS header</button>
               </div>
               {rulerMode && <p className="tool-help">Select two points on the plot. The header reports Δt, Δf and drift rate.</p>}
               {burstDetecting && <p className="detection-pending" role="status">Running experimental inference on the current FITS block…</p>}
@@ -1213,10 +1203,10 @@ export default function App() {
     <div className="app-root" data-theme={theme}>
       <a className="skip-link" href="#main-content">Skip to main content</a>
       <nav className="app-nav" aria-label="Primary navigation">
-        <span className="app-brand">
-          <BrandMark />
+        <a className="app-brand" href="/" aria-label="AstroDoncel Studio home">
+          <img className="app-brand-mark" src="/favicon.svg?v=2" alt="" />
           <span className="app-brand-text"><b>AstroDoncel <span>Studio</span></b><small>e-CALLISTO analysis workspace</small></span>
-        </span>
+        </a>
         <div className="app-nav-tabs">
           <button
             className={view === 'portal' ? 'active' : ''}
