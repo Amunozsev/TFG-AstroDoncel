@@ -1,6 +1,5 @@
-import { useEffect, useState } from 'react';
 import { OBSERVATORY_COLOR_SCALE, Plot } from './plotly';
-import { apiFetch, apiUrl } from './api';
+import { apiUrl, useArtifact } from './api';
 
 function utcTime(value) {
   if (!value) return '—';
@@ -10,27 +9,7 @@ function utcTime(value) {
 }
 
 export default function CombinedSpectrogram({ artifactUrl, theme = 'dark' }) {
-  const [result, setResult] = useState(null);
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    if (!artifactUrl) return undefined;
-    const controller = new AbortController();
-    queueMicrotask(async () => {
-      if (controller.signal.aborted) return;
-      setResult(null);
-      setError('');
-      try {
-        const response = await apiFetch(artifactUrl, { signal: controller.signal });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = await response.json();
-        if (!controller.signal.aborted) setResult(data);
-      } catch (cause) {
-        if (!controller.signal.aborted) setError(cause.message);
-      }
-    });
-    return () => controller.abort();
-  }, [artifactUrl]);
+  const { data: result, error } = useArtifact(artifactUrl);
 
   if (error) return <div id="combined-spectrogram-result" className="page-error" role="alert">Combined spectrogram unavailable: {error}</div>;
   if (!result?.time_axis?.length || !result?.freq_axis?.length) {

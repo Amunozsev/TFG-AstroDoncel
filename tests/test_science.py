@@ -68,7 +68,7 @@ def test_fits_timestamps_are_converted_to_utc(header):
     assert core._times_to_utc(np.array([0.0, 0.25]), header) == [
         "2024-01-01T10:00:00.000Z", "2024-01-01T10:00:00.250Z",
     ]
-    assert core._parse_utc("2024-01-01T12:00:00+02:00") == datetime(2024, 1, 1, 10, tzinfo=timezone.utc)
+    assert core.parse_utc("2024-01-01T12:00:00+02:00") == datetime(2024, 1, 1, 10, tzinfo=timezone.utc)
 
 
 def test_rfi_masks_persistent_hot_channel():

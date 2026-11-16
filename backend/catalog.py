@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 
 from backend import catalog_mysql
 from backend.db import BurstEvent, CatalogMonth, Station, engine, session_scope
+from backend.timeutil import as_utc
 from backend.version import APP_NAME, APP_VERSION
 
 USER_AGENT = f"{APP_NAME.replace(' ', '-')}/{APP_VERSION}"
@@ -88,10 +89,10 @@ def source_label(source: str) -> str:
     return CATALOG_SOURCES.get(source, {}).get("label", source)
 
 
-def _optional_float(value: str) -> float | None:
+def _optional_float(value: object) -> float | None:
     try:
-        return float(value.strip())
-    except (TypeError, ValueError):
+        return float(str(value).strip())
+    except ValueError:
         return None
 
 
@@ -115,10 +116,6 @@ def _optional_int(value: object) -> int | None:
 def _plain_text(line: str) -> str:
     """Turn AstroDoncel .link HTML cells into their displayed tabular text."""
     return unescape(re.sub(r"<[^>]+>", "", line))
-
-
-def _as_utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
 def parse_burst_list(text: str, source: str = DEFAULT_CATALOG_SOURCE) -> list[dict]:
@@ -175,8 +172,6 @@ def parse_burst_list(text: str, source: str = DEFAULT_CATALOG_SOURCE) -> list[di
 
 
 def _database_date(value: object) -> str | None:
-    if isinstance(value, datetime):
-        return value.strftime("%Y%m%d")
     if isinstance(value, date_type):
         return value.strftime("%Y%m%d")
     text = str(value).strip() if value is not None else ""
@@ -246,9 +241,9 @@ def parse_uah_database_rows(
             "burst_type": burst_type,
             "intensity": _optional_int(row.get("intensity")),
             "stations": stations,
-            "min_lon": _optional_float(str(row.get("min_lon")) if row.get("min_lon") is not None else ""),
-            "mid_lon": _optional_float(str(row.get("mid_lon")) if row.get("mid_lon") is not None else ""),
-            "max_lon": _optional_float(str(row.get("max_lon")) if row.get("max_lon") is not None else ""),
+            "min_lon": _optional_float(row.get("min_lon")),
+            "mid_lon": _optional_float(row.get("mid_lon")),
+            "max_lon": _optional_float(row.get("max_lon")),
             "score": None,
             "metadata_json": metadata,
         })
@@ -404,8 +399,8 @@ def _store_month_events(
                     last_seen_at=last,
                 ))
             else:
-                station.first_seen_at = min(_as_utc(station.first_seen_at) if station.first_seen_at else first, first)
-                station.last_seen_at = max(_as_utc(station.last_seen_at) if station.last_seen_at else last, last)
+                station.first_seen_at = min(as_utc(station.first_seen_at) if station.first_seen_at else first, first)
+                station.last_seen_at = max(as_utc(station.last_seen_at) if station.last_seen_at else last, last)
                 station.updated_at = datetime.now(timezone.utc)
         marker = session.get(CatalogMonth, cache_key)
         if marker is None:
@@ -439,8 +434,8 @@ def list_events(
             ]
         return [{
             "id": row.id, "source": row.source, "source_label": source_label(row.source),
-            "started_at": _as_utc(row.started_at).isoformat(),
-            "ended_at": _as_utc(row.ended_at).isoformat(),
+            "started_at": as_utc(row.started_at).isoformat(),
+            "ended_at": as_utc(row.ended_at).isoformat(),
             "burst_type": row.burst_type, "intensity": row.intensity,
             "min_lon": row.min_lon, "mid_lon": row.mid_lon, "max_lon": row.max_lon,
             "stations": row.stations, "score": row.score, "metadata": row.metadata_json,

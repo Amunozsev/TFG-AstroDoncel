@@ -1,4 +1,5 @@
 /* global __APP_VERSION__ */
+import { download } from './download';
 
 const FITS_PROVENANCE_FIELDS = [
   'DATE-OBS', 'TIME-OBS', 'INSTRUME', 'CONTENT', 'ORIGIN', 'OBSERVAT',
@@ -34,7 +35,7 @@ export function buildAnalysisManifest({
         date_utc: layer.date,
         filename: layer.filename,
         filenames: layer.filenames ?? [layer.filename],
-        intensity_unit: layer.unit ?? layer.intensity_unit,
+        intensity_unit: layer.unit,
         frequency_unit: 'MHz',
         time_standard: 'UTC',
         fits_provenance: selectedHeaderFields(layer.fits_header),
@@ -59,14 +60,12 @@ export function buildAnalysisManifest({
 }
 
 export function downloadManifest(manifest) {
-  const blob = new Blob([`${JSON.stringify(manifest, null, 2)}\n`], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
   const station = manifest.selection.primary_station ?? 'selection';
-  link.href = url;
-  link.download = `astrodoncel-${station}-${manifest.selection.date_utc}.analysis.json`;
-  link.click();
-  URL.revokeObjectURL(url);
+  download(
+    `astrodoncel-${station}-${manifest.selection.date_utc}.analysis.json`,
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    'application/json',
+  );
 }
 
 /** Query parameters that reproduce the RFI cleaning a layer was computed with. */

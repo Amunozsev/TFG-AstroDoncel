@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react';
+
 export const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:8000' : window.location.origin)
 ).replace(/\/$/, '');
@@ -23,4 +25,30 @@ export async function apiFetch(path, options = {}) {
     window.clearTimeout(timeoutId);
     options.signal?.removeEventListener('abort', abortFromCaller);
   }
+}
+
+export function useArtifact(url) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!url) return undefined;
+    const controller = new AbortController();
+    queueMicrotask(async () => {
+      if (controller.signal.aborted) return;
+      setData(null);
+      setError('');
+      try {
+        const response = await apiFetch(url, { signal: controller.signal });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = await response.json();
+        if (!controller.signal.aborted) setData(payload);
+      } catch (cause) {
+        if (!controller.signal.aborted) setError(cause.message);
+      }
+    });
+    return () => controller.abort();
+  }, [url]);
+
+  return { data, error };
 }

@@ -46,6 +46,7 @@ from backend.security import (
     validate_observation_filenames,
     validate_station,
 )
+from backend.timeutil import as_utc, iso_ms, parse_utc
 from backend.version import APP_NAME, APP_VERSION
 
 logging.basicConfig(level=logging.INFO)
@@ -111,16 +112,14 @@ async def request_observability(request: FastAPIRequest, call_next):
     return response
 
 
-def _cors_origins() -> list[str]:
-    configured = os.environ.get("FRONTEND_ORIGINS", "")
-    if configured.strip():
-        return [origin.strip().rstrip("/") for origin in configured.split(",") if origin.strip()]
-    return ["http://localhost:5173", "http://127.0.0.1:5173"]
-
-
+_configured_origins = os.environ.get("FRONTEND_ORIGINS", "")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins(),
+    allow_origins=(
+        [origin.strip().rstrip("/") for origin in _configured_origins.split(",") if origin.strip()]
+        if _configured_origins.strip()
+        else ["http://localhost:5173", "http://127.0.0.1:5173"]
+    ),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -509,7 +508,6 @@ class SpectrogramResponse(BaseModel):
     vmin: float
     vmax: float
     fits_header: dict
-    rfi_masked_channels: list[int] = Field(default_factory=list)
     rfi_stats: dict = Field(default_factory=dict)
     unit: str = "relative digits"
     scale_mode: str = "relative"
@@ -545,7 +543,6 @@ class BurstDetectResponse(BaseModel):
     model_version: str | None = None
     model_sha256: str | None = None
     threshold: float | None = None
-    inference_ms: float | None = None
     detections: list[BurstDetection] = Field(default_factory=list)
 
 
@@ -562,8 +559,6 @@ class GoesResponse(BaseModel):
 class StationsResponse(BaseModel):
     stations: list[str]
     source: str
-    reference_date: str = ""
-    refreshed_at: datetime | None = None
     retention_days: int = 90
     details: list[dict] = Field(default_factory=list)
 
@@ -624,7 +619,7 @@ def _nas_date_directory(date: str) -> str:
 def _fits_in_directory(root: str, station: str, date: str) -> list[str]:
     station = validate_station(station)
     validate_date(date)
-    # Keep the established compressed-first preference for automatic selection.
+    # Compressed files first.
     found = []
     for ext in (".fit.gz", ".fits.gz", ".fit", ".fits"):
         for path in sorted(glob.glob(os.path.join(root, f"{station.upper()}_{date.replace('-', '')}_*{ext}"))):
@@ -660,10 +655,6 @@ def _time_from_filename(filename: str) -> str:
     if m:
         return f"{m.group(1)}:{m.group(2)}:{m.group(3)}"
     return "??:??:??"
-
-
-def _focus_code_from_filename(filename: str) -> str | None:
-    return fits_focus_code(filename)
 
 
 def _list_local_fits_files(station: str, date: str) -> list[str]:
@@ -824,7 +815,7 @@ def _download_from_ethz(station: str, date: str, filename: str | None = None) ->
     return _download_from_ethz(station, date, filename=matches[0])
 
 
-# ── FITS loading (ported from fits_io.load_callisto_fits by Sahan) ───────────
+# ── FITS loading ─────────────────────────────────────────────────────────────
 
 def _get_col_1d(table, *names: str) -> np.ndarray | None:
     """Find a column by name (case-insensitive) and return it as a 1D float array."""
@@ -886,10 +877,8 @@ def _freq_axis_from_range(header, length: int) -> np.ndarray | None:
 def _load_callisto_data(hdul) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Load e-CALLISTO data and return (data, freqs, time_offsets).
 
-    Ported from fits_io.load_callisto_fits() by Sahan, with improvements:
-    - Searches columns by alternative names: frequency/freq, time/times.
-    - Detects and corrects transposed axes automatically.
-    - Sequential fallback: BIN table → WCS header → FREQMIN/FREQMAX → indices.
+    Axes come from the BIN table, then the WCS header, then FREQMIN/FREQMAX, then indices.
+    A transposed data array is corrected.
     """
     header = hdul[0].header
     raw = hdul[0].data
@@ -963,8 +952,7 @@ def _observation_start(header) -> datetime:
     # Case 1: DATE-OBS already contains full ISO datetime (DATE-OBS = "YYYY-MM-DDThh:mm:ss")
     if "T" in date_obs:
         try:
-            base = datetime.fromisoformat(date_obs.replace("Z", "+00:00"))
-            return base.astimezone(timezone.utc) if base.tzinfo else base.replace(tzinfo=timezone.utc)
+            return parse_utc(date_obs)
         except Exception:
             pass
 
@@ -972,8 +960,7 @@ def _observation_start(header) -> datetime:
     date_part = date_obs.split("T")[0]
     time_part = time_obs if time_obs else "00:00:00"
     try:
-        base = datetime.fromisoformat(f"{date_part}T{time_part}")
-        return base.astimezone(timezone.utc) if base.tzinfo else base.replace(tzinfo=timezone.utc)
+        return parse_utc(f"{date_part}T{time_part}")
     except Exception:
         return datetime(1970, 1, 1, tzinfo=timezone.utc)
 
@@ -1006,30 +993,18 @@ def _times_to_utc(time_arr: np.ndarray, header) -> list[str]:
     base = _observation_start(header)
     arr = _time_offsets_seconds(time_arr, header)
 
-    labels: list[str] = []
-    for t in arr:
-        ts = base + timedelta(seconds=float(t))
-        ms = ts.microsecond // 1000
-        labels.append(f"{ts.strftime('%Y-%m-%dT%H:%M:%S')}.{ms:03d}Z")
-    return labels
+    return [iso_ms(base + timedelta(seconds=float(t))) for t in arr]
 
 
-# ── Scientific processing pipeline (ported from Sahan) ───────────────────────
-
-def _invalid_row_mask(data: np.ndarray) -> np.ndarray:
-    """Return True for rows where no value is finite (ported from frequency_axis.py)."""
-    return ~np.any(np.isfinite(data), axis=1)
-
+# ── Scientific processing pipeline ───────────────────────────────────────────
 
 def _subtract_background(data: np.ndarray) -> np.ndarray:
-    """Robust per-channel background subtraction.
+    """Per-channel background subtraction using each row's 25th percentile.
 
-    Ported from noise_reduction.subtract_background_rows() by Sahan (method 'robust').
-    Uses the 25th percentile of each row as the background estimate: robust against
-    intense solar emission that raises the higher percentiles.
+    The low percentile is robust against intense solar emission.
     """
     arr = np.asarray(data, dtype=np.float32)
-    row_invalid = _invalid_row_mask(arr)
+    row_invalid = ~np.any(np.isfinite(arr), axis=1)
     baseline = np.full((arr.shape[0], 1), np.nan, dtype=np.float32)
     valid = ~row_invalid
     if np.any(valid):
@@ -1049,11 +1024,8 @@ def _detect_persistent_narrowband_rfi(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Detect persistent narrowband RFI channels by time-occupancy.
 
-    Ported from Burst_No_Burst preprocess/rfi.detect_persistent_narrowband_rfi()
-    by Sahan. For each frequency channel, computes a per-channel robust z-score
-    over time and flags the channel when the fraction of samples exceeding
-    z_thresh is above occupancy_thresh. Far more reliable than level-based
-    scoring on background-subtracted data (where channel medians are ~0).
+    A channel is flagged when the fraction of samples whose robust z-score
+    exceeds z_thresh is above occupancy_thresh.
 
     Returns (2D boolean mask, per-channel occupancy fractions).
     """
@@ -1080,11 +1052,8 @@ def _detect_impulsive_rfi(
 ) -> np.ndarray:
     """Detect impulsive RFI hotspots via connected components.
 
-    Ported from Burst_No_Burst preprocess/rfi.detect_impulsive_rfi() by Sahan.
     Thresholds the global robust z-score and keeps only connected components
-    of at least min_component_size pixels (tiny isolated blips are ignored).
-    Component filtering is vectorised with bincount instead of the original
-    per-component loop.
+    of at least min_component_size pixels.
     """
     arr = np.asarray(data, dtype=np.float32)
     med = np.nanmedian(arr)
@@ -1103,10 +1072,7 @@ def _detect_impulsive_rfi(
 
 
 def _inpaint_with_channel_median(data: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    """Replace masked samples with their channel median (global-median fallback).
-
-    Ported from Burst_No_Burst preprocess/rfi.inpaint_with_channel_median() by Sahan.
-    """
+    """Replace masked samples with their channel median (global median for empty channels)."""
     arr = np.asarray(data, dtype=np.float32)
     mask = np.asarray(mask, dtype=bool)
     out = arr.copy()
@@ -1138,8 +1104,7 @@ def _mitigate_rfi(
     min_component_size: int = 9,
     impulsive: bool = True,
 ) -> tuple[np.ndarray, list[int], dict]:
-    """Full RFI mitigation pipeline (v2). Ported from Burst_No_Burst
-    preprocess/rfi.mitigate_rfi() by Sahan.
+    """RFI cleaning adapted from Sahan S. Liyanage's Burst_No_Burst.
 
     Steps:
     1. Persistent narrowband RFI: per-channel occupancy of |z| > z_thresh.
@@ -1176,18 +1141,29 @@ def _mitigate_rfi(
     return cleaned.astype(np.float32), masked_channels, stats
 
 
-def _percentile_clip_global(data: np.ndarray, lo: float = 2.0, hi: float = 98.0) -> tuple[float, float]:
-    """Compute vmin (lo percentile) and vmax (hi percentile) over all data.
+DIGITS_TO_DB = 2500.0 / 255.0 / 25.4  # instrumental digits to dB
 
-    The default upper percentile is 98 (instead of 99.5) to increase visual
-    contrast: it crushes the most extreme outliers and lets moderate bursts
-    stand out clearly against the background.
-    """
+
+def _scale(data: np.ndarray, scale_mode: str) -> np.ndarray:
+    if scale_mode not in {"relative", "median_db"}:
+        raise ValueError("scale_mode must be relative or median_db")
+    return data * DIGITS_TO_DB if scale_mode == "median_db" else data
+
+
+def _process(data: np.ndarray, rfi: dict | None) -> tuple[np.ndarray, dict]:
+    """Background subtraction plus optional RFI cleaning; returns (data, rfi_stats)."""
+    data = _subtract_background(data)
+    if rfi is None:
+        return data, {}
+    data, _channels, stats = _mitigate_rfi(data, **rfi)
+    return data, stats
+
+
+def _percentile_clip_global(data: np.ndarray, lo: float = 2.0, hi: float = 98.0) -> tuple[float, float]:
+    """Compute vmin (lo percentile) and vmax (hi percentile) over all data."""
     if not 0 <= lo < hi <= 100:
         raise ValueError("percentile bounds must satisfy 0 <= lo < hi <= 100")
-    # Request both bounds together so NumPy performs one order-statistics pass.
-    # This follows the v2.8.0 playback/row-statistics optimisation from Sahan's
-    # analyzer while keeping AstroDoncel's established 2–98 % display contract.
+    # Both bounds in one call: a single order-statistics pass.
     values = np.asarray(data)
     finite = values[np.isfinite(values)]
     if finite.size == 0:
@@ -1209,12 +1185,6 @@ def _header_to_dict(header) -> dict:
     return result
 
 
-def _as_aware_utc(value: datetime | None) -> datetime | None:
-    if value is None:
-        return None
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
-
-
 def _record_fits_metadata(station: str, path: str, header) -> None:
     """Persist searchable FITS metadata without making processing depend on the DB."""
     filename = os.path.basename(path)
@@ -1231,7 +1201,7 @@ def _record_fits_metadata(station: str, path: str, header) -> None:
                 session.add(row)
             row.path = path
             row.origin = "nas" if os.path.realpath(path).startswith(os.path.realpath(ECALLISTO_DATA_DIR)) else "cache"
-            row.focus_code = _focus_code_from_filename(filename)
+            row.focus_code = fits_focus_code(filename)
             row.fits_header = _header_to_dict(header)
             station_row = session.get(Station, station_name)
             if station_row is None:
@@ -1241,8 +1211,8 @@ def _record_fits_metadata(station: str, path: str, header) -> None:
                     last_seen_at=observed,
                 ))
             else:
-                first_seen = _as_aware_utc(station_row.first_seen_at)
-                last_seen = _as_aware_utc(station_row.last_seen_at)
+                first_seen = as_utc(station_row.first_seen_at) if station_row.first_seen_at else None
+                last_seen = as_utc(station_row.last_seen_at) if station_row.last_seen_at else None
                 station_row.first_seen_at = min(first_seen or observed, observed)
                 station_row.last_seen_at = max(last_seen or observed, observed)
                 station_row.updated_at = datetime.now(timezone.utc)
@@ -1311,12 +1281,6 @@ def _decimate_time(
     return decimated, dec_labels
 
 
-def _parse_utc(s: str) -> datetime:
-    """Parse an ISO-8601 / Plotly date string to an aware UTC datetime."""
-    parsed = datetime.fromisoformat(s.strip().replace("Z", "+00:00"))
-    return parsed.astimezone(timezone.utc) if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-
-
 # ── Observation (one block, or two consecutive blocks of one receiver) ───────
 
 def _block_paths(station: str, date: str, names: list[str]) -> list[str]:
@@ -1353,6 +1317,35 @@ def open_observation(station: str, date: str, filename: str | None, filenames: l
 
 # ── Single-station pipeline helper ───────────────────────────────────────────
 
+def _spectrogram_response(
+    station: str,
+    date: str,
+    observation: Observation,
+    data: np.ndarray,
+    freqs,
+    time_axis: list[str],
+    rfi_stats: dict,
+    scale_mode: str,
+) -> SpectrogramResponse:
+    vmin, vmax = _percentile_clip_global(data.astype(float))
+    data_out = np.nan_to_num(np.array(data, dtype=float), nan=0.0, posinf=vmax, neginf=vmin)
+    return SpectrogramResponse(
+        station=station,
+        date=date,
+        filename=observation.filenames[0],
+        filenames=observation.filenames,
+        time_axis=time_axis,
+        freq_axis=np.round(np.asarray(freqs, dtype=float), 3).tolist(),
+        z=np.round(data_out, 4).tolist(),
+        vmin=round(vmin, 4),
+        vmax=round(vmax, 4),
+        fits_header=_header_to_dict(observation.header),
+        rfi_stats=rfi_stats,
+        unit="dB" if scale_mode == "median_db" else "relative digits",
+        scale_mode=scale_mode,
+    )
+
+
 def _build_spectrogram(
     station: str,
     date: str,
@@ -1371,9 +1364,8 @@ def _build_spectrogram(
     Raises FileNotFoundError when no file can be located, RuntimeError on
     processing failures. Never raises HTTPException — callers handle that.
 
-    When max_time_bins is set, the time axis is block-mean decimated BEFORE
-    background subtraction, so the processing pipeline operates on the lighter
-    decimated matrix. This is the intended path for overview loads.
+    When max_time_bins is set, the time axis is block-mean decimated before
+    background subtraction.
     """
     station = validate_station(station)
     validate_date(date)
@@ -1393,11 +1385,8 @@ def _build_spectrogram(
     fits_path = fits_paths[0]
     try:
         observation = join_blocks(fits_paths)
-        data_raw, freqs, header = observation.data, observation.freqs, observation.header
-        if scale_mode not in {"relative", "median_db"}:
-            raise ValueError("scale_mode must be relative or median_db")
-        if scale_mode == "median_db":
-            data_raw = data_raw * (2500.0 / 255.0 / 25.4)
+        data_raw, freqs = observation.data, observation.freqs
+        data_raw = _scale(data_raw, scale_mode)
         for block_path, block_header in zip(fits_paths, observation.headers, strict=True):
             _record_station_coords(station, block_header)  # learn the real site from its data
             _record_fits_metadata(station, block_path, block_header)
@@ -1408,47 +1397,21 @@ def _build_spectrogram(
         else:
             data = data_raw
 
-        data = _subtract_background(data)
-
-        rfi_masked: list[int] = []
-        rfi_stats: dict = {}
+        rfi = dict(
+            z_thresh=rfi_z_thresh,
+            occupancy_thresh=rfi_occupancy,
+            min_component_size=rfi_min_component,
+            impulsive=rfi_impulsive,
+        ) if sahan_filter else None
+        data, rfi_stats = _process(data, rfi)
         if sahan_filter:
-            data, rfi_masked, rfi_stats = _mitigate_rfi(
-                data,
-                z_thresh=rfi_z_thresh,
-                occupancy_thresh=rfi_occupancy,
-                min_component_size=rfi_min_component,
-                impulsive=rfi_impulsive,
-            )
             logger.info(
-                "RFI v2 applied: %d persistent channels, %.2f%% samples masked",
-                len(rfi_masked), 100.0 * rfi_stats.get("masked_fraction", 0.0),
+                "RFI applied: %d persistent channels, %.2f%% samples masked",
+                rfi_stats["persistent_channels"], 100.0 * rfi_stats["masked_fraction"],
             )
 
-        vmin, vmax = _percentile_clip_global(data.astype(float))
-
-        data_out = np.nan_to_num(
-            np.array(data, dtype=float),
-            nan=0.0,
-            posinf=vmax,
-            neginf=vmin,
-        )
-
-        return SpectrogramResponse(
-            station=station,
-            date=date,
-            filename=observation.filenames[0],
-            filenames=observation.filenames,
-            time_axis=time_labels,
-            freq_axis=np.round(np.asarray(freqs, dtype=float), 3).tolist(),
-            z=np.round(data_out, 4).tolist(),
-            vmin=round(vmin, 4),
-            vmax=round(vmax, 4),
-            fits_header=_header_to_dict(header),
-            rfi_masked_channels=rfi_masked,
-            rfi_stats=rfi_stats,
-            unit="dB" if scale_mode == "median_db" else "relative digits",
-            scale_mode=scale_mode,
+        return _spectrogram_response(
+            station, date, observation, data, freqs, time_labels, rfi_stats, scale_mode,
         )
     except ObservationError:
         raise
@@ -1631,7 +1594,7 @@ def _scan_recent_ethz_stations() -> tuple[list[str], str]:
     """Scan the ETHZ archive for the most recent day that has data.
 
     Returns (sorted unique station names, reference_date 'YYYY-MM-DD'). Results
-    are cached for `_STATION_SCAN_TTL` seconds. When ETHZ is unreachable, the
+    are cached for STATION_REFRESH_MINUTES. When ETHZ is unreachable, the
     last good scan is served if available, otherwise ([], "").
     """
     global _STATION_SCAN_CACHE
@@ -1697,15 +1660,11 @@ def get_stations():
         details.append({
             "station": name,
             "active": name in reporting_set,
-            "first_seen_at": stored.first_seen_at.isoformat() if stored and stored.first_seen_at else None,
             "last_seen_at": stored.last_seen_at.isoformat() if stored and stored.last_seen_at else None,
-            "coordinate_source": stored.coord_source if stored else None,
         })
     return StationsResponse(
         stations=catalog,
         source=source,
-        reference_date=ref_date,
-        refreshed_at=datetime.now(timezone.utc),
         retention_days=_station_retention_days(),
         details=details,
     )
@@ -1838,7 +1797,7 @@ def get_files(
         cached = "★ " if fn in local else ""
         entries.append(FileEntry(
             filename=fn, time=t, label=f"{cached}{t}",
-            focus_code=_focus_code_from_filename(fn),
+            focus_code=fits_focus_code(fn),
         ))
 
     response = FilesResponse(station=station, date=date, files=entries, source=source)
@@ -1856,7 +1815,6 @@ def get_spectrogram(
     date: str = Query(..., description="Observation date, format YYYY-MM-DD"),
     filename: str = Query(default=None, description="Specific FITS filename"),
     filenames: list[str] | None = Query(default=None, description="One or two consecutive blocks of one receiver; wins over filename"),
-    file_path: str | None = Query(default=None, deprecated=True, include_in_schema=False),
     sahan_filter: bool = Query(default=False, description="Apply full RFI cleaning"),
     max_time_bins: int = Query(default=None, ge=1, description="Decimate time axis to at most N columns (overview mode)"),
     rfi_z_thresh: float = Query(default=6.0, ge=0.5, le=20.0, description="RFI robust z-score threshold"),
@@ -1867,26 +1825,16 @@ def get_spectrogram(
 ):
     """Return the spectrogram for an e-Callisto station.
 
-    Resolution order (the API never accepts arbitrary filesystem paths):
-    2) filename → local cache → ETHZ download
-    3) first local match → NAS → ETHZ download
+    With a filename the file comes from the local cache, else ETHZ. Without one,
+    the first local match is used, then the NAS, then ETHZ. The API never accepts
+    filesystem paths.
 
     Processing pipeline:
     - Always: robust background subtraction (25th percentile per frequency channel).
-    - If sahan_filter=true: additionally applies RFI mitigation v2 (occupancy +
-      connected components + channel-median inpainting, from Burst_No_Burst).
+    - If sahan_filter=true: additionally applies RFI mitigation (occupancy +
+      connected components + channel-median inpainting).
     - vmin/vmax are always recomputed on the processed data.
     """
-    if file_path is not None:
-        raise HTTPException(status_code=410, detail="file_path was removed for security; use station/date/filename")
-    try:
-        station = validate_station(station)
-        validate_date(date)
-        if filename or filenames:
-            validate_observation_filenames(filename, filenames, station, date)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
     try:
         return _build_spectrogram(
             station, date,
@@ -1902,7 +1850,7 @@ def get_spectrogram(
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
-    except ObservationError as exc:
+    except (ObservationError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception("Unexpected error processing spectrogram for %s %s", station, date)
@@ -2071,28 +2019,22 @@ def get_spectrogram_zoom(
     zoomed intensities stay comparable with the full view; only the colour
     range (vmin/vmax) is computed on the zoomed region.
     """
-    try:
-        datetime.strptime(date, "%Y-%m-%d")
-    except ValueError:
-        raise HTTPException(status_code=422, detail=f"Invalid date format: '{date}'")
-
     observation = open_observation(station, date, filename, filenames)
-    station = validate_station(station)
 
     try:
-        data_raw, freqs, header = observation.data, observation.freqs, observation.header
+        data_raw, freqs = observation.data, observation.freqs
         time_labels: list[str] = observation.time_labels
 
         # ── Column indices (time) ─────────────────────────────────────────────
         try:
-            t0_ts = _parse_utc(t0).timestamp()
-            t1_ts = _parse_utc(t1).timestamp()
+            t0_ts = parse_utc(t0).timestamp()
+            t1_ts = parse_utc(t1).timestamp()
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=f"Cannot parse time bounds: {exc}")
         if t0_ts > t1_ts:
             t0_ts, t1_ts = t1_ts, t0_ts
 
-        label_ts = np.array([_parse_utc(lb).timestamp() for lb in time_labels])
+        label_ts = np.array([parse_utc(lb).timestamp() for lb in time_labels])
         col0 = int(np.searchsorted(label_ts, t0_ts, side="left"))
         col1 = int(np.searchsorted(label_ts, t1_ts, side="right"))
         col0 = max(0, col0)
@@ -2126,20 +2068,13 @@ def get_spectrogram_zoom(
             )
 
         # ── Process the selected channels over the whole file, then slice ─────
-        data_rows = data_raw[row0:row1, :]
-        if scale_mode == "median_db":
-            data_rows = data_rows * (2500.0 / 255.0 / 25.4)
-        data_proc = _subtract_background(data_rows)
-        rfi_masked: list[int] = []
-        rfi_stats: dict = {}
-        if sahan_filter:
-            data_proc, rfi_masked, rfi_stats = _mitigate_rfi(
-                data_proc,
-                z_thresh=rfi_z_thresh,
-                occupancy_thresh=rfi_occupancy,
-                min_component_size=rfi_min_component,
-                impulsive=rfi_impulsive,
-            )
+        rfi = dict(
+            z_thresh=rfi_z_thresh,
+            occupancy_thresh=rfi_occupancy,
+            min_component_size=rfi_min_component,
+            impulsive=rfi_impulsive,
+        ) if sahan_filter else None
+        data_proc, rfi_stats = _process(_scale(data_raw[row0:row1, :], scale_mode), rfi)
         data_proc = data_proc[:, col0:col1]
         freqs_slice = freqs_arr[row0:row1]
         time_slice: list[str] = time_labels[col0:col1]
@@ -2148,30 +2083,8 @@ def get_spectrogram_zoom(
         if data_proc.shape[1] > _MAX_ZOOM_COLS:
             data_proc, time_slice = _decimate_time(data_proc, time_slice, _MAX_ZOOM_COLS)
 
-        vmin, vmax = _percentile_clip_global(data_proc.astype(float))
-
-        data_out = np.nan_to_num(
-            np.array(data_proc, dtype=float),
-            nan=0.0,
-            posinf=vmax,
-            neginf=vmin,
-        )
-
-        return SpectrogramResponse(
-            station=station,
-            date=date,
-            filename=observation.filenames[0],
-            filenames=observation.filenames,
-            time_axis=time_slice,
-            freq_axis=np.round(np.asarray(freqs_slice, dtype=float), 3).tolist(),
-            z=np.round(data_out, 4).tolist(),
-            vmin=round(vmin, 4),
-            vmax=round(vmax, 4),
-            fits_header=_header_to_dict(header),
-            rfi_masked_channels=rfi_masked,
-            rfi_stats=rfi_stats,
-            unit="dB" if scale_mode == "median_db" else "relative digits",
-            scale_mode=scale_mode,
+        return _spectrogram_response(
+            station, date, observation, data_proc, freqs_slice, time_slice, rfi_stats, scale_mode,
         )
 
     except HTTPException:
@@ -2233,19 +2146,19 @@ async def detect_burst(
         raise HTTPException(status_code=500, detail="Burst detection failed; use the request id to inspect server logs") from exc
 
     logger.info("Burst detection %s: %d detection(s), %.0f ms",
-                names, len(result["detections"]), result["inference_ms"])
+                names, len(result["detections"]), result.pop("inference_ms"))
     return BurstDetectResponse(
         station=station, date=date, filename=names[0], filenames=names,
         available=True, **result,
     )
 
 
-# ── GOES/XRS overlay (ported from goes_overlay.py by Sahan, simplified) ──────
+# ── GOES/XRS overlay ─────────────────────────────────────────────────────────
 
 _GOES_CACHE_DIR = os.path.join(DATA_DIR_LOCAL, "goes_cache")
 _GOES_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="goes-fido")
 
-# Preferred GOES satellite order by epoch (from goes_overlay.py by Sahan).
+# Preferred GOES satellite order by epoch.
 def _preferred_goes_satellites(year: int) -> tuple[int, ...]:
     if year >= 2025:
         return (19, 18, 17, 16)
@@ -2263,10 +2176,7 @@ def _preferred_goes_satellites(year: int) -> tuple[int, ...]:
 
 
 def _pick_xrsb_column(columns: list[str]) -> str | None:
-    """Select the XRS-B column (long channel, 0.1–0.8 nm) by heuristic scoring.
-
-    Ported from goes_overlay._goes_channel_score() by Sahan.
-    """
+    """Select the XRS-B column (long channel, 0.1–0.8 nm) by heuristic scoring."""
     best, best_score = None, -10_000
     for col in columns:
         lowered = str(col).strip().lower()
@@ -2371,11 +2281,6 @@ def _unpack_goes_series(series: dict) -> tuple[list[int], list[float]]:
     return epochs, series["xrsb"]
 
 
-def _iso_ms(epoch_ms: float) -> str:
-    instant = datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc)
-    return f"{instant.strftime('%Y-%m-%dT%H:%M:%S')}.{instant.microsecond // 1000:03d}Z"
-
-
 def _fetch_goes_xrsb_sync(date_str: str) -> dict:
     """Download one GOES XRS-B science product for a full UTC day.
 
@@ -2446,12 +2351,9 @@ def _goes_window(value: str | None, name: str) -> float | None:
     if value is None:
         return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parse_utc(value).timestamp() * 1000
     except ValueError:
         raise HTTPException(status_code=422, detail=f"Invalid {name}: '{value}'")
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.timestamp() * 1000
 
 
 @app.get("/api/goes", response_model=GoesResponse)
@@ -2475,7 +2377,7 @@ async def get_goes(
     try:
         with session_scope() as session:
             cached_day = session.get(GoesDay, date)
-            # Rows written before payload format 2 mixed two products; refetch them.
+            # Cached days of another payload format are refetched.
             if cached_day and cached_day.payload.get("format") == _GOES_PAYLOAD_FORMAT:
                 payload = cached_day.payload
     except Exception as exc:
@@ -2514,7 +2416,7 @@ async def get_goes(
     values: list[float] = []
     for epoch_ms, value in zip(epochs, flux, strict=True):
         if (start_ms is None or epoch_ms >= start_ms) and (end_ms is None or epoch_ms <= end_ms):
-            times.append(_iso_ms(epoch_ms))
+            times.append(iso_ms(datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc)))
             values.append(value)
     return GoesResponse(
         date=date,
@@ -2525,9 +2427,6 @@ async def get_goes(
         satellite=payload.get("satellite"),
         product=payload.get("product"),
     )
-
-
-# uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 
 
 def _mount_frontend() -> None:

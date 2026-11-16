@@ -1,4 +1,4 @@
-"""Feature routers kept separate from the legacy scientific core."""
+"""Feature routers: catalogue, tasks, exports and type II analysis."""
 
 from __future__ import annotations
 
@@ -27,11 +27,13 @@ from backend.catalog import (
 )
 from backend.db import TaskRecord, session_scope
 from backend.security import (
+    fits_focus_code,
     validate_combine_filenames,
     validate_date,
     validate_filename_context,
     validate_station,
 )
+from backend.timeutil import parse_utc
 from backend.version import APP_NAME, APP_VERSION
 
 router = APIRouter(prefix="/api", tags=["analysis"])
@@ -61,12 +63,14 @@ def _task_instant(value: object, field_name: str) -> datetime:
     if not isinstance(value, str):
         raise HTTPException(status_code=422, detail=f"{field_name} must be an ISO date-time")
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parse_utc(value)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=f"{field_name} must be an ISO date-time") from exc
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+
+
+def _check_source(source: str) -> None:
+    if source not in CATALOG_SOURCES:
+        raise HTTPException(status_code=422, detail=f"Unknown catalogue source: {source}")
 
 
 def _ensure_months(
@@ -103,8 +107,7 @@ def get_bursts(
             station = validate_station(station)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if source not in CATALOG_SOURCES:
-        raise HTTPException(status_code=422, detail=f"Unknown catalogue source: {source}")
+    _check_source(source)
     warnings = _ensure_months(start_dt, end_dt, source)
     events = list_events(start_dt, end_dt, station, burst_type, source)
     unfiltered_events = events if not burst_type else list_events(start_dt, end_dt, station, source=source)
@@ -131,8 +134,7 @@ def get_station_stats(
     source: str = DEFAULT_CATALOG_SOURCE,
 ):
     start_dt, end_dt = _range(start, end)
-    if source not in CATALOG_SOURCES:
-        raise HTTPException(status_code=422, detail=f"Unknown catalogue source: {source}")
+    _check_source(source)
     warnings = _ensure_months(start_dt, end_dt, source)
     ranking = station_statistics(start_dt, end_dt, source)
     return {
@@ -151,8 +153,7 @@ def get_event_timeline(
     source: str = DEFAULT_CATALOG_SOURCE,
 ):
     start_dt, end_dt = _range(start, end)
-    if source not in CATALOG_SOURCES:
-        raise HTTPException(status_code=422, detail=f"Unknown catalogue source: {source}")
+    _check_source(source)
     _ensure_months(start_dt, end_dt, source)
     counts: dict[str, int] = {}
     for event in list_events(start_dt, end_dt, source=source):
@@ -167,26 +168,6 @@ def get_event_timeline(
     return {"points": points, "source": source, "source_label": source_label(source)}
 
 
-@router.get("/xmatch")
-def cross_match_events(start: str, end: str | None = None, tolerance_minutes: int = Query(5, ge=0, le=60)):
-    """Cross-match ML candidates against official radio-burst reports."""
-    start_dt, end_dt = _range(start, end)
-    events = list_events(start_dt, end_dt)
-    ml = [event for event in events if event["source"] == "ml_cnn"]
-    official = [event for event in events if event["source"] in CATALOG_SOURCES]
-    tolerance = timedelta(minutes=tolerance_minutes)
-    matches = []
-    for candidate in ml:
-        candidate_start = datetime.fromisoformat(candidate["started_at"])
-        compatible = []
-        for report in official:
-            report_start = datetime.fromisoformat(report["started_at"])
-            if abs(report_start - candidate_start) <= tolerance and set(candidate["stations"]) & set(report["stations"]):
-                compatible.append(report)
-        matches.append({"candidate": candidate, "reports": compatible})
-    return {"matches": matches, "candidate_count": len(ml), "matched_count": sum(bool(item["reports"]) for item in matches)}
-
-
 @router.get("/xmatch/timeline")
 def get_xmatch_timeline(
     date: str,
@@ -199,8 +180,7 @@ def get_xmatch_timeline(
         validate_date(date)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if source not in CATALOG_SOURCES:
-        raise HTTPException(status_code=422, detail=f"Unknown catalogue source: {source}")
+    _check_source(source)
     start_at = datetime.fromisoformat(date).replace(tzinfo=timezone.utc)
     end_at = start_at + timedelta(days=1)
     warnings = _ensure_months(start_at, end_at, source)
@@ -237,7 +217,7 @@ def get_xmatch_timeline(
                 continue
             ended = min(started + timedelta(minutes=nominal_minutes), end_at)
             starts.append(started)
-            focus_code = core._focus_code_from_filename(filename) or "unknown"
+            focus_code = fits_focus_code(filename) or "unknown"
             receiver_blocks.setdefault(focus_code, []).append((started, ended, filename))
         station_events = [
             event for event in events
@@ -282,24 +262,19 @@ def get_xmatch_timeline(
     }
 
 
-def _resolve_file(station: str, date: str, filename: str) -> str:
-    from backend import main as core
-
-    station = validate_station(station)
-    validate_date(date)
-    filename = validate_filename_context(filename, station, date)
-    downloaded = core._download_from_ethz(station, date, filename)
-    if not downloaded:
-        raise HTTPException(status_code=404, detail="FITS file not found")
-    return downloaded
-
-
 @router.get("/files/download")
 def download_fits(station: str, date: str, filename: str):
+    from backend import main as core
+
     try:
-        path = _resolve_file(station, date, filename)
+        station = validate_station(station)
+        validate_date(date)
+        filename = validate_filename_context(filename, station, date)
+        path = core._download_from_ethz(station, date, filename)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not path:
+        raise HTTPException(status_code=404, detail="FITS file not found")
     return FileResponse(path, filename=os.path.basename(path), media_type="application/fits")
 
 
@@ -350,19 +325,15 @@ def export_processed_fits(
     from backend import main as core
 
     observation = core.open_observation(station, date, filename, filenames)
-    data, frequencies, header = observation.data, observation.freqs, observation.header
-    if scale_mode == "median_db":
-        data = data * (2500.0 / 255.0 / 25.4)
-    processed = core._subtract_background(data)
-    if rfi:
-        processed, _channels, _stats = core._mitigate_rfi(
-            processed,
-            z_thresh=rfi_z_thresh,
-            occupancy_thresh=rfi_occupancy,
-            min_component_size=rfi_min_component,
-            impulsive=rfi_impulsive,
-        )
-    export_header = header.copy()
+    frequencies = observation.freqs
+    rfi_args = dict(
+        z_thresh=rfi_z_thresh,
+        occupancy_thresh=rfi_occupancy,
+        min_component_size=rfi_min_component,
+        impulsive=rfi_impulsive,
+    ) if rfi else None
+    processed, _stats = core._process(core._scale(observation.data, scale_mode), rfi_args)
+    export_header = observation.header.copy()
     export_header["BUNIT"] = ("dB" if scale_mode == "median_db" else "relative detector digits", "Background-subtracted intensity")
     export_header["PROCVER"] = (f"{APP_NAME} {APP_VERSION}", "Processing software")
     export_header.add_history("AstroDoncel: per-frequency background subtraction applied")
@@ -437,19 +408,15 @@ class BandSplittingRequest(TypeIIRequest):
     lower: list[TimeFreqPoint] = Field(min_length=3, max_length=500)
 
 
-def _type_ii_file(request: TypeIIRequest):
-    """Load the request's FITS and return (data, freqs, offsets_s, start_utc)."""
+def _observation(request: TypeIIRequest):
     from backend import main as core
 
-    observation = core.open_observation(request.station, request.date, request.filename, request.filenames)
-    return observation.data, observation.freqs, observation.offsets_s, observation.start
+    return core.open_observation(request.station, request.date, request.filename, request.filenames)
 
 
 def _seconds(points: list[TimeFreqPoint], start: datetime) -> tuple[list[float], list[float]]:
-    from backend import main as core
-
     try:
-        times = [(core._parse_utc(instant) - start).total_seconds() for instant, _ in points]
+        times = [(parse_utc(instant) - start).total_seconds() for instant, _ in points]
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="Point times must be ISO-8601 UTC instants") from exc
     return times, [freq for _, freq in points]
@@ -465,21 +432,20 @@ def type_ii_backbone(request: BackboneRequest):
     from backend import main as core
     from backend import type_ii
 
-    data, freqs, offsets, start = _type_ii_file(request)
-    if request.scale_mode == "median_db":
-        data = data * (2500.0 / 255.0 / 25.4)
-    processed = core._subtract_background(data)
-    if request.rfi:
-        processed, _channels, _stats = core._mitigate_rfi(
-            processed,
-            z_thresh=request.rfi.zThresh,
-            occupancy_thresh=request.rfi.occupancy,
-            min_component_size=request.rfi.minComponent,
-            impulsive=request.rfi.impulsive,
-        )
+    observation = _observation(request)
+    start = observation.start
+    rfi_args = dict(
+        z_thresh=request.rfi.zThresh,
+        occupancy_thresh=request.rfi.occupancy,
+        min_component_size=request.rfi.minComponent,
+        impulsive=request.rfi.impulsive,
+    ) if request.rfi else None
+    processed, _stats = core._process(core._scale(observation.data, request.scale_mode), rfi_args)
     polygon_s, polygon_mhz = _seconds(request.polygon, start)
     try:
-        times, peak_freqs = type_ii.backbone_points(processed, freqs, offsets, list(zip(polygon_s, polygon_mhz, strict=True)))
+        times, peak_freqs = type_ii.backbone_points(
+            processed, observation.freqs, observation.offsets_s, list(zip(polygon_s, polygon_mhz, strict=True)),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"time_utc": _utc(start, times), "time_s": times.tolist(), "freq_mhz": peak_freqs.tolist()}
@@ -490,7 +456,7 @@ def type_ii_shock(request: ShockRequest):
     """Shock speed from a straight line through the Newkirk heights of the points."""
     from backend import type_ii
 
-    _data, _freqs, _offsets, start = _type_ii_file(request)
+    start = _observation(request).start
     times, freqs = _seconds(request.points, start)
     try:
         result = type_ii.shock_parameters(times, freqs, fold=request.fold, harmonic=request.harmonic)
@@ -505,7 +471,7 @@ def type_ii_band_splitting(request: BandSplittingRequest):
     """Experimental magnetic field estimate from split type II lanes."""
     from backend import type_ii
 
-    _data, _freqs, _offsets, start = _type_ii_file(request)
+    start = _observation(request).start
     try:
         result = type_ii.band_splitting(
             *_seconds(request.upper, start), *_seconds(request.lower, start),

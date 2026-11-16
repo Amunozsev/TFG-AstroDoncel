@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { OBSERVATORY_COLOR_SCALE, Plot } from './plotly';
-import { apiFetch } from './api';
+import { useArtifact } from './api';
 
 const OVERVIEW_PLOT_HEIGHT = 360;
 const COLOR_SCALES = [
@@ -16,28 +16,8 @@ function utcLabel(value) {
 }
 
 export default function DailyOverview({ artifactUrl, theme = 'dark' }) {
-  const [overview, setOverview] = useState(null);
+  const { data: overview, error } = useArtifact(artifactUrl);
   const [colorscale, setColorscale] = useState('default');
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    if (!artifactUrl) return undefined;
-    const controller = new AbortController();
-    queueMicrotask(async () => {
-      if (controller.signal.aborted) return;
-      setOverview(null);
-      setError('');
-      try {
-        const response = await apiFetch(artifactUrl, { signal: controller.signal });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = await response.json();
-        if (!controller.signal.aborted) setOverview(data);
-      } catch (cause) {
-        if (!controller.signal.aborted) setError(cause.message);
-      }
-    });
-    return () => controller.abort();
-  }, [artifactUrl]);
 
   if (error) return <div className="page-error" role="alert">Spectral overview unavailable: {error}</div>;
   if (!overview?.stations) return null;

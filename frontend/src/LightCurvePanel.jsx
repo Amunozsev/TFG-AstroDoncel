@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Plot } from './plotly';
 import { apiFetch } from './api';
+import { csvCell, download } from './download';
 import { addBlockParams, layerKey } from './fileBlocks';
 
 function exportCsv(result) {
@@ -10,16 +11,8 @@ function exportCsv(result) {
     time,
     ...data.curves.map((curve) => curve.intensity[index] ?? ''),
   ]);
-  const csv = [header, ...rows].map((row) => row.map((value) => {
-    const text = String(value ?? '');
-    return `"${text.replaceAll('"', '""')}"`;
-  }).join(',')).join('\r\n');
-  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `light-curves-${source.station}-${source.date}.csv`;
-  link.click();
-  URL.revokeObjectURL(url);
+  const csv = [header, ...rows].map((row) => row.map(csvCell).join(',')).join('\r\n');
+  download(`light-curves-${source.station}-${source.date}.csv`, csv, 'text/csv;charset=utf-8');
 }
 
 export function LightCurveResult({ result, theme = 'dark', timeRange, onClose }) {
@@ -80,7 +73,7 @@ export function LightCurveResult({ result, theme = 'dark', timeRange, onClose })
   );
 }
 
-export default function LightCurvePanel({ layer, theme = 'dark', embedded = false, onCurve }) {
+export default function LightCurvePanel({ layer, onCurve }) {
   const [frequency, setFrequency] = useState('45');
   const [data, setData] = useState(null);
   const [status, setStatus] = useState('');
@@ -129,21 +122,15 @@ export default function LightCurvePanel({ layer, theme = 'dark', embedded = fals
         source: { station: layer.station, date: layer.date, filename: layer.filename, filenames: layer.filenames },
       };
       setData(result);
-      onCurve?.(result);
-      setStatus(onCurve ? 'Curve displayed below the spectrogram.' : '');
+      onCurve(result);
+      setStatus('Curve displayed below the spectrogram.');
     } catch (cause) {
       if (!controller.signal.aborted) setStatus(`Could not load curve: ${cause.message}`);
     }
   }
 
-  function close() {
-    requestRef.current?.abort();
-    setData(null);
-    setStatus('');
-  }
-
   return (
-    <section className={`lightcurve-card${embedded ? ' embedded' : ''}`}>
+    <section className="lightcurve-card">
       <p className="lightcurve-context">
         {layer ? `${layer.station} · ${layer.filename}` : 'Load a FITS block to plot its light curve.'}
       </p>
@@ -173,7 +160,6 @@ export default function LightCurvePanel({ layer, theme = 'dark', embedded = fals
       </div>
 
       <div aria-live="polite">{status}</div>
-      {data && !embedded && <LightCurveResult result={data} theme={theme} onClose={close} />}
     </section>
   );
 }

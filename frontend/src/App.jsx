@@ -367,8 +367,7 @@ export default function App() {
 
   useEffect(() => {
     if (!pendingEvent) return;
-    // Without this the request would stay pending for ever and the workspace
-    // would fall back to its "press Load" placeholder with no reason given.
+    // Surface the file-inventory error instead of leaving the request pending.
     if (
       filesError?.station === pendingEvent.station
       && filesError?.date === pendingEvent.date
@@ -396,8 +395,7 @@ export default function App() {
       });
       return;
     }
-    // e-CALLISTO filenames identify the start of a time block. The event
-    // belongs to the latest block that started at or before its UTC time.
+    // The event belongs to the latest block that started at or before its UTC time.
     const nearest = fileForEvent(files, filesContext, pendingEvent);
     if (!nearest) {
       queueMicrotask(() => {
@@ -487,8 +485,7 @@ export default function App() {
         }
 
         if (controller.signal.aborted) return;
-        // Keep the RFI settings each layer was computed with: the controls can
-        // change afterwards, and zoom, export and manifest must match the data.
+        // Keep the RFI settings each layer was computed with.
         const appliedRfi = useSahanFilter ? { ...rfiParams } : null;
         setLayers(newLayers.map((layer) => ({ ...layer, rfi: appliedRfi })));
         setFailedStations(newFailed);
@@ -564,9 +561,7 @@ export default function App() {
     const targetStation = requestedStation ?? event.stations?.[0];
     if (!targetStation) return;
     const targetDate = event.started_at.slice(0, 10);
-    // Invalidate the previous observation synchronously. Otherwise the event
-    // selector can briefly pair the old station's filename with the new
-    // station/date before /api/files has returned.
+    // Clear the previous observation before /api/files returns.
     setHasLoaded(false);
     setFiles([]);
     setFilesContext(null);
@@ -588,9 +583,7 @@ export default function App() {
       focusCode: requestedFile?.focusCode ?? null,
     });
     pendingUrlPushRef.current = true;
-    // A station/date pair can be selected repeatedly from Xmatch. Its values do
-    // not change in that case, so use an explicit run key to reload the file
-    // inventory and complete every navigation request.
+    // Reload the file inventory even when station and date are unchanged.
     setFilesReloadKey((value) => value + 1);
     setView('portal');
   }
@@ -1028,8 +1021,6 @@ export default function App() {
           <LightCurvePanel
             key={layers[0] ? layerKey(layers[0]) : 'empty'}
             layer={layers[0]}
-            theme={theme}
-            embedded
             onCurve={(result) => {
               setLightCurveResult(result);
               setActiveTab(null);
@@ -1516,7 +1507,6 @@ export default function App() {
         <Spectrogram
           layers={layers}
           layerState={layerState}
-          date={date}
           showGoes={showGoes}
           colormap={colormap}
           zmin={useCustomZ ? zmin : null}

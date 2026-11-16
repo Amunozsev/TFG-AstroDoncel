@@ -156,12 +156,6 @@ def burst_list_events(months: list[tuple[int, int]]) -> tuple[list[dict], set[st
     return events, missing_days
 
 
-def burst_intervals(months: list[tuple[int, int]]) -> tuple[list[tuple[datetime, datetime]], set[str]]:
-    """Return every listed burst interval (any station) and the days marked as missing data."""
-    events, missing_days = burst_list_events(months)
-    return [(e["start"], e["end"]) for e in events], missing_days
-
-
 def _file_start(stem: str) -> datetime:
     _, day, hms, _ = stem.rsplit("_", 3)
     return datetime.strptime(day + hms, "%Y%m%d%H%M%S")
@@ -182,7 +176,8 @@ def pick_negatives(records: list[dict], assignment: dict[str, str], count: int,
     first = datetime.strptime(min(r["day"] for r in records), "%Y%m%d")
     last = datetime.strptime(max(r["day"] for r in records), "%Y%m%d")
     months = sorted({(d.year, d.month) for d in (first + timedelta(days=i) for i in range((last - first).days + 1))})
-    intervals, missing_days = burst_intervals(months)
+    events, missing_days = burst_list_events(months)
+    intervals = [(e["start"], e["end"]) for e in events]
     by_day = defaultdict(list)
     for t0, t1 in intervals:
         by_day[t0.strftime("%Y%m%d")].append((t0, t1))

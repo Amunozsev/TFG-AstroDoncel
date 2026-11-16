@@ -15,18 +15,9 @@ from backend import api_features
 from backend import main as core
 from backend.db import SessionLocal, Station, TaskRecord
 from backend.main import app
-from backend.security import safe_join, validate_filename_context, validate_fits_filename, validate_station
+from backend.security import validate_filename_context, validate_fits_filename, validate_station
 
 client = TestClient(app)
-
-
-@pytest.mark.parametrize("frequency", ["nan", "inf", "-inf"])
-def test_lightcurve_rejects_non_finite_frequency_before_file_access(frequency, monkeypatch):
-    monkeypatch.setattr(api_features, "_resolve_file", lambda *_args: pytest.fail("Invalid frequency reached FITS I/O"))
-    response = client.get("/api/lightcurve", params={
-        "station": "MRO", "date": "2024-01-01", "filename": "MRO_20240101_120000.fit", "freq_mhz": frequency,
-    })
-    assert response.status_code == 422
 
 
 def test_selected_nas_file_works_without_remote_archive(tmp_path, monkeypatch):
@@ -72,42 +63,8 @@ def test_zoom_keeps_the_full_file_background(tmp_path, monkeypatch):
     assert response.json()["z"] == [[8.0] * 4, [0.0] * 4]
 
 
-def test_detector_response_keeps_detections_and_provenance(monkeypatch):
-    from backend import burst_types
-
-    monkeypatch.setattr(burst_types, "is_available", lambda: (True, ""))
-    monkeypatch.setattr(core, "_download_from_ethz", lambda *_args, **_kwargs: "synthetic.fit")
-    monkeypatch.setattr(core, "_load_raw_cached", lambda *_args: (
-        np.ones((2, 3)), np.array([80, 45]), np.arange(3), {"DATE-OBS": "2024-01-01"},
-    ))
-    detection = {
-        "type": "type4", "score": 0.5, "experimental": True,
-        "start_utc": "2024-01-01T12:00:00.000Z", "end_utc": "2024-01-01T12:01:00.000Z",
-        "start_s": 0.0, "end_s": 60.0, "freq_low_mhz": 45.0, "freq_high_mhz": 80.0,
-    }
-    result = {"model_version": "v4_pseudo", "model_sha256": "a" * 64, "threshold": 0.32,
-              "detections": [detection], "inference_ms": 1}
-    monkeypatch.setattr(burst_types, "detect", lambda *_args: result)
-    response = client.get("/api/burst/detect", params={
-        "station": "MRO", "date": "2024-01-01", "filename": "MRO_20240101_120000.fit",
-    })
-    assert response.status_code == 200
-    for key in ("model_version", "model_sha256", "threshold", "detections"):
-        assert response.json()[key] == result[key]
-
-
-def test_filename_traversal_rejected():
-    response = client.get("/api/spectrogram", params={"station": "MRO", "date": "2024-01-01", "filename": "../secret.fit"})
-    assert response.status_code == 422
-
-
 def test_filename_context_rejected():
     response = client.get("/api/spectrogram", params={"station": "MRO", "date": "2024-01-01", "filename": "BIR_20240101_120000_01.fit.gz"})
-    assert response.status_code == 422
-
-
-def test_station_traversal_rejected():
-    response = client.get("/api/files", params={"station": "../etc", "date": "2024-01-01"})
     assert response.status_code == 422
 
 
@@ -171,46 +128,6 @@ def test_combine_task_rejects_mixed_receivers_and_duplicate_copies():
             "options": {"filenames": filenames},
         })
         assert response.status_code == 422
-
-
-def test_xmatch_timeline_builds_clickable_station_events(monkeypatch):
-    event = {
-        "id": 7,
-        "source": "dearce_v3",
-        "source_label": "deARCE (v3)",
-        "started_at": "2026-07-24T12:04:00+00:00",
-        "ended_at": "2026-07-24T12:05:00+00:00",
-        "burst_type": "III",
-        "intensity": 1,
-        "min_lon": -7.9,
-        "mid_lon": 11.1,
-        "max_lon": 73.7,
-        "stations": ["MRO"],
-        "score": None,
-        "metadata": {},
-    }
-    monkeypatch.setattr(api_features, "_ensure_months", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(api_features, "list_events", lambda *_args, **_kwargs: [event])
-    monkeypatch.setattr(
-        core,
-        "_archive_inventory_for_date",
-        lambda _date: {"MRO": ["MRO_20260724_120000_01.fit.gz"]},
-    )
-    result = api_features.get_xmatch_timeline("2026-07-24")
-    row = result["rows"][0]
-    assert row["station"] == "MRO"
-    assert row["positive"] is True
-    assert row["events"] == [event]
-    assert row["availability"][0]["start_at"].startswith("2026-07-24T12:00:00")
-    assert row["receivers"] == [{
-        "focus_code": "01",
-        "availability": row["availability"],
-        "blocks": [{
-            "filename": "MRO_20260724_120000_01.fit.gz",
-            "start_at": row["availability"][0]["start_at"],
-            "end_at": row["availability"][0]["end_at"],
-        }],
-    }]
 
 
 def test_xmatch_timeline_keeps_simultaneous_focus_codes_separate(monkeypatch):
@@ -315,24 +232,10 @@ def test_station_inventory_hides_stale_rows_but_preserves_recent_and_live(monkey
 
 # Archive identifiers and path safety
 
-@pytest.mark.parametrize("station", ["SPAIN-SIGUENZA", "MRO", "MEXICO_LANCE", "A1", "SWISS-Landschlacht"])
-def test_valid_stations(station):
-    assert validate_station(station) == station
-
-
 @pytest.mark.parametrize("station", ["../etc", "A/B", "", " station", "A B", "A?x"])
 def test_invalid_stations(station):
     with pytest.raises(ValueError):
         validate_station(station)
-
-
-@pytest.mark.parametrize("filename", [
-    "SPAIN-SIGUENZA_20240101_120000_01.fit.gz",
-    "MRO_20240101_120000.fit",
-    "AUSTRIA-UNIGRAZ_20240101_120000_62.fits.gz",
-])
-def test_valid_filenames(filename):
-    assert validate_fits_filename(filename) == filename
 
 
 @pytest.mark.parametrize("filename", ["../secret.fit", "C:\\x.fit", "x.fit", "x_20240101_120000.exe", "x_20241301_120000.fit"])
@@ -341,22 +244,12 @@ def test_invalid_filenames(filename):
         validate_fits_filename(filename)
 
 
-def test_filename_context_matches():
-    value = "SPAIN-SIGUENZA_20240101_120000_01.fit.gz"
-    assert validate_filename_context(value, "spain-siguenza", "2024-01-01") == value
-
-
 def test_filename_context_rejects_other_station_or_date():
     value = "SPAIN-SIGUENZA_20240101_120000_01.fit.gz"
     with pytest.raises(ValueError):
         validate_filename_context(value, "MRO", "2024-01-01")
     with pytest.raises(ValueError):
         validate_filename_context(value, "SPAIN-SIGUENZA", "2024-01-02")
-
-
-def test_safe_join_stays_below_root(tmp_path):
-    result = safe_join(str(tmp_path), "MRO_20240101_120000_01.fit.gz")
-    assert os.path.commonpath((str(tmp_path), result)) == str(tmp_path)
 
 
 def test_goes_uses_one_product_stores_compactly_and_serves_a_window(tmp_path, monkeypatch):

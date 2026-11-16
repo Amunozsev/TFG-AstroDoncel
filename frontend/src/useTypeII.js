@@ -2,8 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from './api';
 import { blockFilenames, layerKey } from './fileBlocks';
 
-export const TYPE_II_COLORS = { region: '#a3e635', points: '#38bdf8', fit: '#f87171', upper: '#e879f9', lower: '#fb923c', excluded: '#64748b' };
-const COLORS = TYPE_II_COLORS;
+export const COLORS = { region: '#a3e635', points: '#38bdf8', fit: '#f87171', upper: '#e879f9', lower: '#fb923c', excluded: '#64748b' };
 
 async function postJson(path, body, signal) {
   const res = await apiFetch(path, {
@@ -18,11 +17,7 @@ async function postJson(path, body, signal) {
 
 export const asPairs = (points) => points.map((p) => [String(p.x), p.y]);
 
-/**
- * Type II analysis state shared by the spectrogram (clicks, overlays) and the
- * result panel. Clicks draw the burst region or mark split-band lanes; every
- * calculation runs in the API so the physics stays in one tested module.
- */
+// Type II state shared by the spectrogram and the result panel; calculations run in the API.
 export function useTypeII(layer, active) {
   const fileKey = layer ? layerKey(layer) : '';
   const [state, setState] = useState({ fileKey });
@@ -40,7 +35,7 @@ export function useTypeII(layer, active) {
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
 
-  // A new observation invalidates every point drawn on the previous one.
+  // A new observation clears every point drawn on the previous one.
   if (state.fileKey !== fileKey) {
     setState({ fileKey });
     setPickMode(null); setPolygon([]); setBackbone(null); setExcluded(new Set());
@@ -107,8 +102,7 @@ export function useTypeII(layer, active) {
       type: 'scatter', mode: 'markers', name, x: points.map((p) => p.x), y: points.map((p) => p.y),
       marker: { color, size: 8, symbol }, showlegend: false, hoverinfo: 'skip',
     });
-    // Always present while active: adding the first overlay trace would
-    // otherwise reflow the plot and shift the user's next click.
+    // Always present while active so the first click does not reflow the plot.
     const closed = polygon.length > 2 ? [...polygon, polygon[0]] : polygon;
     traces.push({ ...marker(closed, COLORS.region, 'Region', 'circle'), mode: 'lines+markers', line: { color: COLORS.region, width: 1.5, dash: 'dot' } });
     if (backbone) {

@@ -1,3 +1,5 @@
+import { FILE_RE } from './fileBlocks';
+
 const STATION_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/;
 const FITS_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*_\d{8}_\d{6}(?:_[A-Za-z0-9-]+)?\.fits?(?:\.gz)?$/i;
 
@@ -52,7 +54,7 @@ export function parseObservationSearch(search) {
   if (!FITS_RE.test(filename)) {
     return { observation: null, error: 'The observation link contains an invalid FITS filename.' };
   }
-  const context = filename.match(/^(?<station>.+)_(?<date>\d{8})_(?<time>\d{6})(?:_(?<focus>[A-Za-z0-9-]+))?\.fits?(?:\.gz)?$/i);
+  const context = filename.match(FILE_RE);
   if (
     !context
     || context.groups.station.toUpperCase() !== station.toUpperCase()
@@ -86,20 +88,17 @@ export function parseObservationSearch(search) {
   };
 }
 
-export function observationPath(observation, location = window.location) {
+export function observationPath(observation) {
   const params = new URLSearchParams();
   params.set('station', observation.station);
   params.set('date', observation.date);
   params.set('filename', observation.filename);
   if (observation.joinedFilename) params.set('joined', observation.joinedFilename);
-  return `${location.pathname}?${params}${location.hash ?? ''}`;
+  return `${window.location.pathname}?${params}${window.location.hash}`;
 }
 
 export function writeObservationUrl(observation, { replace = false } = {}) {
   const path = observationPath(observation);
-  if (!replace && path === `${window.location.pathname}${window.location.search}${window.location.hash}`) {
-    return path;
-  }
+  if (!replace && path === `${window.location.pathname}${window.location.search}${window.location.hash}`) return;
   window.history[replace ? 'replaceState' : 'pushState']({}, '', path);
-  return path;
 }

@@ -44,14 +44,14 @@ export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' 
       if (!rankingResponse.ok || !timelineResponse.ok) throw new Error('Statistics API unavailable');
       const rankingData = await rankingResponse.json();
       const timelineData = await timelineResponse.json();
-      if (signal?.aborted) return;
+      if (signal.aborted) return;
       setRanking(rankingData.ranking ?? []);
       setTimeline(timelineData.points ?? []);
       setSourceLabel(rankingData.source_label ?? 'Burst Reports');
     } catch (cause) {
-      if (!signal?.aborted) setError(cause.message);
+      if (!signal.aborted) setError(cause.message);
     } finally {
-      if (!signal?.aborted) setLoading(false);
+      if (!signal.aborted) setLoading(false);
     }
   }, [range]);
 
@@ -72,11 +72,11 @@ export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' 
       );
       if (!response.ok) throw new Error(`Xmatch API unavailable (HTTP ${response.status})`);
       const data = await response.json();
-      if (!signal?.aborted) setXmatch(data);
+      if (!signal.aborted) setXmatch(data);
     } catch (cause) {
-      if (!signal?.aborted) setXmatchError(cause.message);
+      if (!signal.aborted) setXmatchError(cause.message);
     } finally {
-      if (!signal?.aborted) setXmatchLoading(false);
+      if (!signal.aborted) setXmatchLoading(false);
     }
   }, [xmatchDate]);
 
@@ -116,14 +116,7 @@ export default function Statistics({ onOpenStation, onOpenEvent, theme = 'dark' 
   const eventPoints = xmatchRows.flatMap((row) => row.eventPoints);
   const xmatchSourceLabel = xmatch?.source_label ?? 'Burst report';
   const openEventPoint = (item) => {
-    if (item.filename) {
-      onOpenEvent(item.event, item.station, {
-        filename: item.filename,
-        focusCode: item.focusCode,
-      });
-    } else {
-      onOpenEvent(item.event, item.station);
-    }
+    onOpenEvent(item.event, item.station, { filename: item.filename, focusCode: item.focusCode });
   };
   useEffect(() => {
     openEventPointRef.current = openEventPoint;

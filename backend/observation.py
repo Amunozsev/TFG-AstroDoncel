@@ -15,6 +15,8 @@ from datetime import datetime
 
 import numpy as np
 
+from backend.timeutil import parse_utc
+
 
 class ObservationError(ValueError):
     """The requested blocks cannot form one continuous observation (path-free message)."""
@@ -44,7 +46,7 @@ _CACHE_MAX = 4
 
 
 def _epoch(label: str) -> float:
-    return datetime.fromisoformat(label.replace("Z", "+00:00")).timestamp()
+    return parse_utc(label).timestamp()
 
 
 def join_blocks(paths: list[str]) -> Observation:

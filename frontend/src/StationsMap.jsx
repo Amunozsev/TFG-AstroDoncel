@@ -2,9 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import Plotly, { Plot } from './plotly';
 import { apiFetch } from './api';
 
-// ── Solar geometry (subsolar point + terminator) ────────────────────────────
-// Approximate NOAA solar-position formulas; precision is well within what a
-// day/night overlay on a world map needs.
+// Approximate NOAA solar-position formulas, enough for a day/night overlay.
 function subsolarPoint(date) {
   const start = Date.UTC(date.getUTCFullYear(), 0, 0);
   const dayOfYear = Math.floor((date - start) / 86400000);
@@ -58,9 +56,7 @@ function terminatorCurve(sub) {
   return { lats, lons };
 }
 
-// A "cap" = the set of points at a fixed angular radius from a centre, i.e. a
-// circle on the sphere. Used to build the day glow (around the subsolar point)
-// and the graduated night shadow (around the antisolar point).
+// Circle on the sphere: points at a fixed angular radius from a centre.
 function capPolygon(cLat, cLon, radiusDeg, n = 96) {
   const cLatR = (cLat * Math.PI) / 180;
   const cLonR = (cLon * Math.PI) / 180;
@@ -84,14 +80,7 @@ function capPolygon(cLat, cLon, radiusDeg, n = 96) {
   return { lats, lons };
 }
 
-// Day/night shading built on the real solar-elevation zones, not a smooth
-// gradient. A point's angular distance from the subsolar point equals the solar
-// zenith angle z, so:
-//   z < 90°  → day       (a warm wash over the lit hemisphere)
-//   90–99°   → dusk/dawn band 1  (civil + nautical twilight)
-//   99–108°  → dusk/dawn band 2  (astronomical twilight)
-//   z > 108° → deep night (uniformly dark)
-// Distance-from-antisolar a = 180 − z, so the night caps use radii 90/81/72.
+// Day/night shading from solar-elevation zones; night caps use radii 180° minus the zenith angle.
 function dayNightTraces(sub) {
   const antiLat = -sub.lat;
   const antiLon = (((sub.lon + 180) + 540) % 360) - 180;
@@ -112,14 +101,9 @@ function dayNightTraces(sub) {
     };
   };
 
-  // Day: one gentle warm wash over the lit hemisphere.
   traces.push(cap(sub.lat, sub.lon, 90, 'rgba(255, 246, 214, 0.05)'));
 
-  // Darkening bands stacked around the antisolar point; overlap deepens toward
-  // the dark side. Radii beyond 90° reach onto the DAY side of the terminator,
-  // dimming the low-sun dawn/dusk zone there too, so the transition is realistic
-  // and symmetric instead of a hard edge:
-  //   z<72 bright day │ 72–90 two dim day bands │ 90–108 two twilight bands │ >108 deep night
+  // Stacked bands around the antisolar point deepen toward the dark side and soften the terminator.
   const nightColor = 'rgba(4, 9, 20, 0.16)';
   [108, 99, 90, 81, 72].forEach((rad) => traces.push(cap(antiLat, antiLon, rad, nightColor)));
 
@@ -127,6 +111,7 @@ function dayNightTraces(sub) {
 }
 
 const INITIAL_ROT_LON = -20;
+const PLOT_CONFIG = { displayModeBar: false, responsive: true, scrollZoom: true };
 
 const GEO_BASE = {
   showland: true,
@@ -203,7 +188,7 @@ export default function StationsMap({ onOpenStation, theme = 'dark' }) {
     if (!isGlobe || !autoRotate) return;
     const id = setInterval(() => {
       const gd = gdRef.current;
-      if (!gd) return;
+      if (!gd?._fullLayout) return; // not drawn yet, or already purged
       if (Date.now() - lastInteract.current < 1200) return; // user is dragging/zooming
       const live = gd?._fullLayout?.geo?.projection?.rotation?.lon;
       const base = typeof live === 'number' ? live : rotLon.current;
@@ -323,13 +308,6 @@ export default function StationsMap({ onOpenStation, theme = 'dark' }) {
     [isGlobe, theme],
   );
 
-  // scrollZoom enables the wheel to zoom the map; drag pans (flat) or rotates
-  // the globe (orthographic) natively.
-  const config = useMemo(
-    () => ({ displayModeBar: false, responsive: true, scrollZoom: true }),
-    [],
-  );
-
   function handleClick(ev) {
     const pt = ev?.points?.[0];
     const station = Array.isArray(pt?.customdata) ? pt.customdata[0] : pt?.customdata;
@@ -446,7 +424,7 @@ export default function StationsMap({ onOpenStation, theme = 'dark' }) {
           <Plot
             data={traces}
             layout={layout}
-            config={config}
+            config={PLOT_CONFIG}
             style={{ width: '100%', height: '100%' }}
             useResizeHandler
             onClick={handleClick}

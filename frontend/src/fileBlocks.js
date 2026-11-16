@@ -1,14 +1,16 @@
-// File times are archive timestamps, not necessarily exact quarter-hours.
-// Only selector labels use a nominal slot; scientific UTC axes stay untouched.
+// Selector labels use a nominal quarter-hour slot; scientific UTC axes stay untouched.
 const BLOCK_SECONDS = 15 * 60;
 const CLOCK_TOLERANCE_SECONDS = 2;
-const FILE_RE = /^(?<station>.+)_(?<date>\d{8})_(?<time>\d{6})(?:_(?<focus>[A-Za-z0-9-]+))?\.fits?(?:\.gz)?$/i;
+const MAX_COMBINED_BLOCKS = 4;
+export const FILE_RE = /^(?<station>.+)_(?<date>\d{8})_(?<time>\d{6})(?:_(?<focus>[A-Za-z0-9-]+))?\.fits?(?:\.gz)?$/i;
 
 function seconds(time) {
   if (!/^\d{2}:\d{2}:\d{2}$/.test(time)) return null;
   const [h, m, s] = time.split(':').map(Number);
   return h < 24 && m < 60 && s < 60 ? h * 3600 + m * 60 + s : null;
 }
+
+const stampSeconds = (stamp) => seconds(`${stamp.slice(0, 2)}:${stamp.slice(2, 4)}:${stamp.slice(4, 6)}`);
 
 export function displayBlockTime(time) {
   const value = seconds(time);
@@ -24,7 +26,7 @@ export function displayBlockTime(time) {
   };
 }
 
-export function selectCombineBlocks(files, selectedFilename, limit = 4) {
+export function selectCombineBlocks(files, selectedFilename) {
   const selected = files.find((file) => file.filename === selectedFilename);
   const context = selected?.filename.match(FILE_RE)?.groups;
   if (!context) return { filenames: [], focusCode: null, notice: 'Select a FITS block first.' };
@@ -43,20 +45,18 @@ export function selectCombineBlocks(files, selectedFilename, limit = 4) {
     if (seen.has(stamp)) continue; // .fit/.fits/.gz copies are one observation
     seen.add(stamp);
     if (stamp === context.time) file = selected;
-    const start = seconds(`${stamp.slice(0, 2)}:${stamp.slice(2, 4)}:${stamp.slice(4, 6)}`);
+    const start = stampSeconds(stamp);
     if (start === null) break;
-    // Stop only at a clear gap. A block that starts early may still continue
-    // the previous one; the server checks the real sample times and rejects
-    // true overlaps.
+    // Stop only at a clear gap; the server rejects true overlaps.
     if (previous !== null && start - previous - BLOCK_SECONDS > CLOCK_TOLERANCE_SECONDS) {
       notice = 'Selection stops at a gap; use Spectral overview for irregular intervals.';
       break;
     }
     picked.push(file.filename);
     previous = start;
-    if (picked.length === limit) break;
+    if (picked.length === MAX_COMBINED_BLOCKS) break;
   }
-  if (!notice && picked.length < limit) {
+  if (!notice && picked.length < MAX_COMBINED_BLOCKS) {
     notice = `Only ${picked.length} consecutive block${picked.length === 1 ? '' : 's'} available from this starting point for this receiver today.`;
   }
   return { filenames: picked, focusCode, notice };
@@ -67,15 +67,14 @@ export function selectCombineBlocks(files, selectedFilename, limit = 4) {
 export function adjacentBlock(files, filename, direction) {
   const selected = filename.match(FILE_RE)?.groups;
   if (!selected) return null;
-  const clock = (time) => seconds(`${time.slice(0, 2)}:${time.slice(2, 4)}:${time.slice(4, 6)}`);
-  const origin = clock(selected.time);
+  const origin = stampSeconds(selected.time);
   const sign = direction === 'next' ? 1 : -1;
   let best = null;
   for (const file of files) {
     const info = file.filename.match(FILE_RE)?.groups;
     if (!info || info.station !== selected.station || info.date !== selected.date
       || (info.focus ?? null) !== (selected.focus ?? null)) continue;
-    const gap = sign * (clock(info.time) - origin);
+    const gap = sign * (stampSeconds(info.time) - origin);
     if (gap > 0 && gap <= BLOCK_SECONDS + CLOCK_TOLERANCE_SECONDS && (!best || gap < best.gap)) {
       best = { gap, filename: file.filename };
     }

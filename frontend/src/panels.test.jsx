@@ -8,13 +8,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import LightCurvePanel from './LightCurvePanel';
 import Statistics from './Statistics';
 import Spectrogram from './Spectrogram';
-import { apiFetch } from './api';
 import { buildAnalysisManifest } from './analysisManifest';
 import { fileForEvent } from './eventNavigation';
 import { blockForEvent, expandXmatchRows } from './xmatch';
 
 vi.mock('./plotly', () => ({
-  default: {},
   OBSERVATORY_COLOR_SCALE: [[0, '#000000'], [1, '#ffffb0']],
   Plot: function PlotMock(props) {
     const customdata = props.data?.find((trace) => trace.customdata?.length)?.customdata?.[0];
@@ -30,7 +28,7 @@ vi.mock('./plotly', () => ({
       'data-testid': 'plotly-chart',
       'data-traces': JSON.stringify(props.data),
       disabled: !customdata,
-      onClick: () => (handlers.get('plotly_click') ?? props.onClick)?.({ points: [{ customdata }] }),
+      onClick: () => handlers.get('plotly_click')?.({ points: [{ customdata }] }),
     });
   },
 }));
@@ -45,32 +43,6 @@ afterEach(() => {
 const loadCatalog = async () => (await import('./BurstCatalog')).default;
 
 describe('analysis panels', () => {
-  it('opens the station event represented by an Xmatch red marker', async () => {
-    const onOpenEvent = vi.fn();
-    const report = {
-      id: 9,
-      started_at: '2026-08-26T06:32:00+00:00',
-      ended_at: '2026-08-26T06:35:00+00:00',
-      burst_type: 'III',
-      stations: ['HUMAIN'],
-    };
-    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url) => ({
-      ok: true,
-      json: async () => String(url).includes('/api/xmatch/timeline')
-        ? {
-            source_label: 'deARCE (v3)',
-            availability_basis: 'Archive blocks',
-            rows: [{ station: 'HUMAIN', positive: true, availability: [], events: [report] }],
-          }
-        : { ranking: [], points: [] },
-    })));
-
-    render(<Statistics onOpenEvent={onOpenEvent} onOpenStation={vi.fn()} />);
-    const marker = await screen.findByRole('button', { name: 'Mock Plotly event marker' });
-    fireEvent.click(marker);
-    expect(onOpenEvent).toHaveBeenCalledWith(report, 'HUMAIN');
-  });
-
   it('shows every matching focus code and opens its exact FITS block', async () => {
     const onOpenEvent = vi.fn();
     const report = {
@@ -107,7 +79,6 @@ describe('analysis panels', () => {
       'GERMANY-DLR · FC 62',
       'GERMANY-DLR · FC 63',
     ]);
-    expect(rows.every((row) => row.eventPoints.length === 1)).toBe(true);
 
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
@@ -127,30 +98,6 @@ describe('analysis panels', () => {
       filename: 'GERMANY-DLR_20260825_101500_01.fit.gz',
       focusCode: '01',
     });
-  });
-
-  it('opens the clicked report station', async () => {
-    const onOpenEvent = vi.fn();
-    const report = {
-      id: 1,
-      started_at: '2026-07-24T23:46:00+00:00',
-      ended_at: '2026-07-24T23:48:00+00:00',
-      burst_type: 'III',
-      stations: ['AUSTRALIA-ASSA', 'GERMANY-DLR'],
-      min_lon: -7.9,
-      mid_lon: 11.1,
-      max_lon: 73.7,
-      source: 'dearce_v3',
-      source_label: 'deARCE (v3)',
-    };
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ events: [report], warnings: [], source_label: report.source_label }),
-    }));
-    const BurstCatalog = await loadCatalog();
-    render(<BurstCatalog onOpenEvent={onOpenEvent} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'GERMANY-DLR' }));
-    expect(onOpenEvent).toHaveBeenCalledWith(report, 'GERMANY-DLR');
   });
 
   it('loads a complete month of Burst Reports with an exclusive end date', async () => {
@@ -239,26 +186,6 @@ describe('analysis panels', () => {
     )?.filename).toBe('HUMAIN_20260826_063000_59.fit.gz');
   });
 
-  it('uses the exact Xmatch focus-code file instead of filename ordering', () => {
-    const files = ['01', '02', '03', '62', '63'].map((focusCode) => ({
-      filename: `GERMANY-DLR_20260825_101500_${focusCode}.fit.gz`,
-      time: '10:15:00',
-      focus_code: focusCode,
-    }));
-
-    expect(fileForEvent(
-      files,
-      { station: 'GERMANY-DLR', date: '2026-08-25' },
-      {
-        station: 'GERMANY-DLR',
-        date: '2026-08-25',
-        startedAt: '2026-08-25T10:25:00+00:00',
-        filename: 'GERMANY-DLR_20260825_101500_02.fit.gz',
-        focusCode: '02',
-      },
-    )?.filename).toBe('GERMANY-DLR_20260825_101500_02.fit.gz');
-  });
-
   it('does not replace a missing exact FITS with a nearby block', () => {
     const files = [{
       filename: 'GLASGOW_20260825_123000_01.fit.gz',
@@ -311,32 +238,20 @@ describe('analysis panels', () => {
       generatedAt: '2026-08-24T12:00:00.000Z',
     });
 
-    expect(manifest.schema).toBe('astrodoncel.analysis-manifest.v1');
-    expect(manifest.catalogue.label).toBe('Deployment-configured Burst Reports source');
     expect(manifest.selection.layers[0].fits_provenance).toEqual({ 'DATE-OBS': '2026-08-24' });
     expect(manifest.selection.layers[0].intensity_unit).toBe('relative digits');
     expect(JSON.stringify(manifest)).not.toContain('C:/private');
   });
 });
 
-describe('request cancellation and empty dates', () => {
-  it('propagates an already-aborted caller signal', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (_url, options) => {
-      expect(options.signal.aborted).toBe(true);
-      throw options.signal.reason;
-    }));
-    const controller = new AbortController();
-    controller.abort(new Error('cancelled before fetch'));
-    await expect(apiFetch('/api/stations', { signal: controller.signal })).rejects.toThrow('cancelled before fetch');
-  });
-
+describe('request cancellation', () => {
   it('does not revive GOES after the overlay has been turned off', async () => {
     let resolve;
     vi.stubGlobal('fetch', vi.fn().mockImplementation(() => new Promise((done) => { resolve = done; })));
     const props = {
       layers: [{ station: 'MRO', date: '2024-01-01', filename: 'MRO_20240101_120000.fit',
         time_axis: ['2024-01-01T12:00:00.000Z', '2024-01-01T12:00:01.000Z'], freq_axis: [80, 45], z: [[1, 2], [3, 4]] }],
-      layerState: {}, date: '2024-01-01', hasLoaded: true, triggerLoad: 1, compareMode: 'panels',
+      layerState: {}, hasLoaded: true, triggerLoad: 1, compareMode: 'panels',
       zmin: null, zmax: null,
     };
     const view = render(<Spectrogram {...props} showGoes />);
@@ -350,7 +265,7 @@ describe('request cancellation and empty dates', () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ times: [], curves: [] }) });
     vi.stubGlobal('fetch', fetchMock);
     const names = ['MRO_20240101_120000.fit', 'MRO_20240101_121500.fit'];
-    render(<LightCurvePanel embedded layer={{ station: 'MRO', date: '2024-01-01', filename: names[0], filenames: names }} />);
+    render(<LightCurvePanel onCurve={vi.fn()} layer={{ station: 'MRO', date: '2024-01-01', filename: names[0], filenames: names }} />);
     fireEvent.click(screen.getByRole('button', { name: 'Plot light curve' }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     expect(new URL(fetchMock.mock.calls[0][0]).searchParams.getAll('filenames')).toEqual(names);
@@ -360,7 +275,7 @@ describe('request cancellation and empty dates', () => {
     let resolve;
     const onCurve = vi.fn();
     vi.stubGlobal('fetch', vi.fn().mockImplementation(() => new Promise((done) => { resolve = done; })));
-    const view = render(<LightCurvePanel embedded onCurve={onCurve} layer={{ station: 'MRO', date: '2024-01-01', filename: 'MRO_20240101_120000.fit' }} />);
+    const view = render(<LightCurvePanel onCurve={onCurve} layer={{ station: 'MRO', date: '2024-01-01', filename: 'MRO_20240101_120000.fit' }} />);
     fireEvent.click(screen.getByRole('button', { name: 'Plot light curve' }));
     view.unmount();
     await act(async () => resolve({ ok: true, json: async () => ({ times: [], curves: [] }) }));

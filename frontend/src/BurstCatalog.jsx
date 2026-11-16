@@ -1,11 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from './api';
+import { csvCell, download } from './download';
 import { observationDateRange } from './observationUrl';
-
-function csvCell(value) {
-  const text = value == null ? '' : String(value);
-  return `"${text.replaceAll('"', '""')}"`;
-}
 
 // Filters and scroll survive leaving the tab while the page stays open.
 const memory = { date: null, period: 'day', type: '', station: '', scroll: 0 };
@@ -51,15 +47,15 @@ export default function BurstCatalog({ onOpenEvent }) {
       const response = await apiFetch(`/api/bursts?${query}`, { signal });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
-      if (signal?.aborted) return;
+      if (signal.aborted) return;
       setEvents(data.events ?? []);
       setWarnings(data.warnings ?? []);
       setAvailableTypes(data.available_types ?? []);
       setSourceLabel(data.source_label ?? 'Burst Reports');
     } catch (cause) {
-      if (!signal?.aborted) setError(`Could not load the burst catalogue: ${cause.message}`);
+      if (!signal.aborted) setError(`Could not load the burst catalogue: ${cause.message}`);
     } finally {
-      if (!signal?.aborted) setLoading(false);
+      if (!signal.aborted) setLoading(false);
     }
   }, [date, period, station, type]);
 
@@ -88,12 +84,7 @@ export default function BurstCatalog({ onOpenEvent }) {
       ];
     });
     const csv = [header, ...rows].map((row) => row.map(csvCell).join(',')).join('\r\n');
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `burst-reports-${period === 'month' ? date.slice(0, 7) : date}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
+    download(`burst-reports-${period === 'month' ? date.slice(0, 7) : date}.csv`, csv, 'text/csv;charset=utf-8');
   }
 
   return (

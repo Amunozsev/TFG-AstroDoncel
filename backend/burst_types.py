@@ -23,6 +23,7 @@ import numpy as np
 from PIL import Image
 
 from backend.main import _percentile_clip_global, _subtract_background
+from backend.timeutil import iso_ms
 
 IMAGE_WIDTH = 1024   # time; a 26 s type III spans about 30 px of a 900 s file
 IMAGE_HEIGHT = 400   # frequency; receivers have 100-300 channels
@@ -134,8 +135,7 @@ def decode(output: np.ndarray, conf: float, iou: float, pad: int) -> list[tuple[
 
 
 def _utc(start: datetime, seconds: float) -> str:
-    ts = start + timedelta(seconds=seconds)
-    return f"{ts.strftime('%Y-%m-%dT%H:%M:%S')}.{ts.microsecond // 1000:03d}Z"
+    return iso_ms(start + timedelta(seconds=seconds))
 
 
 def merge_windows(windows: list[tuple[int, list]], window: int, n_samples: int, iou: float) -> list[tuple[float, ...]]:

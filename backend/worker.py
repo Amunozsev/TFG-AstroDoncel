@@ -17,6 +17,7 @@ from sqlalchemy import select, update
 from backend.db import TaskRecord, init_db, session_scope
 from backend.observation import ObservationError, join_blocks
 from backend.security import fits_focus_code, validate_combine_filenames
+from backend.timeutil import parse_utc
 
 RESULT_DIR = os.environ.get("TASK_RESULT_DIR", os.path.join("data", "task_results"))
 logger = logging.getLogger(__name__)
@@ -168,13 +169,9 @@ def _spectral_overview(task: TaskRecord) -> dict:
     from backend import main as core
 
     options = task.payload.get("options", {})
-    stations = options.get("stations") or [task.payload["station"]]
-    start_at = datetime.fromisoformat(
-        options.get("start_at", f"{task.payload['date']}T00:00:00+00:00")
-    ).astimezone(timezone.utc)
-    end_at = datetime.fromisoformat(
-        options.get("end_at", f"{task.payload['date']}T23:59:59+00:00")
-    ).astimezone(timezone.utc)
+    stations = options["stations"]
+    start_at = datetime.fromisoformat(options["start_at"]).astimezone(timezone.utc)
+    end_at = datetime.fromisoformat(options["end_at"]).astimezone(timezone.utc)
 
     dates = []
     cursor = start_at.date()
@@ -209,10 +206,7 @@ def _spectral_overview(task: TaskRecord) -> dict:
                 raise ValueError("FITS file could not be downloaded")
             raw, frequencies, time_values, header = core._load_raw_cached(path)
             labels = core._times_to_utc(time_values, header)
-            instants = [
-                datetime.fromisoformat(label.replace("Z", "+00:00")).astimezone(timezone.utc)
-                for label in labels
-            ]
+            instants = [parse_utc(label) for label in labels]
             selected_indices = [
                 item for item, instant in enumerate(instants)
                 if start_at <= instant < end_at
@@ -248,7 +242,6 @@ def _spectral_overview(task: TaskRecord) -> dict:
             _update(task.id, progress=(index + 1) / max(1, len(work)) * 0.9)
 
     station_results = []
-    total_segments = 0
     for station in stations:
         grouped: dict[tuple, list[dict]] = {}
         for segment in loaded_by_station[station]:
@@ -278,7 +271,6 @@ def _spectral_overview(task: TaskRecord) -> dict:
                 "vmax": vmax,
                 "segments": output_segments,
             })
-            total_segments += len(output_segments)
         station_results.append({
             "station": station,
             "status": "ok" if receiver_groups else "no_data",
@@ -298,14 +290,10 @@ def _spectral_overview(task: TaskRecord) -> dict:
         "stations": station_results,
         "baseline": "median per station and compatible receiver group",
         "intensity_unit": "relative detector digits",
-        "downsample": "peak_preserving",
     }
     artifact = _write_artifact(task.id, payload)
     _update(task.id, progress=0.98)
     return {
-        "stations_requested": len(stations),
-        "stations_with_data": sum(result["status"] == "ok" for result in station_results),
-        "segments": total_segments,
         "artifact_url": f"/api/tasks/{task.id}/artifact",
         "artifact": artifact,
     }
@@ -345,7 +333,6 @@ def _combine_time(task: TaskRecord) -> dict:
         "start_at": labels[0], "end_at": labels[-1],
         "duration_seconds": round(observation.duration_s, 3),
         "overlap_samples_dropped": observation.overlap_samples_dropped,
-        "time_basis": "FITS DATE-OBS/TIME-OBS and time axis; no clock rounding",
     }
     artifact = _write_artifact(task.id, {
         "station": station, "date": date, "filenames": filenames, "time_axis": labels,
@@ -399,17 +386,8 @@ def run_once() -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--once", action="store_true")
     parser.add_argument("--poll-seconds", type=float, default=2.0)
-    parser.add_argument("--cleanup-only", action="store_true")
     args = parser.parse_args()
-    if args.once or args.cleanup_only:
-        init_db()
-        recover_stale_tasks()
-        cleanup_completed_tasks()
-        if args.once:
-            run_once()
-        return
     _serve(args.poll_seconds)
 
 

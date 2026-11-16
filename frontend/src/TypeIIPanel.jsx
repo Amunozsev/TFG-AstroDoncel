@@ -1,15 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { Plot } from './plotly';
-import { TYPE_II_COLORS as COLORS, asPairs } from './useTypeII';
-
-function download(name, text, type) {
-  const url = URL.createObjectURL(new Blob([text], { type }));
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = name;
-  link.click();
-  URL.revokeObjectURL(url);
-}
+import { COLORS, asPairs } from './useTypeII';
+import { download } from './download';
 
 function Value({ value, error, digits = 2 }) {
   if (value === undefined || value === null || !Number.isFinite(value)) return '—';
@@ -73,8 +65,7 @@ export function TypeIIResult({ t2, theme = 'dark', onClose }) {
     yaxis: { title: yTitle, gridcolor: plotTheme.grid },
     showlegend: false, hovermode: 'closest',
   });
-  // Bind the click on the graph div itself; react-plotly's onClick prop loses
-  // its listener after figure updates (same workaround as the spectrogram).
+  // react-plotly's onClick prop loses its listener after figure updates; bind on the graph div.
   const clickRef = useRef(null);
   useEffect(() => { clickRef.current = (ev) => {
     const point = ev?.points?.[0];

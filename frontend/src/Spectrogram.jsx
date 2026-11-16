@@ -5,16 +5,14 @@ import { addBlockParams } from './fileBlocks';
 import { rfiQuery } from './analysisManifest';
 import { burstStyle } from './burstTypes';
 
-// All colorscales defined as explicit RGB arrays so they work regardless of the
-// Plotly.js bundle version. Mirrors the colormap set in Sahan's FITS Analyzer.
+// Colorscales as explicit RGB stops, independent of the Plotly bundle version.
 const COLORSCALES = {
   // black → red → yellow → white (matplotlib "hot", standard in e-CALLISTO publications)
   hot: [
     [0.00, '#000000'], [0.33, '#cc0000'],
     [0.67, '#ffcc00'], [1.00, '#ffffff'],
   ],
-  // Observatory standard: the colormap used across e-CALLISTO tools and viewer pages.
-  // dark navy → blue/indigo → purple → red → orange → golden yellow → light yellow
+  // Observatory standard colormap used across e-CALLISTO tools.
   observatory: OBSERVATORY_COLOR_SCALE,
   // Exact matplotlib samples (11 stops each)
   viridis: [
@@ -59,7 +57,7 @@ const COLORSCALES = {
     [0.6, '#cdff29'], [0.7, '#ffc400'], [0.8, '#ff6700'],
     [0.9, '#f10700'], [1.0, '#7f0000'],
   ],
-  // RdYlBu reversed so that high intensity maps to red (more intuitive for spectrograms)
+  // RdYlBu reversed: high intensity maps to red
   rdylbu: [
     [0.0, '#313695'], [0.1, '#4473b3'], [0.2, '#74add1'],
     [0.3, '#a9d8e8'], [0.4, '#e0f3f7'], [0.5, '#fefec0'],
@@ -72,7 +70,7 @@ const COLORSCALES = {
     [0.6, '#cf7e92'], [0.7, '#cf9dda'], [0.8, '#c1caf3'],
     [0.9, '#d2eeee'], [1.0, '#ffffff'],
   ],
-  // bone_r: white (low) → dark blue-gray (high), good for inverted display
+  // bone_r: white (low) → dark blue-gray (high)
   bone_r: [
     [0.0, '#ffffff'], [0.1, '#dce9e9'], [0.2, '#b9d2d2'],
     [0.3, '#9cb8bc'], [0.4, '#8599a5'], [0.5, '#6f7a8e'],
@@ -81,19 +79,10 @@ const COLORSCALES = {
   ],
 };
 
-function hexToRgbTuple(hex) {
-  const h = hex.replace('#', '');
-  return [
-    parseInt(h.slice(0, 2), 16),
-    parseInt(h.slice(2, 4), 16),
-    parseInt(h.slice(4, 6), 16),
-  ];
-}
-
-/** Hex colorscale → rgba whose alpha grows with intensity, so overlaid layers only show bright features. */
+/** Hex colorscale → rgba with alpha growing with intensity, so overlays show only bright features. */
 function alphaColorscale(scale, maxAlpha = 0.85) {
   return scale.map(([t, c]) => {
-    const [r, g, b] = hexToRgbTuple(c);
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
     const a = t <= 0 ? 0 : +(Math.pow(t, 0.75) * maxAlpha).toFixed(3);
     return [t, `rgba(${r},${g},${b},${a})`];
   });
@@ -105,7 +94,7 @@ const panelAxisKey = (i) => (i === 0 ? 'yaxis' : `yaxis${i + 1}`);
 
 export default function Spectrogram({
   layers, layerState,
-  date, showGoes, colormap, zmin, zmax,
+  showGoes, colormap, zmin, zmax,
   triggerLoad, hasLoaded, loading, error,
   compareMode, autoContrastZoom, rulerMode,
   burstResults,
@@ -159,9 +148,8 @@ export default function Spectrogram({
   }, [rulerMode]);
 
   // ── Fetch GOES XRS ───────────────────────────────────────────────────────
-  const goesDate = layers[0]?.date ?? date;
-  // Only the UTC interval covered by the loaded layers is requested; the full
-  // day of 1 s GOES samples is far larger than a 15-minute block needs.
+  const goesDate = layers[0]?.date;
+  // Request only the UTC interval covered by the loaded layers.
   const layerTimes = layers.flatMap((l) => (
     Array.isArray(l.time_axis) && l.time_axis.length > 0 ? [l.time_axis[0], l.time_axis[l.time_axis.length - 1]] : []
   ));
@@ -347,8 +335,8 @@ export default function Spectrogram({
     if (!ev?.points?.length) return;
     const pt = ev.points[0];
     if (pt.x == null || pt.y == null) return;
-    const yref = pt.data?.yaxis || 'y';
     if (!rulerMode) return;
+    const yref = pt.data?.yaxis || 'y';
     setRulerPoints((prev) =>
       prev.length >= 2 ? [{ x: pt.x, y: pt.y, yref }] : [...prev, { x: pt.x, y: pt.y, yref }]
     );
@@ -397,6 +385,7 @@ export default function Spectrogram({
 
   // ── Plotly traces ────────────────────────────────────────────────────────
   const traces = [];
+  const baseScale = COLORSCALES[colormap] ?? COLORSCALES.hot;
   const plotTheme = theme === 'light'
     ? {
         surface: '#f7f9fc', text: '#3f5870', muted: '#5f7488', grid: '#d8e1ea',
@@ -433,8 +422,7 @@ export default function Spectrogram({
 
   const srcFor = (layer) => (isZoomed && zoomPatches[layer.station]) ? zoomPatches[layer.station] : layer;
 
-  // ── ML burst detections (one box per burst, coloured by type) ─────────────
-  // Experimental types (IV, V) get a dashed outline.
+  // ML burst detections: one box per burst, experimental types (IV, V) dashed.
   const addBurstShapes = (layer, axisId) => {
     const res = burstResults?.[layer.station];
     if (!res?.available || !res.detections?.length) return;
@@ -500,7 +488,7 @@ export default function Spectrogram({
         z: src.z,
         zmin: zLo,
         zmax: zHi,
-        colorscale: COLORSCALES[colormap] ?? COLORSCALES.hot,
+        colorscale: baseScale,
         name: layer.station,
         showscale: true,
         colorbar: {
@@ -547,7 +535,6 @@ export default function Spectrogram({
       const { zmin: zLo, zmax: zHi } = contrastFor(layer);
       const isBase = ls.visible && visIdx === 0;
       if (ls.visible) visIdx += 1;
-      const baseScale = COLORSCALES[colormap] ?? COLORSCALES.hot;
 
       traces.push({
         type: 'heatmap',
@@ -562,9 +549,8 @@ export default function Spectrogram({
         name: layer.station,
         showscale: isBase,
         colorbar: isBase ? {
-          title: { text: layer.unit ?? 'relative', side: 'right' },
+          title: { text: layer.unit ?? 'relative', side: 'right', font: { color: plotTheme.colorbar, size: 11 } },
           tickfont: { color: plotTheme.colorbar, size: 10 },
-          titlefont: { color: plotTheme.colorbar, size: 11 },
           x: 1.02,
           thickness: 14,
           bgcolor: 'rgba(0,0,0,0)',
@@ -661,8 +647,7 @@ export default function Spectrogram({
   }
 
   traces.push(...extraTraces);
-  // Markers would make Plotly autorange past the observation and shift the
-  // plot under the user's next click, so pin the primary axes to the data.
+  // Pin the primary axes so markers do not autorange the plot under the next click.
   const primary = layers[0];
   if (extraTraces.length > 0 && primary?.time_axis?.length > 1 && primary.freq_axis?.length > 1) {
     layout.xaxis = { ...layout.xaxis, autorange: false, range: [primary.time_axis[0], primary.time_axis[primary.time_axis.length - 1]] };

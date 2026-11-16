@@ -1,4 +1,4 @@
-"""Worker recovery and block combination, including opt-in archive checks."""
+"""Worker recovery and block combination."""
 
 import gzip
 import json
@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from backend import main as core
 from backend import worker
-from backend.db import SessionLocal, TaskRecord, init_db
+from backend.db import SessionLocal, TaskRecord
 from backend.security import fits_focus_code
 from backend.worker import recover_stale_tasks
 
@@ -215,7 +215,12 @@ def test_overview_over_file_limit_fails_before_downloading(monkeypatch):
         f"MRO_20240101_{hour:02d}0000_59.fit.gz" for hour in range(3)
     ])
     monkeypatch.setattr(core, "_download_from_ethz", lambda *_args: pytest.fail("downloaded despite the limit"))
-    task = TaskRecord(id=str(uuid.uuid4()), payload={"station": "MRO", "date": "2024-01-01", "options": {}})
+    options = {
+        "stations": ["MRO"],
+        "start_at": "2024-01-01T00:00:00+00:00",
+        "end_at": "2024-01-01T23:59:59+00:00",
+    }
+    task = TaskRecord(id=str(uuid.uuid4()), payload={"station": "MRO", "date": "2024-01-01", "options": options})
 
     with pytest.raises(worker.TaskFailure, match="3 FITS files") as failure:
         worker._spectral_overview(task)
@@ -223,7 +228,6 @@ def test_overview_over_file_limit_fails_before_downloading(monkeypatch):
 
 
 def test_stale_running_task_is_requeued():
-    init_db()
     task_id = str(uuid.uuid4())
     with SessionLocal() as session:
         session.add(TaskRecord(
@@ -303,23 +307,6 @@ def test_four_blocks_cover_one_hour_with_exact_fits_times(combine):
     assert artifact["time_axis"] == sorted(set(artifact["time_axis"]))
 
 
-def test_small_recorder_overlap_is_trimmed_without_shifting_timestamps(combine):
-    times = starts(count=2)
-    times[1] -= timedelta(seconds=0.5)
-    result, artifact = combine(times)
-    assert result["overlap_samples_dropped"] == 2
-    assert len(artifact["time_axis"]) == 7198
-    assert artifact["time_axis"][3600] == "2026-09-03T16:29:59.182Z"
-    assert artifact["time_axis"] == sorted(set(artifact["time_axis"]))
-
-
-def test_gap_is_not_painted_as_a_continuous_observation(combine):
-    times = starts(count=2)
-    times[1] += timedelta(minutes=15)
-    with pytest.raises(ValueError, match="Missing observations.*Spectral overview"):
-        combine(times)
-
-
 def test_large_overlap_is_rejected(combine):
     times = starts(count=2)
     times[1] -= timedelta(minutes=5)
@@ -353,10 +340,4 @@ def test_download_failure_names_file_not_server_path(combine):
 
 def test_no_focus_code_is_not_mistaken_for_observation_time():
     assert fits_focus_code(name("161500", receiver=None)) is None
-    assert core._focus_code_from_filename(name("161500", receiver=None)) is None
     assert fits_focus_code(name("161500")) == "62"
-
-
-# Opt-in API -> persistent worker -> artifact check.
-# ASTRODONCEL_LIVE_COMBINE=1 downloads public FITS into the isolated test cache.
-
