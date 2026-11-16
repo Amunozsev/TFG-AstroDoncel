@@ -381,13 +381,13 @@ def _convert_one(job: tuple[Path, Path, Path, list]) -> str:
     from astropy.io import fits
     from PIL import Image
 
-    from backend import main as core
+    from backend import processing
     from backend.burst_types import CLASSES, spectrogram_image
 
     fits_path, image_path, label_path, boxes = job
     try:
         with fits.open(fits_path) as hdul:
-            data, freqs, _ = core._load_callisto_data(hdul)
+            data, freqs, _ = processing.load_callisto_data(hdul)
     except (OSError, ValueError):
         return "unreadable"
     if not np.all(np.diff(np.asarray(freqs)) <= 0):

@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 
+from backend import processing
 from backend.catalog import (
     CATALOG_SOURCES,
     DEFAULT_CATALOG_SOURCE,
@@ -294,7 +295,7 @@ def get_lightcurve(
         raise HTTPException(status_code=422, detail="Frequencies must be finite numbers in MHz")
     observation = core.open_observation(station, date, filename, filenames)
     frequencies, times = observation.freqs, observation.time_labels
-    processed = core._subtract_background(observation.data)
+    processed = processing.subtract_background(observation.data)
     curves = []
     for requested in freq_mhz:
         index = int(np.nanargmin(np.abs(np.asarray(frequencies) - requested)))
@@ -332,7 +333,7 @@ def export_processed_fits(
         min_component_size=rfi_min_component,
         impulsive=rfi_impulsive,
     ) if rfi else None
-    processed, _stats = core._process(core._scale(observation.data, scale_mode), rfi_args)
+    processed, _stats = processing.process(processing.scale(observation.data, scale_mode), rfi_args)
     export_header = observation.header.copy()
     export_header["BUNIT"] = ("dB" if scale_mode == "median_db" else "relative detector digits", "Background-subtracted intensity")
     export_header["PROCVER"] = (f"{APP_NAME} {APP_VERSION}", "Processing software")
@@ -429,7 +430,6 @@ def _utc(start: datetime, seconds) -> list[str]:
 @router.post("/type2/backbone")
 def type_ii_backbone(request: BackboneRequest):
     """Maximum-intensity frequency at each instant inside the drawn burst region."""
-    from backend import main as core
     from backend import type_ii
 
     observation = _observation(request)
@@ -440,7 +440,7 @@ def type_ii_backbone(request: BackboneRequest):
         min_component_size=request.rfi.minComponent,
         impulsive=request.rfi.impulsive,
     ) if request.rfi else None
-    processed, _stats = core._process(core._scale(observation.data, request.scale_mode), rfi_args)
+    processed, _stats = processing.process(processing.scale(observation.data, request.scale_mode), rfi_args)
     polygon_s, polygon_mhz = _seconds(request.polygon, start)
     try:
         times, peak_freqs = type_ii.backbone_points(

@@ -121,7 +121,7 @@ export default function App() {
   const [filesReloadKey, setFilesReloadKey] = useState(0);
   const [collapsedHours, setCollapsedHours] = useState({});
 
-  const [useSahanFilter, setSahan]          = useState(false);
+  const [rfiEnabled, setRfiEnabled]          = useState(false);
   const [scaleMode, setScaleMode]           = useState('relative');
   const [rfiParams, setRfiParams]           = useState({
     zThresh: 6.0, occupancy: 0.15, minComponent: 9, impulsive: true,
@@ -192,7 +192,14 @@ export default function App() {
     return () => detectionRequestRef.current?.abort();
   }, [triggerLoad]);
 
-  const applyLinkedObservation = useCallback((observation) => {
+  const changeObservationDate = useCallback((nextDate) => {
+    setDate(nextDate);
+    setOverviewStart(nextDate ? `${nextDate}T00:00` : '');
+    setOverviewEnd(nextDate ? `${nextUtcDate(nextDate)}T00:00` : '');
+  }, []);
+
+  // Clear the previous observation before /api/files returns.
+  const clearObservation = useCallback(() => {
     setHasLoaded(false);
     setFiles([]);
     setFilesContext(null);
@@ -202,9 +209,13 @@ export default function App() {
     setFetchError(null);
     setShareStatus('');
     setBurstResults({});
-    setDate(observation.date);
-    setOverviewStart(`${observation.date}T00:00`);
-    setOverviewEnd(`${nextUtcDate(observation.date)}T00:00`);
+    setTriggerLoad((value) => value + 1); // abort an in-flight layer request
+    setView('portal');
+  }, []);
+
+  const openObservation = useCallback((observation, { pushUrl }) => {
+    clearObservation();
+    changeObservationDate(observation.date);
     setSelectedStations([observation.station]);
     setStation(observation.station);
     setFocusCode(observation.focusCode ?? 'all');
@@ -212,13 +223,14 @@ export default function App() {
       station: observation.station,
       date: observation.date,
       startedAt: observation.startedAt,
-      filename: observation.filename,
+      filename: observation.filename ?? null,
       joinedFilename: observation.joinedFilename,
-      focusCode: observation.focusCode,
+      focusCode: observation.focusCode ?? null,
     });
+    pendingUrlPushRef.current = pushUrl;
+    // Reload the file inventory even when station and date are unchanged.
     setFilesReloadKey((value) => value + 1);
-    setView('portal');
-  }, []);
+  }, [clearObservation, changeObservationDate]);
 
   useEffect(() => {
     if (initialObservation) writeObservationUrl(initialObservation, { replace: true });
@@ -230,23 +242,17 @@ export default function App() {
         return;
       }
       if (parsed.observation) {
-        applyLinkedObservation(parsed.observation);
+        openObservation(parsed.observation, { pushUrl: false });
         return;
       }
-      setHasLoaded(false);
-      setFiles([]);
-      setFilesContext(null);
-      setSelectedFile(null);
-      setLayers([]);
+      clearObservation();
       setSelectedStations([]);
       setStation(null);
       setPendingEvent(null);
-      setFetchError(null);
-      setView('portal');
     };
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
-  }, [applyLinkedObservation, initialObservation]);
+  }, [openObservation, clearObservation, initialObservation]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -447,7 +453,7 @@ export default function App() {
         if (selectedStations.length > 1) {
           const params = new URLSearchParams({
             date,
-            sahan_filter: String(useSahanFilter),
+            rfi: String(rfiEnabled),
             scale_mode: scaleMode,
             max_time_bins: '1500',
             ...rfiQS,
@@ -469,7 +475,7 @@ export default function App() {
           const params = new URLSearchParams({
             station: selectedStations[0],
             date,
-            sahan_filter: String(useSahanFilter),
+            rfi: String(rfiEnabled),
             scale_mode: scaleMode,
             max_time_bins: '1500',
             ...rfiQS,
@@ -486,7 +492,7 @@ export default function App() {
 
         if (controller.signal.aborted) return;
         // Keep the RFI settings each layer was computed with.
-        const appliedRfi = useSahanFilter ? { ...rfiParams } : null;
+        const appliedRfi = rfiEnabled ? { ...rfiParams } : null;
         setLayers(newLayers.map((layer) => ({ ...layer, rfi: appliedRfi })));
         setFailedStations(newFailed);
 
@@ -535,12 +541,6 @@ export default function App() {
     writeObservationUrl({ station, date, filename: selectedFile, joinedFilename: other });
   }
 
-  function changeObservationDate(nextDate) {
-    setDate(nextDate);
-    setOverviewStart(nextDate ? `${nextDate}T00:00` : '');
-    setOverviewEnd(nextDate ? `${nextUtcDate(nextDate)}T00:00` : '');
-  }
-
   // ── Open a station from the map: select it and load its spectrograms ───────
   function handleOpenStation(st) {
     setFiles([]);
@@ -560,32 +560,13 @@ export default function App() {
   function handleOpenEvent(event, requestedStation = null, requestedFile = null) {
     const targetStation = requestedStation ?? event.stations?.[0];
     if (!targetStation) return;
-    const targetDate = event.started_at.slice(0, 10);
-    // Clear the previous observation before /api/files returns.
-    setHasLoaded(false);
-    setFiles([]);
-    setFilesContext(null);
-    setSelectedFile(null);
-    setLayers([]);
-    setFailedStations([]);
-    setFetchError(null);
-    setTriggerLoad((value) => value + 1); // abort an in-flight layer request
-    setBurstResults({});
-    changeObservationDate(targetDate);
-    setSelectedStations([targetStation]);
-    setStation(targetStation);
-    setFocusCode(requestedFile?.focusCode ?? 'all');
-    setPendingEvent({
+    openObservation({
       station: targetStation,
-      date: targetDate,
+      date: event.started_at.slice(0, 10),
       startedAt: event.started_at,
-      filename: requestedFile?.filename ?? null,
-      focusCode: requestedFile?.focusCode ?? null,
-    });
-    pendingUrlPushRef.current = true;
-    // Reload the file inventory even when station and date are unchanged.
-    setFilesReloadKey((value) => value + 1);
-    setView('portal');
+      filename: requestedFile?.filename,
+      focusCode: requestedFile?.focusCode,
+    }, { pushUrl: true });
   }
 
   // ── Automatic burst detection on the primary (current) FITS block ─────────
@@ -817,16 +798,16 @@ export default function App() {
               <label className="control-checkbox">
                 <input
                   type="checkbox"
-                  checked={useSahanFilter}
-                  onChange={(e) => setSahan(e.target.checked)}
+                  checked={rfiEnabled}
+                  onChange={(e) => setRfiEnabled(e.target.checked)}
                 />
-                RFI filter v2 (Sahan)
+                RFI filter
               </label>
               <label className="control-checkbox" title="Connected-component stage; can also mask very bright bursts — disable if a burst disappears">
                 <input
                   type="checkbox"
                   checked={rfiParams.impulsive}
-                  disabled={!useSahanFilter}
+                  disabled={!rfiEnabled}
                   onChange={(e) => setRfiParam('impulsive', e.target.checked)}
                 />
                 Impulsive stage
@@ -845,7 +826,7 @@ export default function App() {
                 type="number" className="control-input tab-num"
                 min="0.5" max="20" step="0.5"
                 value={rfiParams.zThresh}
-                disabled={!useSahanFilter}
+                disabled={!rfiEnabled}
                 onChange={(e) => setRfiParam('zThresh', parseFloat(e.target.value) || 6)}
               />
             </label>
@@ -855,7 +836,7 @@ export default function App() {
                 type="number" className="control-input tab-num"
                 min="0.01" max="1" step="0.01"
                 value={rfiParams.occupancy}
-                disabled={!useSahanFilter}
+                disabled={!rfiEnabled}
                 onChange={(e) => setRfiParam('occupancy', parseFloat(e.target.value) || 0.15)}
               />
             </label>
@@ -865,7 +846,7 @@ export default function App() {
                 type="number" className="control-input tab-num"
                 min="1" max="500" step="1"
                 value={rfiParams.minComponent}
-                disabled={!useSahanFilter}
+                disabled={!rfiEnabled}
                 onChange={(e) => setRfiParam('minComponent', parseInt(e.target.value, 10) || 9)}
               />
             </label>
@@ -1162,7 +1143,7 @@ export default function App() {
                     <p className="tool-subgroup-title">Download and share</p>
                     <div className="tool-action-grid">
                       <a className="btn-tool" title="Download the unmodified source observation" href={`${API_BASE_URL}/api/files/download?${new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename })}`}>Download original FITS</a>
-                      <a className="btn-tool" title="Export the displayed processing result and its scientific axes as FITS" href={`${API_BASE_URL}/api/spectrogram/export?${addBlockParams(new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename, scale_mode: layers[0].scale_mode ?? 'relative', ...rfiQuery(layers[0].rfi, 'rfi') }), layers[0])}`}>Export processed FITS</a>
+                      <a className="btn-tool" title="Export the displayed processing result and its scientific axes as FITS" href={`${API_BASE_URL}/api/spectrogram/export?${addBlockParams(new URLSearchParams({ station: layers[0].station, date: layers[0].date, filename: layers[0].filename, scale_mode: layers[0].scale_mode ?? 'relative', ...rfiQuery(layers[0].rfi) }), layers[0])}`}>Export processed FITS</a>
                       <button className="btn-tool" type="button" onClick={copyObservationLink} title="Copy a link that opens this exact FITS block">Copy observation link</button>
                       <button className="btn-tool" type="button" onClick={exportAnalysisManifest} title="Save selected files, units, processing settings and provenance as JSON">Export analysis manifest</button>
                     </div>

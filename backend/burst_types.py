@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from backend.main import _percentile_clip_global, _subtract_background
+from backend import processing
 from backend.timeutil import iso_ms
 
 IMAGE_WIDTH = 1024   # time; a 26 s type III spans about 30 px of a 900 s file
@@ -32,8 +32,8 @@ CLASSES = ("type2", "type3", "type3s", "type4", "type5")
 
 def spectrogram_image(data_raw: np.ndarray) -> np.ndarray:
     """Return the detector input for one FITS matrix (channels x samples) as uint8 (H, W)."""
-    data = _subtract_background(np.asarray(data_raw, dtype=np.float32))
-    vmin, vmax = _percentile_clip_global(data)
+    data = processing.subtract_background(np.asarray(data_raw, dtype=np.float32))
+    vmin, vmax = processing.percentile_clip(data)
     scaled = np.clip((data - vmin) / max(vmax - vmin, 1e-9), 0.0, 1.0)
     scaled = np.nan_to_num(scaled, nan=0.0).astype(np.float32)
     resized = Image.fromarray(scaled, mode="F").resize((IMAGE_WIDTH, IMAGE_HEIGHT), Image.BILINEAR)

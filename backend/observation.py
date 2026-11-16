@@ -15,6 +15,7 @@ from datetime import datetime
 
 import numpy as np
 
+from backend import processing
 from backend.timeutil import parse_utc
 
 
@@ -51,12 +52,10 @@ def _epoch(label: str) -> float:
 
 def join_blocks(paths: list[str]) -> Observation:
     """Load the FITS files in ``paths`` (chronological order) and stitch them in time."""
-    from backend import main as core
-
     entries = []
     for path in paths:
         try:
-            entries.append(core._load_raw_cached(path))
+            entries.append(processing.load_raw_cached(path))
         except Exception as exc:
             # Never return the local cache/NAS path in an error.
             raise ObservationError(
@@ -79,14 +78,12 @@ def join_blocks(paths: list[str]) -> Observation:
 
 
 def _stitch(entries: list, names: list[str]) -> Observation:
-    from backend import main as core
-
-    start = core._observation_start(entries[0][3])
+    start = processing.observation_start(entries[0][3])
     if len(entries) == 1:
         raw, freqs, time_arr, header = entries[0]
-        offsets = core._time_offsets_seconds(time_arr, header)
+        offsets = processing.time_offsets_seconds(time_arr, header)
         step = float(np.median(np.diff(offsets))) if offsets.size > 1 else 0.0
-        return Observation(raw, freqs, core._times_to_utc(time_arr, header), offsets, start,
+        return Observation(raw, freqs, processing.times_to_utc(time_arr, header), offsets, start,
                            [header], names, [offsets.size], 0, step * offsets.size)
 
     matrices, labels, offsets_parts, headers, block_samples = [], [], [], [], []
@@ -102,13 +99,13 @@ def _stitch(entries: list, names: list[str]) -> Observation:
                 f"Incompatible frequency axis in {name}. The receiver configuration changed; "
                 "choose another starting block or use Spectral overview to view separate groups."
             )
-        block_labels = core._times_to_utc(time_arr, header)
+        block_labels = processing.times_to_utc(time_arr, header)
         instants = np.array([_epoch(label) for label in block_labels])
         if raw.shape != (len(freqs), len(instants)) or len(instants) < 2 or not np.all(np.diff(instants) > 0):
             raise ObservationError(f"Invalid or non-increasing time axis in {name}; cannot build a continuous observation.")
         cadence = float(np.median(np.diff(instants)))
         # Offsets stay relative to the first block's start, not to each block's own.
-        block_offsets = core._time_offsets_seconds(time_arr, header) + (core._observation_start(header) - start).total_seconds()
+        block_offsets = processing.time_offsets_seconds(time_arr, header) + (processing.observation_start(header) - start).total_seconds()
         if previous_end is not None:
             # Recorder boundaries can jitter by a second or two. Do not shift
             # measured UTC times, bridge missing blocks, or keep duplicate time.

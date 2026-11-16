@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend import main as core
-from backend import worker
+from backend import processing, worker
 from backend.db import SessionLocal, TaskRecord
 from backend.security import fits_focus_code
 from backend.worker import recover_stale_tasks
@@ -280,7 +280,7 @@ def combine(monkeypatch, tmp_path):
                 {"DATE-OBS": "2026/09/03", "TIME-OBS": start.strftime("%H:%M:%S.%f"), "CDELT1": 0.25},
             )
         monkeypatch.setattr(core, "_download_from_ethz", lambda _station, _date, filename: None if missing else filename)
-        monkeypatch.setattr(core, "_load_raw_cached", lambda filename: datasets[filename])
+        monkeypatch.setattr(processing, "load_raw_cached", lambda filename: datasets[filename])
         task = TaskRecord(id=str(uuid.uuid4()), payload={
             "station": "MEXICO-LANCE", "date": "2026-09-03", "options": {"filenames": files},
         })

@@ -3,15 +3,6 @@ import { FILE_RE } from './fileBlocks';
 const STATION_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/;
 const FITS_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*_\d{8}_\d{6}(?:_[A-Za-z0-9-]+)?\.fits?(?:\.gz)?$/i;
 
-function parameter(params, canonical, legacy) {
-  const current = params.get(canonical);
-  const old = params.get(legacy);
-  if (current && old && current !== old) {
-    throw new Error(`Conflicting ${canonical} parameters in the link.`);
-  }
-  return current ?? old;
-}
-
 function validIsoDate(value) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const parsed = new Date(`${value}T00:00:00Z`);
@@ -29,18 +20,10 @@ export function observationDateRange(value, period = 'day') {
 
 export function parseObservationSearch(search) {
   const params = new URLSearchParams(search);
-  let station;
-  let date;
-  let filename;
-  let joinedFilename;
-  try {
-    station = parameter(params, 'station', 'estacion');
-    date = parameter(params, 'date', 'fecha');
-    filename = parameter(params, 'filename', 'archivo');
-    joinedFilename = params.get('joined');
-  } catch (cause) {
-    return { observation: null, error: cause.message };
-  }
+  const station = params.get('station');
+  const date = params.get('date');
+  const filename = params.get('filename');
+  const joinedFilename = params.get('joined');
   if (!station && !date && !filename) return { observation: null, error: null };
   if (!station || !date || !filename) {
     return { observation: null, error: 'The observation link must include station, date and filename.' };

@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 from sqlalchemy import select, update
 
+from backend import processing
 from backend.db import TaskRecord, init_db, session_scope
 from backend.observation import ObservationError, join_blocks
 from backend.security import fits_focus_code, validate_combine_filenames
@@ -204,8 +205,8 @@ def _spectral_overview(task: TaskRecord) -> dict:
             path = core._download_from_ethz(station, date, filename)
             if not path:
                 raise ValueError("FITS file could not be downloaded")
-            raw, frequencies, time_values, header = core._load_raw_cached(path)
-            labels = core._times_to_utc(time_values, header)
+            raw, frequencies, time_values, header = processing.load_raw_cached(path)
+            labels = processing.times_to_utc(time_values, header)
             instants = [parse_utc(label) for label in labels]
             selected_indices = [
                 item for item, instant in enumerate(instants)
@@ -252,7 +253,7 @@ def _spectral_overview(task: TaskRecord) -> dict:
             combined = np.concatenate([segment["raw"] for segment in segments], axis=1)
             baseline = np.nanmedian(combined, axis=1, keepdims=True)
             processed_group = np.nan_to_num(combined - baseline)
-            vmin, vmax = core._percentile_clip_global(processed_group)
+            vmin, vmax = processing.percentile_clip(processed_group)
             output_segments = []
             for segment in segments:
                 processed = np.nan_to_num(segment["raw"] - baseline)
@@ -326,8 +327,8 @@ def _combine_time(task: TaskRecord) -> dict:
     except ObservationError as exc:
         raise TaskFailure(str(exc)) from exc
     labels = observation.time_labels
-    processed = core._subtract_background(observation.data)
-    vmin, vmax = core._percentile_clip_global(processed)
+    processed = processing.subtract_background(observation.data)
+    vmin, vmax = processing.percentile_clip(processed)
     metadata = {
         "focus_code": fits_focus_code(filenames[0]),
         "start_at": labels[0], "end_at": labels[-1],

@@ -387,16 +387,12 @@ describe('observation links', () => {
     expect(parseObservationSearch(`?station=MRO&date=2026-08-25&filename=MRO_20260825_${time}.fit`).error)
       .toMatch(/invalid observation time/);
   });
-  it('parses canonical and legacy parameter names', () => {
+  it('parses observation parameters', () => {
     const canonical = parseObservationSearch(
       '?station=GLASGOW&date=2026-08-25&filename=GLASGOW_20260825_123001_01.fit.gz',
     );
-    const legacy = parseObservationSearch(
-      '?estacion=GLASGOW&fecha=2026-08-25&archivo=GLASGOW_20260825_123001_01.fit.gz',
-    );
 
     expect(canonical.error).toBeNull();
-    expect(legacy.observation).toEqual(canonical.observation);
     expect(canonical.observation).toMatchObject({
       station: 'GLASGOW',
       date: '2026-08-25',

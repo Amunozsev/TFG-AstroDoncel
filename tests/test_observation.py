@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import burst_types
+from backend import burst_types, processing
 from backend import main as core
 from backend.main import app
 from backend.observation import ObservationError, join_blocks
@@ -28,7 +28,7 @@ def blocks(monkeypatch):
             FIRST: block(t0, 1.0),
             SECOND: block(t0 + timedelta(seconds=900 + second_offset_s), 2.0),
         }
-        monkeypatch.setattr(core, "_load_raw_cached", lambda path: data[path])
+        monkeypatch.setattr(processing, "load_raw_cached", lambda path: data[path])
         monkeypatch.setattr(core, "_download_from_ethz", lambda _station, _date, filename=None: filename)
     return load
 

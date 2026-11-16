@@ -69,10 +69,10 @@ export function downloadManifest(manifest) {
 }
 
 /** Query parameters that reproduce the RFI cleaning a layer was computed with. */
-export function rfiQuery(rfi, flag = 'sahan_filter') {
-  if (!rfi) return { [flag]: 'false' };
+export function rfiQuery(rfi) {
+  if (!rfi) return { rfi: 'false' };
   return {
-    [flag]: 'true',
+    rfi: 'true',
     rfi_z_thresh: String(rfi.zThresh),
     rfi_occupancy: String(rfi.occupancy),
     rfi_min_component: String(rfi.minComponent),
