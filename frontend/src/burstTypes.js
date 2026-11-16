@@ -21,10 +21,9 @@ export function describeDetections(result) {
       detail: `No box reached the model confidence threshold (${result.threshold}).`,
     };
   }
-  const experimental = result.detections.some((d) => d.experimental);
   return {
     status: 'burst',
     label: `${count} burst${count === 1 ? '' : 's'} detected`,
-    detail: experimental ? 'Types IV and V are experimental: few training examples.' : '',
+    detail: '',
   };
 }

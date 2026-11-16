@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from './api';
 import { observationDateRange } from './observationUrl';
 
@@ -7,11 +7,14 @@ function csvCell(value) {
   return `"${text.replaceAll('"', '""')}"`;
 }
 
+// Filters and scroll survive leaving the tab while the page stays open.
+const memory = { date: null, period: 'day', type: '', station: '', scroll: 0 };
+
 export default function BurstCatalog({ onOpenEvent }) {
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [period, setPeriod] = useState('day');
-  const [type, setType] = useState('');
-  const [station, setStation] = useState('');
+  const [date, setDate] = useState(() => memory.date ?? new Date().toISOString().slice(0, 10));
+  const [period, setPeriod] = useState(memory.period);
+  const [type, setType] = useState(memory.type);
+  const [station, setStation] = useState(memory.station);
   const [events, setEvents] = useState([]);
   const [warnings, setWarnings] = useState([]);
   const [availableTypes, setAvailableTypes] = useState([]);
@@ -20,6 +23,15 @@ export default function BurstCatalog({ onOpenEvent }) {
   const [error, setError] = useState('');
   const [refreshKey, setRefreshKey] = useState(0);
   const refresh = () => setRefreshKey((value) => value + 1);
+  const mainRef = useRef(null);
+  const scrollRestored = useRef(false);
+
+  useEffect(() => { Object.assign(memory, { date, period, type, station }); }, [date, period, type, station]);
+  useEffect(() => {
+    if (loading || !events.length || scrollRestored.current) return;
+    scrollRestored.current = true;
+    mainRef.current.scrollTop = memory.scroll;
+  }, [loading, events]);
 
   const load = useCallback(async (signal) => {
     if (signal.aborted) return;
@@ -85,7 +97,7 @@ export default function BurstCatalog({ onOpenEvent }) {
   }
 
   return (
-    <main className="page-shell" id="main-content" tabIndex="-1">
+    <main className="page-shell" id="main-content" tabIndex="-1" ref={mainRef} onScroll={(event) => { memory.scroll = event.currentTarget.scrollTop; }}>
       <header className="page-header">
         <div>
           <p className="eyebrow">Scientific catalogue</p>

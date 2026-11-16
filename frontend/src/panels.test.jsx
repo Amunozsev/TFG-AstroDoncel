@@ -6,7 +6,6 @@ import { createElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import DailyOverview from './DailyOverview';
-import BurstCatalog from './BurstCatalog';
 import CombinedSpectrogram from './CombinedSpectrogram';
 import LightCurvePanel, { LightCurveResult } from './LightCurvePanel';
 import Statistics from './Statistics';
@@ -46,7 +45,11 @@ vi.mock('./plotly', () => ({
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.resetModules();
 });
+
+// Fresh module per test: Burst Reports remembers its filters at module level.
+const loadCatalog = async () => (await import('./BurstCatalog')).default;
 
 describe('analysis panels', () => {
   it('makes Xmatch the primary statistics view without losing the network summary', async () => {
@@ -180,6 +183,7 @@ describe('analysis panels', () => {
       ok: true,
       json: async () => ({ events: [report], warnings: [], source_label: report.source_label }),
     }));
+    const BurstCatalog = await loadCatalog();
     render(<BurstCatalog onOpenEvent={onOpenEvent} />);
     fireEvent.click(await screen.findByRole('button', { name: 'GERMANY-DLR' }));
     expect(onOpenEvent).toHaveBeenCalledWith(report, 'GERMANY-DLR');
@@ -193,6 +197,7 @@ describe('analysis panels', () => {
       json: async () => ({ events: [], warnings: [], source_label: 'deARCE (v3)' }),
     });
     vi.stubGlobal('fetch', fetchMock);
+    const BurstCatalog = await loadCatalog();
     render(<BurstCatalog onOpenEvent={vi.fn()} />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
 
@@ -212,6 +217,7 @@ describe('analysis panels', () => {
       json: async () => ({ events: [], warnings: [], source_label: 'deARCE (v3)' }),
     });
     vi.stubGlobal('fetch', fetchMock);
+    const BurstCatalog = await loadCatalog();
     render(<BurstCatalog onOpenEvent={vi.fn()} />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
 
@@ -229,6 +235,7 @@ describe('analysis panels', () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation((url) => new Promise((resolve) => {
       pending.push({ url: String(url), resolve });
     })));
+    const BurstCatalog = await loadCatalog();
     render(<BurstCatalog onOpenEvent={vi.fn()} />);
     await waitFor(() => expect(pending).toHaveLength(1));
 
@@ -260,13 +267,12 @@ describe('analysis panels', () => {
     expect(screen.queryByRole('button', { name: 'MRO' })).not.toBeInTheDocument();
   });
 
-  it('counts detections and warns about experimental burst types', () => {
+  it('counts detections', () => {
     const summary = describeDetections({
       available: true, threshold: 0.32,
       detections: [{ type: 'type3', experimental: false }, { type: 'type4', experimental: true }],
     });
     expect(summary.label).toBe('2 bursts detected');
-    expect(summary.detail).toMatch(/experimental/i);
     expect(describeDetections({ available: true, threshold: 0.32, detections: [] }).label).toBe('No bursts detected');
   });
 
@@ -505,6 +511,7 @@ describe('request cancellation and empty dates', () => {
 
   it('keeps catalogue and statistics usable when their dates are cleared', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ events: [], ranking: [], points: [], rows: [] }) }));
+    const BurstCatalog = await loadCatalog();
     render(<BurstCatalog onOpenEvent={vi.fn()} />);
     await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
     fireEvent.change(screen.getByLabelText('Date'), { target: { value: '' } });
