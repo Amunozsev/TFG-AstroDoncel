@@ -1116,7 +1116,6 @@ export default function App() {
             <section className="tool-section" aria-labelledby="overview-tools-title">
               <div className="tool-section-heading">
                 <div><span className="section-kicker">Selected stations</span><h3 id="overview-tools-title">Spectral overview</h3></div>
-                <p>Build a reduced UTC view without blocking the portal.</p>
               </div>
               <fieldset className="overview-task-controls">
                 <legend className="sr-only">Spectral overview interval in UTC</legend>
@@ -1131,7 +1130,6 @@ export default function App() {
                   Create overview ({selectedStations.length})
                 </button>
               </fieldset>
-              <p className="tool-help">Uses only the stations selected in the observation sidebar. Large intervals may take several minutes.</p>
               {taskStatus && (
                 <div className={`task-progress-card ${taskStatus.status}`} role="status">
                   <span>Job · {taskStatus.status}</span>
