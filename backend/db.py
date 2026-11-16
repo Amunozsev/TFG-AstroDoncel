@@ -45,22 +45,9 @@ class Station(Base):
     name: Mapped[str] = mapped_column(String(80), primary_key=True)
     lat: Mapped[float | None] = mapped_column(Float)
     lon: Mapped[float | None] = mapped_column(Float)
-    coord_source: Mapped[str | None] = mapped_column(String(20))
     first_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-
-
-class FitsFile(Base):
-    __tablename__ = "fits_files"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    filename: Mapped[str] = mapped_column(String(180), unique=True, index=True)
-    station: Mapped[str] = mapped_column(String(80), index=True)
-    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    focus_code: Mapped[str | None] = mapped_column(String(20), index=True)
-    path: Mapped[str | None] = mapped_column(Text)
-    origin: Mapped[str] = mapped_column(String(20), default="ethz")
-    fits_header: Mapped[dict | None] = mapped_column(JSON_TYPE)
 
 
 class BurstEvent(Base):
@@ -77,7 +64,6 @@ class BurstEvent(Base):
     mid_lon: Mapped[float | None] = mapped_column(Float)
     max_lon: Mapped[float | None] = mapped_column(Float)
     stations: Mapped[list] = mapped_column(JSON_TYPE, default=list)
-    score: Mapped[float | None] = mapped_column(Float)
     metadata_json: Mapped[dict] = mapped_column(JSON_TYPE, default=dict)
 
 

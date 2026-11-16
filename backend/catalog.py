@@ -47,17 +47,6 @@ CATALOG_SOURCES = {
             for base in ASTRODONCEL_REPORT_BASES
         ] + [f"{LEGACY_BURSTLIST_BASE}/{{year}}/e-CALLISTO_{{year}}_{{month:02d}}.txt"],
     },
-    "ecallisto_v2": {
-        "label": "Official e-CALLISTO (v2)",
-        "urls": [
-            f"{base}/{{year}}/Ne-CALLISTO_{{year}}_{{month:02d}}.link"
-            for base in ASTRODONCEL_REPORT_BASES
-        ],
-    },
-    "legacy_monthly": {
-        "label": "e-CALLISTO monthly report",
-        "urls": [f"{LEGACY_BURSTLIST_BASE}/{{year}}/e-CALLISTO_{{year}}_{{month:02d}}.txt"],
-    },
 }
 DEFAULT_CATALOG_SOURCE = os.environ.get("BURST_CATALOG_SOURCE", "").strip() or (
     catalog_mysql.SOURCE_ID if catalog_mysql.is_configured() else "dearce_v3"
@@ -163,7 +152,7 @@ def parse_burst_list(text: str, source: str = DEFAULT_CATALOG_SOURCE) -> list[di
             "source": source, "event_key": key, "started_at": started, "ended_at": ended,
             "burst_type": burst_type, "intensity": intensity, "stations": stations,
             "min_lon": min_lon, "mid_lon": mid_lon, "max_lon": max_lon,
-            "score": None, "metadata_json": {
+            "metadata_json": {
                 "raw_type": type_raw.strip(),
                 "source_label": source_label(source),
             },
@@ -244,7 +233,6 @@ def parse_uah_database_rows(
             "min_lon": _optional_float(row.get("min_lon")),
             "mid_lon": _optional_float(row.get("mid_lon")),
             "max_lon": _optional_float(row.get("max_lon")),
-            "score": None,
             "metadata_json": metadata,
         })
     return events
@@ -438,7 +426,7 @@ def list_events(
             "ended_at": as_utc(row.ended_at).isoformat(),
             "burst_type": row.burst_type, "intensity": row.intensity,
             "min_lon": row.min_lon, "mid_lon": row.mid_lon, "max_lon": row.max_lon,
-            "stations": row.stations, "score": row.score, "metadata": row.metadata_json,
+            "stations": row.stations, "metadata": row.metadata_json,
         } for row in rows]
 
 

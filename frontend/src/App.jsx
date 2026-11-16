@@ -62,15 +62,8 @@ function describeStationSource(source, retentionDays) {
   if (source.includes('ethz')) {
     return {
       label: 'live + recent',
-      title: `Live ETHZ inventory plus stations seen in the last ${retentionDays} days`,
+      title: `Live ETHZ inventory, stations seen in the last ${retentionDays} days and stations with data on the selected date`,
       live: true,
-    };
-  }
-  if (source === 'bootstrap') {
-    return {
-      label: 'bootstrap',
-      title: 'Local bootstrap list; the live archive is unavailable',
-      live: false,
     };
   }
   return {
@@ -295,12 +288,12 @@ export default function App() {
     let disposed = false;
     async function loadStations() {
       try {
-        const res = await apiFetch('/api/stations');
+        const res = await apiFetch(`/api/stations?date=${date}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        if (!disposed && data.stations?.length > 0) {
-          const nextStations = data.stations;
-          setStations(nextStations);
+        if (!data.stations?.length) throw new Error('empty station inventory');
+        if (!disposed) {
+          setStations(data.stations);
           setStationsSource(data.source);
           setStationRetentionDays(data.retention_days ?? 90);
           setStationDetails(Object.fromEntries(
@@ -320,7 +313,7 @@ export default function App() {
       disposed = true;
       window.clearInterval(refreshId);
     };
-  }, []);
+  }, [date]);
 
   // ── Reload burst list when primary station or date changes ────────────────
   const loadFiles = useCallback(async (st, dt, signal) => {

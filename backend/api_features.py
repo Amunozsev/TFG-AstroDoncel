@@ -120,10 +120,6 @@ def get_bursts(
         "available_types": sorted({
             event["burst_type"] for event in unfiltered_events if event.get("burst_type")
         }),
-        "available_sources": [
-            {"id": key, "label": value["label"]}
-            for key, value in CATALOG_SOURCES.items()
-        ],
         "warnings": warnings,
     }
 

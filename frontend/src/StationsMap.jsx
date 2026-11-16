@@ -212,16 +212,12 @@ export default function StationsMap({ onOpenStation, theme = 'dark' }) {
       name,
       lon: stations.map((s) => s.lon),
       lat: stations.map((s) => s.lat),
-      customdata: stations.map((s) => [
-        s.station,
-        s.burst_count,
-        s.coord_source === 'fits' ? '' : '<br><i>≈ approx. location</i>',
-      ]),
+      customdata: stations.map((s) => [s.station, s.burst_count]),
       hovertemplate:
         '<b>%{customdata[0]}</b><br>' +
         `${name}<br>` +
         '%{customdata[1]} bursts this month<br>' +
-        '%{lat:.2f}°, %{lon:.2f}°%{customdata[2]}<br>' +
+        '%{lat:.2f}°, %{lon:.2f}°<br>' +
         '<span style="font-size:11px">click to open spectrograms</span>' +
         '<extra></extra>',
       marker: {
@@ -443,7 +439,7 @@ export default function StationsMap({ onOpenStation, theme = 'dark' }) {
             <span className="dot dot-red" /> {total - opCount} offline
           </span>
           <span className="map-stat" title="Coordinates read from the stations' own FITS headers">
-            {total} mapped{typeof data.fits_coord_count === 'number' ? ` (${data.fits_coord_count} from data)` : ''}
+            {total} mapped
           </span>
           {data.unmapped?.length > 0 && (
             <span className="map-stat map-stat-warn" title={data.unmapped.join(', ')}>
