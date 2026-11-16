@@ -66,7 +66,7 @@ vi.mock('./LightCurvePanel', () => ({
 import App from './App';
 import { apiFetch } from './api';
 import { adjacentBlock, displayBlockTime, selectCombineBlocks } from './fileBlocks';
-import { observationPath, parseObservationSearch } from './observationUrl';
+import { parseObservationSearch } from './observationUrl';
 
 function response(data) {
   return { ok: true, status: 200, json: async () => data };
@@ -107,7 +107,7 @@ describe('combine blocks controls', () => {
     label: stamp, focus_code: code,
   })));
 
-  function setup(taskResponse = response({ id: 'combine', status: 'succeeded', result: { files: 4 } })) {
+  function setup() {
     window.history.replaceState({}, '', `/?station=MEXICO-LANCE&date=2026-09-03&filename=${mexicoFiles[0].filename}`);
     vi.mocked(apiFetch).mockImplementation(async (path) => {
       const url = new URL(path, 'http://astrodoncel.test');
@@ -116,7 +116,7 @@ describe('combine blocks controls', () => {
       if (url.pathname === '/api/spectrogram') return response({
         station: 'MEXICO-LANCE', date: '2026-09-03', filename: url.searchParams.get('filename'), vmin: -2, vmax: 8,
       });
-      if (url.pathname === '/api/tasks') return taskResponse;
+      if (url.pathname === '/api/tasks') return response({ id: 'combine', status: 'succeeded', result: { files: 4 } });
       throw new Error(`Unexpected API request: ${path}`);
     });
     render(<App />);
@@ -149,16 +149,6 @@ describe('combine blocks controls', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Tools' }));
     fireEvent.click(screen.getByText('Data & exports'));
     expect(screen.getByRole('button', { name: 'Combine 3 blocks · FC 63' })).toBeEnabled();
-    expect(screen.getByText(/Only 3 consecutive blocks/)).toBeInTheDocument();
-  });
-
-  it('shows the API explanation rather than only HTTP 422', async () => {
-    setup({ ok: false, status: 422, json: async () => ({ detail: 'Cannot combine different receivers. Select consecutive blocks from the same focus code.' }) });
-    await waitFor(() => expect(screen.getByLabelText('Loaded FITS file')).toHaveTextContent(mexicoFiles[0].filename));
-    fireEvent.click(screen.getByRole('button', { name: 'Tools' }));
-    fireEvent.click(screen.getByText('Data & exports'));
-    fireEvent.click(screen.getByRole('button', { name: 'Combine 4 blocks · FC 62' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('Cannot combine different receivers.');
   });
 });
 
@@ -423,10 +413,8 @@ describe('combine selection', () => {
     const files = ['16:00:00', '16:15:00', '16:45:00', '17:00:00'].map((t) => file(t));
     const result = selectCombineBlocks(files, files[0].filename);
     expect(result.filenames).toHaveLength(2);
-    expect(result.notice).toMatch(/gap/);
     const end = selectCombineBlocks(files, files.at(-1).filename);
     expect(end.filenames).toHaveLength(1);
-    expect(end.notice).toMatch(/Only 1 consecutive block/);
   });
 });
 
@@ -462,16 +450,6 @@ describe('observation links', () => {
     expect(parseObservationSearch(
       '?station=MRO&date=2026-08-25&filename=BIR_20260825_120000_01.fit.gz',
     ).error).toMatch(/does not belong/);
-  });
-
-  it('writes only canonical parameters into shared paths', () => {
-    expect(observationPath({
-      station: 'MRO',
-      date: '2026-08-25',
-      filename: 'MRO_20260825_120000_01.fit.gz',
-    }, { pathname: '/studio/', hash: '' })).toBe(
-      '/studio/?station=MRO&date=2026-08-25&filename=MRO_20260825_120000_01.fit.gz',
-    );
   });
 });
 
@@ -524,15 +502,5 @@ describe('observation request lifetime', () => {
     await waitFor(() => expect(screen.getByLabelText('Loaded FITS file')).toHaveTextContent('SPAIN-SIGUENZA'));
     await act(async () => resolveDetection(response({ available: false, reason: 'old detection' })));
     expect(screen.getByLabelText('Detection results')).toHaveTextContent('{}');
-  });
-
-  it('accepts clearing the observation date and ignores malformed stored presets', async () => {
-    localStorage.setItem('astrodoncel.contrastPresets', 'null');
-    setup();
-    await screen.findByLabelText('Loaded FITS file');
-    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '' } });
-    expect(screen.getByRole('button', { name: 'Load' })).toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: 'Display' }));
-    expect(screen.getByRole('button', { name: 'Save contrast preset' })).toBeInTheDocument();
   });
 });

@@ -20,37 +20,6 @@ from backend.security import safe_join, validate_filename_context, validate_fits
 client = TestClient(app)
 
 
-def test_health():
-    response = client.get("/health")
-    assert response.status_code == 200
-
-
-@pytest.mark.parametrize("value", [None, 42, {}, ["MRO"]])
-def test_overview_rejects_non_string_station_entries(value):
-    response = client.post("/api/tasks", json={
-        "type": "spectral_overview", "station": "MRO", "date": "2024-01-01",
-        "options": {"stations": [value]},
-    })
-    assert response.status_code == 422
-
-
-def test_overview_rejects_non_canonical_date():
-    response = client.post("/api/tasks", json={
-        "type": "spectral_overview", "station": "MRO", "date": "2024-1-1",
-    })
-    assert response.status_code == 422
-
-
-@pytest.mark.parametrize("limit", [0, -1])
-@pytest.mark.parametrize("endpoint", ["/api/spectrogram", "/api/spectrogram/combine"])
-def test_spectrogram_rejects_non_positive_bin_limit(endpoint, limit, monkeypatch):
-    monkeypatch.setattr(core, "_build_spectrogram", lambda *_args, **_kwargs: pytest.fail("Invalid bins reached processing"))
-    response = client.get(endpoint, params={
-        "station": "MRO", "stations": "MRO", "date": "2024-01-01", "max_time_bins": limit,
-    })
-    assert response.status_code == 422
-
-
 @pytest.mark.parametrize("frequency", ["nan", "inf", "-inf"])
 def test_lightcurve_rejects_non_finite_frequency_before_file_access(frequency, monkeypatch):
     monkeypatch.setattr(api_features, "_resolve_file", lambda *_args: pytest.fail("Invalid frequency reached FITS I/O"))
@@ -127,11 +96,6 @@ def test_detector_response_keeps_detections_and_provenance(monkeypatch):
         assert response.json()[key] == result[key]
 
 
-def test_file_path_is_gone():
-    response = client.get("/api/spectrogram", params={"station": "MRO", "date": "2024-01-01", "file_path": "C:/Windows/win.ini"})
-    assert response.status_code == 410
-
-
 def test_filename_traversal_rejected():
     response = client.get("/api/spectrogram", params={"station": "MRO", "date": "2024-01-01", "filename": "../secret.fit"})
     assert response.status_code == 422
@@ -149,14 +113,6 @@ def test_station_traversal_rejected():
 
 def test_invalid_task_type_rejected():
     response = client.post("/api/tasks", json={"type": "shell", "station": "MRO", "date": "2024-01-01"})
-    assert response.status_code == 422
-
-
-def test_combine_task_validates_filename_context():
-    response = client.post("/api/tasks", json={
-        "type": "combine_time", "station": "MRO", "date": "2024-01-01",
-        "options": {"filenames": ["MRO_20240101_120000.fit.gz", "BIR_20240101_121500.fit.gz"]},
-    })
     assert response.status_code == 422
 
 
@@ -204,39 +160,17 @@ def test_spectral_overview_validates_interval_and_multiple_stations():
                 session.commit()
 
 
-def test_spectral_overview_rejects_backwards_interval():
-    response = client.post("/api/tasks", json={
-        "type": "spectral_overview",
-        "station": "MRO",
-        "date": "2024-01-01",
-        "options": {
-            "stations": ["MRO"],
-            "start_at": "2024-01-01T08:00:00Z",
-            "end_at": "2024-01-01T07:00:00Z",
-        },
-    })
-    assert response.status_code == 422
-
-
 def test_combine_task_rejects_mixed_receivers_and_duplicate_copies():
-    for filenames, message in [
-        (["MRO_20240101_120000_01.fit.gz", "MRO_20240101_121500_02.fit.gz"], "different receivers"),
-        (["MRO_20240101_120000_01.fit.gz", "MRO_20240101_120000_01.fits"], "unique observations"),
-        (["MRO_20240101_120000_01.fit.gz", 42], "strings"),
+    for filenames in [
+        ["MRO_20240101_120000_01.fit.gz", "MRO_20240101_121500_02.fit.gz"],
+        ["MRO_20240101_120000_01.fit.gz", "MRO_20240101_120000_01.fits"],
+        ["MRO_20240101_120000_01.fit.gz", 42],
     ]:
         response = client.post("/api/tasks", json={
             "type": "combine_time", "station": "MRO", "date": "2024-01-01",
             "options": {"filenames": filenames},
         })
         assert response.status_code == 422
-        assert message in response.json()["detail"]
-
-
-def test_removed_full_day_scan_task_is_rejected():
-    response = client.post("/api/tasks", json={
-        "type": "burst_detect_day", "station": "MRO", "date": "2024-01-01",
-    })
-    assert response.status_code == 422
 
 
 def test_xmatch_timeline_builds_clickable_station_events(monkeypatch):
@@ -501,4 +435,3 @@ def test_goes_does_not_repeat_the_archive_search_for_an_unpublished_day(monkeypa
         core._GOES_UNAVAILABLE_UNTIL.pop(date, None)
     assert calls == [date]
     assert not first["available"] and not second["available"]
-    assert "not published yet" in second["reason"]

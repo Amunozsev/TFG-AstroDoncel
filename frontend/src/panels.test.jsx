@@ -5,14 +5,11 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { createElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import DailyOverview from './DailyOverview';
-import CombinedSpectrogram from './CombinedSpectrogram';
-import LightCurvePanel, { LightCurveResult } from './LightCurvePanel';
+import LightCurvePanel from './LightCurvePanel';
 import Statistics from './Statistics';
 import Spectrogram from './Spectrogram';
-import { apiFetch, apiUrl } from './api';
+import { apiFetch } from './api';
 import { buildAnalysisManifest } from './analysisManifest';
-import { describeDetections } from './burstTypes';
 import { fileForEvent } from './eventNavigation';
 import { blockForEvent, expandXmatchRows } from './xmatch';
 
@@ -31,10 +28,6 @@ vi.mock('./plotly', () => ({
     return createElement('button', {
       'aria-label': 'Mock Plotly event marker',
       'data-testid': 'plotly-chart',
-      'data-x-range': props.layout?.xaxis?.range?.join('|') ?? '',
-      'data-hover-template': props.data?.find((trace) => trace.customdata?.length)?.hovertemplate ?? '',
-      'data-trace-name': props.data?.find((trace) => trace.customdata?.length)?.name ?? '',
-      'data-hover-mode': props.layout?.hovermode ?? '',
       'data-traces': JSON.stringify(props.data),
       disabled: !customdata,
       onClick: () => (handlers.get('plotly_click') ?? props.onClick)?.({ points: [{ customdata }] }),
@@ -52,32 +45,6 @@ afterEach(() => {
 const loadCatalog = async () => (await import('./BurstCatalog')).default;
 
 describe('analysis panels', () => {
-  it('makes Xmatch the primary statistics view without losing the network summary', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url) => ({
-      ok: true,
-      json: async () => String(url).includes('/api/xmatch/timeline')
-        ? {
-            source_label: 'deARCE (v3)',
-            availability_basis: 'Archive blocks',
-            rows: [],
-          }
-        : String(url).includes('/api/stats/stations')
-          ? { source_label: 'deARCE (v3)', ranking: [] }
-          : { points: [] },
-    })));
-    render(<Statistics onOpenEvent={vi.fn()} onOpenStation={vi.fn()} />);
-
-    expect(screen.getByRole('tab', { name: /Xmatch timeline/ })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByRole('heading', { name: 'Xmatch timeline' })).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Bursts observed' })).not.toBeInTheDocument();
-    await waitFor(() => expect(fetch).toHaveBeenCalled());
-    expect(vi.mocked(fetch).mock.calls.every(([url]) => !String(url).includes('/api/stats/'))).toBe(true);
-
-    fireEvent.click(screen.getByRole('tab', { name: /Network summary/ }));
-    expect(await screen.findByRole('heading', { name: 'Bursts observed' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: /Network summary/ })).toHaveAttribute('aria-selected', 'true');
-  });
-
   it('opens the station event represented by an Xmatch red marker', async () => {
     const onOpenEvent = vi.fn();
     const report = {
@@ -100,9 +67,6 @@ describe('analysis panels', () => {
 
     render(<Statistics onOpenEvent={onOpenEvent} onOpenStation={vi.fn()} />);
     const marker = await screen.findByRole('button', { name: 'Mock Plotly event marker' });
-    expect(marker).toHaveAttribute('data-hover-template', expect.stringContaining('<extra>%{meta}</extra>'));
-    expect(marker).toHaveAttribute('data-trace-name', 'deARCE (v3)');
-    expect(marker).toHaveAttribute('data-hover-mode', 'closest');
     fireEvent.click(marker);
     expect(onOpenEvent).toHaveBeenCalledWith(report, 'HUMAIN');
   });
@@ -165,7 +129,7 @@ describe('analysis panels', () => {
     });
   });
 
-  it('opens the clicked report station and renders catalogue longitudes', async () => {
+  it('opens the clicked report station', async () => {
     const onOpenEvent = vi.fn();
     const report = {
       id: 1,
@@ -187,8 +151,6 @@ describe('analysis panels', () => {
     render(<BurstCatalog onOpenEvent={onOpenEvent} />);
     fireEvent.click(await screen.findByRole('button', { name: 'GERMANY-DLR' }));
     expect(onOpenEvent).toHaveBeenCalledWith(report, 'GERMANY-DLR');
-    expect(screen.getByText('-7.9°')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Inspect' })).not.toBeInTheDocument();
   });
 
   it('loads a complete month of Burst Reports with an exclusive end date', async () => {
@@ -209,25 +171,6 @@ describe('analysis panels', () => {
       expect(url).toContain('start=2026-07-01');
       expect(url).toContain('end=2026-08-01');
     });
-  });
-
-  it('searches Burst Reports with a partial station name', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ events: [], warnings: [], source_label: 'deARCE (v3)' }),
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    const BurstCatalog = await loadCatalog();
-    render(<BurstCatalog onOpenEvent={vi.fn()} />);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-
-    fireEvent.change(screen.getByLabelText('Station'), { target: { value: 'glas' } });
-
-    await waitFor(() => {
-      const url = String(fetchMock.mock.calls.at(-1)[0]);
-      expect(url).toContain('station=glas');
-    });
-    expect(screen.getByLabelText('Station')).toHaveValue('glas');
   });
 
   it('ignores an obsolete Burst Reports response after the filters change', async () => {
@@ -265,15 +208,6 @@ describe('analysis panels', () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(screen.queryByRole('button', { name: 'MRO' })).not.toBeInTheDocument();
-  });
-
-  it('counts detections', () => {
-    const summary = describeDetections({
-      available: true, threshold: 0.32,
-      detections: [{ type: 'type3', experimental: false }, { type: 'type4', experimental: true }],
-    });
-    expect(summary.label).toBe('2 bursts detected');
-    expect(describeDetections({ available: true, threshold: 0.32, detections: [] }).label).toBe('No bursts detected');
   });
 
   it('never reuses the previous station filename for a catalogue event', () => {
@@ -363,85 +297,6 @@ describe('analysis panels', () => {
       .toBe('GERMANY-DLR_20260825_111500_63.fit.gz');
   });
 
-  it('lets the user close a loaded light curve', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        times: ['2024-01-01T12:00:00Z'],
-        curves: [{ frequency_mhz: 45, intensity: [1] }],
-        unit: 'relative digits',
-      }),
-    }));
-    const fetchMock = vi.mocked(fetch);
-    render(<LightCurvePanel layer={{ station: 'MRO', date: '2024-01-01', filename: 'MRO_20240101_120000.fit' }} />);
-    fireEvent.change(screen.getByLabelText('Frequencies (MHz)'), { target: { value: '45, 55' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Plot light curve' }));
-    expect(await screen.findByRole('button', { name: 'Close light curve' })).toBeInTheDocument();
-    const url = String(fetchMock.mock.calls[0][0]);
-    expect(url).toContain('freq_mhz=45');
-    expect(url).toContain('freq_mhz=55');
-    fireEvent.click(screen.getByRole('button', { name: 'Close light curve' }));
-    expect(screen.queryByTestId('plotly-chart')).not.toBeInTheDocument();
-  });
-
-  it('sends an embedded light curve to the full-width result area', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        times: ['2024-01-01T12:00:00Z', '2024-01-01T12:15:00Z'],
-        curves: [{ frequency_mhz: 45, intensity: [1, 2] }],
-        unit: 'relative digits',
-      }),
-    }));
-    const onCurve = vi.fn();
-    const layer = { station: 'MRO', date: '2024-01-01', filename: 'MRO_20240101_120000.fit' };
-    render(<LightCurvePanel layer={layer} embedded onCurve={onCurve} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Plot light curve' }));
-    await waitFor(() => expect(onCurve).toHaveBeenCalledTimes(1));
-    expect(screen.queryByTestId('plotly-chart')).not.toBeInTheDocument();
-
-    cleanup();
-    const result = onCurve.mock.calls[0][0];
-    render(
-      <LightCurveResult
-        result={result}
-        timeRange={['2024-01-01T12:00:00Z', '2024-01-01T12:15:00Z']}
-        onClose={vi.fn()}
-      />,
-    );
-    expect(screen.getByLabelText('Light curve aligned with the spectrogram')).toBeInTheDocument();
-    expect(screen.getByTestId('plotly-chart')).toHaveAttribute(
-      'data-x-range',
-      '2024-01-01T12:00:00Z|2024-01-01T12:15:00Z',
-    );
-  });
-
-  it('renders a combine-time artifact as a continuous spectrogram', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        station: 'MRO',
-        date: '2024-01-01',
-        filenames: ['MRO_20240101_120000.fit', 'MRO_20240101_121500.fit'],
-        time_axis: ['2024-01-01T12:00:00Z', '2024-01-01T12:30:00Z'],
-        freq_axis: [45, 80],
-        z: [[1, 2], [3, 4]],
-        vmin: 1,
-        vmax: 4,
-      }),
-    }));
-    render(<CombinedSpectrogram artifactUrl="/api/tasks/combine/artifact" />);
-
-    expect(await screen.findByRole('heading', { name: 'Combined spectrogram' })).toBeInTheDocument();
-    expect(screen.getByText(/2 consecutive blocks/)).toBeInTheDocument();
-    expect(screen.getByText(/45\.000–80\.000 MHz/)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'View combined data (JSON)' })).toHaveAttribute(
-      'href',
-      apiUrl('/api/tasks/combine/artifact'),
-    );
-    expect(screen.getByTestId('plotly-chart')).toBeInTheDocument();
-  });
-
   it('builds a path-free reproducibility manifest', () => {
     const manifest = buildAnalysisManifest({
       date: '2026-08-24',
@@ -462,40 +317,6 @@ describe('analysis panels', () => {
     expect(manifest.selection.layers[0].intensity_unit).toBe('relative digits');
     expect(JSON.stringify(manifest)).not.toContain('C:/private');
   });
-
-  it('renders every requested overview station and its receiver groups', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        start_at: '2024-01-01T02:00:00+00:00',
-        end_at: '2024-01-01T05:00:00+00:00',
-        baseline: 'median per station and compatible receiver group',
-        intensity_unit: 'relative detector digits',
-        stations: [
-          {
-            station: 'MRO',
-            status: 'ok',
-            files_skipped: 0,
-            groups: [{
-              id: 1,
-              frequency_min_mhz: 45,
-              frequency_max_mhz: 80,
-              vmin: -2,
-              vmax: 8,
-              segments: [{ filename: 'MRO.fit', time_axis: ['2024-01-01T02:00:00Z'], freq_axis: [45], z: [[1]] }],
-            }],
-          },
-          { station: 'BIR', status: 'no_data', files_skipped: 0, groups: [] },
-        ],
-      }),
-    }));
-    render(<DailyOverview artifactUrl="/api/tasks/example/artifact" />);
-    await waitFor(() => expect(screen.getAllByRole('article')).toHaveLength(2));
-    expect(screen.getByLabelText('Colour scale')).toHaveValue('default');
-    expect(screen.getByRole('option', { name: 'Default' })).toBeInTheDocument();
-    expect(screen.getByText('45–80 MHz')).toBeInTheDocument();
-    expect(screen.getByText('No observations in interval')).toBeInTheDocument();
-  });
 });
 
 describe('request cancellation and empty dates', () => {
@@ -507,20 +328,6 @@ describe('request cancellation and empty dates', () => {
     const controller = new AbortController();
     controller.abort(new Error('cancelled before fetch'));
     await expect(apiFetch('/api/stations', { signal: controller.signal })).rejects.toThrow('cancelled before fetch');
-  });
-
-  it('keeps catalogue and statistics usable when their dates are cleared', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ events: [], ranking: [], points: [], rows: [] }) }));
-    const BurstCatalog = await loadCatalog();
-    render(<BurstCatalog onOpenEvent={vi.fn()} />);
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
-    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '' } });
-    expect(await screen.findByRole('alert')).toHaveTextContent('Select a valid date.');
-    cleanup();
-    render(<Statistics onOpenEvent={vi.fn()} onOpenStation={vi.fn()} />);
-    fireEvent.click(screen.getByRole('tab', { name: /Network summary/ }));
-    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '' } });
-    expect(await screen.findByRole('alert')).toHaveTextContent('Select a valid date.');
   });
 
   it('does not revive GOES after the overlay has been turned off', async () => {

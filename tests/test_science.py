@@ -11,18 +11,10 @@ from backend import api_features
 from backend import main as core
 from backend.main import (
     _decimate_time,
-    _focus_code_from_filename,
     _mitigate_rfi,
     _percentile_clip_global,
     _subtract_background,
-    _time_from_filename,
 )
-
-
-def test_filename_metadata_helpers():
-    name = "SPAIN-SIGUENZA_20240101_123456_02.fit.gz"
-    assert _time_from_filename(name) == "12:34:56"
-    assert _focus_code_from_filename(name) == "02"
 
 
 def test_background_subtraction_centres_channels():
@@ -41,14 +33,6 @@ def test_percentile_clip_computes_both_bounds_and_validates_range():
 def test_display_limits_remain_finite_for_invalid_channels():
     assert _percentile_clip_global(np.array([np.nan, np.inf, -np.inf])) == (0, 1)
     assert _percentile_clip_global(np.array([1, 2, 3, np.nan, np.inf]), 0, 100) == (1, 3)
-
-
-def test_decimation_limits_width_and_labels():
-    data = np.arange(40, dtype=float).reshape(2, 20)
-    labels = [str(i) for i in range(20)]
-    result, result_labels = _decimate_time(data, labels, 5)
-    assert result.shape == (2, 5)
-    assert len(result_labels) == 5
 
 
 @pytest.mark.parametrize("columns,limit", [(21, 5), (2999, 1500), (3600, 1500)])

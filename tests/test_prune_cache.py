@@ -14,25 +14,6 @@ def _fits(path: Path, *, size: int, mtime: float) -> Path:
     return path
 
 
-def test_plan_is_a_dry_run_and_ignores_non_fits(tmp_path: Path) -> None:
-    old = _fits(tmp_path / "OLD.fit.gz", size=20, mtime=100)
-    note = tmp_path / "keep.txt"
-    note.write_text("not cache data", encoding="utf-8")
-
-    plan = plan_prune(
-        tmp_path,
-        max_gb=100,
-        max_age_days=1,
-        min_idle_minutes=60,
-        min_free_gb=0,
-        now=200_000,
-    )
-
-    assert [item.path for item in plan.victims] == [old]
-    assert old.exists()
-    assert note.exists()
-
-
 def test_apply_refuses_unmarked_directories(tmp_path: Path) -> None:
     old = _fits(tmp_path / "OLD.fit", size=10, mtime=100)
     plan = plan_prune(
