@@ -65,12 +65,12 @@ jobs:
         env:
           AUDIT_REPORT: ${{ runner.temp }}/npm-audit.json
         run: |
-          # Fail on real advisories, but never on an unreachable advisory
-          # endpoint: a red run here blocks the Railway deploy of the public
-          # demo for a reason that has nothing to do with the commit.
+          # Fail on real advisories in the code users download (dev tools only
+          # run here with our own files), but never on an unreachable advisory
+          # endpoint: a red run here blocks the Railway deploy of the public demo.
           for attempt in 1 2 3; do
             status=0
-            npm audit --audit-level=high --json --fetch-retries=0 --fetch-timeout=60000 > "$AUDIT_REPORT" || status=$?
+            npm audit --omit=dev --audit-level=high --json --fetch-retries=0 --fetch-timeout=60000 > "$AUDIT_REPORT" || status=$?
             if node -e "const r=require(process.env.AUDIT_REPORT); if (!r.metadata) process.exit(1); console.log('advisories:', JSON.stringify(r.metadata.vulnerabilities));"; then
               exit $status
             fi
