@@ -1381,12 +1381,9 @@ export default function App() {
             )}
             {files.length > 0 && (
               <>
-                <p className="files-hint">Use the <kbd>←</kbd> <kbd>→</kbd> keys to step through files.</p>
+                <p className="files-hint files-hint-keys">Use the <kbd>←</kbd> <kbd>→</kbd> keys to step through files.</p>
                 {files.some((file) => file.label.startsWith('★')) && (
                   <p className="files-hint"><i className="burst-chip-cached" aria-hidden="true" /> File already stored locally (loads faster).</p>
-                )}
-                {files.some((file) => !file.time.endsWith(':00')) && (
-                  <p className="files-hint">Times are shown as HH:MM. Hover a time for the exact archive start; plots keep the FITS timestamps.</p>
                 )}
               </>
             )}

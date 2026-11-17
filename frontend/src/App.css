@@ -449,6 +449,8 @@ button:disabled { cursor: not-allowed; }
 
 .files-hint { margin: 0; color: var(--text-subtle); font-size: 0.72rem; font-style: italic; }
 .files-hint kbd { font-family: var(--mono); font-size: 0.68rem; font-style: normal; }
+.files-hint-keys { font-size: 0.8rem; }
+.files-hint-keys kbd { font-size: 0.76rem; }
 .files-loading-dot {
   display: inline-block;
   width: 6px;

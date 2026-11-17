@@ -407,7 +407,10 @@ def _archive_inventory_for_date(date: str) -> dict[str, list[str]]:
     except ValueError:
         return {}
     now = datetime.now(timezone.utc).timestamp()
-    ttl = float(os.environ.get("ARCHIVE_INDEX_REFRESH_MINUTES", "60")) * 60.0
+    if date == datetime.now(timezone.utc).strftime("%Y-%m-%d"):
+        ttl = float(os.environ.get("ARCHIVE_TODAY_REFRESH_MINUTES", "10")) * 60.0
+    else:
+        ttl = float(os.environ.get("ARCHIVE_INDEX_REFRESH_MINUTES", "60")) * 60.0
     with _ARCHIVE_DAY_CACHE_LOCK:
         cached = _ARCHIVE_DAY_CACHE.get(date)
     if cached and now - cached[0] < ttl:
