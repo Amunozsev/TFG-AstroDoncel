@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { API_BASE_URL, apiFetch } from './api';
 import { buildAnalysisManifest, downloadManifest, rfiQuery } from './analysisManifest';
 import { burstStyle, describeDetections } from './burstTypes';
@@ -7,17 +7,15 @@ import { addBlockParams, adjacentBlock, displayBlockTime, layerKey, selectCombin
 import { TypeIIResult, TypeIIStatus } from './TypeIIPanel';
 import { useTypeII } from './useTypeII';
 import { observationDateRange, observationPath, parseObservationSearch, writeObservationUrl } from './observationUrl';
+import Spectrogram from './Spectrogram';
+import StationsMap from './StationsMap';
+import BurstCatalog from './BurstCatalog';
+import Statistics from './Statistics';
+import About from './About';
+import LightCurvePanel, { LightCurveResult } from './LightCurvePanel';
+import DailyOverview from './DailyOverview';
+import CombinedSpectrogram from './CombinedSpectrogram';
 import './App.css';
-
-const Spectrogram = lazy(() => import('./Spectrogram'));
-const StationsMap = lazy(() => import('./StationsMap'));
-const BurstCatalog = lazy(() => import('./BurstCatalog'));
-const Statistics = lazy(() => import('./Statistics'));
-const About = lazy(() => import('./About'));
-const LightCurvePanel = lazy(() => import('./LightCurvePanel'));
-const LightCurveResult = lazy(() => import('./LightCurvePanel').then((module) => ({ default: module.LightCurveResult })));
-const DailyOverview = lazy(() => import('./DailyOverview'));
-const CombinedSpectrogram = lazy(() => import('./CombinedSpectrogram'));
 
 const TABS = [
   { id: 'processing', label: 'Processing', icon: 'sliders' },
@@ -1199,7 +1197,6 @@ export default function App() {
         </button>
       </nav>
 
-      <Suspense fallback={<div className="page-shell" role="status">Loading view…</div>}>
       {view === 'catalog' ? (
         <BurstCatalog onOpenEvent={handleOpenEvent} />
       ) : view === 'statistics' ? (
@@ -1550,7 +1547,6 @@ export default function App() {
 
         </div>
       )}
-      </Suspense>
     </div>
   );
 }

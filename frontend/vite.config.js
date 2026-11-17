@@ -11,4 +11,6 @@ export default defineConfig({
     global: 'globalThis',
     __APP_VERSION__: JSON.stringify(appVersion),
   },
+  // One bundle on purpose; Plotly alone is about 1.2 MB.
+  build: { chunkSizeWarningLimit: 1600 },
 })
